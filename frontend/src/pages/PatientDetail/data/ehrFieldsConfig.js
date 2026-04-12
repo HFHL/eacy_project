@@ -1,0 +1,742 @@
+/**
+ * 电子病历夹字段配置数据
+ * 
+ * 字段渲染类型说明：
+ * - fields: 普通字段，一个字段名对应一个值
+ * - table_fields: 表格字段，需要渲染为嵌套表格，显示多组数据
+ * 
+ * repeatable说明：
+ * - false: 不可重复的字段组（单一实例）
+ * - true: 可重复的字段组（可以有多个记录实例）
+ */
+
+export const ehrFieldsData = {
+  // 基本信息 - 个人信息（不可重复）
+  personalInfo: {
+    name: '个人信息',
+    repeatable: false,
+    fields: [
+      { id: 'CORE001', name: '患者姓名', value: '张三', confidence: 'high', source: 'ehr_doc1', editable: false, fieldType: 'fields', uiType: 'text' },
+      { id: 'CORE002', name: '性别', value: '男', confidence: 'high', source: 'ehr_doc1', editable: false, fieldType: 'fields', uiType: 'radio' },
+      { id: 'CORE003', name: '出生日期', value: '1979-01-15', confidence: 'high', source: 'ehr_doc1', editable: false, fieldType: 'fields', uiType: 'datepicker' },
+      { id: 'CORE004', name: '年龄', value: '45岁', confidence: 'high', source: 'ehr_doc1', editable: false, fieldType: 'fields', uiType: 'number' },
+      { id: 'CORE005', name: '证件类型', value: '身份证', confidence: 'high', source: 'ehr_doc1', editable: false, fieldType: 'fields', uiType: 'text' },
+      { id: 'CORE006', name: '证件号码', value: '110101197901****15', confidence: 'high', source: 'ehr_doc1', editable: false, fieldType: 'fields', uiType: 'text', sensitive: true }
+    ]
+  },
+  // 基本信息 - 联系方式（不可重复）
+  contactInfo: {
+    name: '联系方式',
+    repeatable: false,
+    fields: [
+      { id: 'CORE007', name: '手机号码', value: '138****5678', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'text', sensitive: true },
+      { id: 'CORE008', name: '家庭住址', value: '北京市朝阳区***', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'textarea', sensitive: true },
+      { id: 'CORE014', name: '紧急联系人姓名', value: '李四', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'text' },
+      { id: 'CORE015', name: '紧急联系人电话', value: '139****1234', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'text', sensitive: true },
+      { id: 'CORE016', name: '紧急联系人关系', value: '配偶', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'select' }
+    ]
+  },
+  // 基本信息 - 人口学（不可重复）
+  demographics: {
+    name: '人口学',
+    repeatable: false,
+    fields: [
+      { id: 'CORE009', name: '婚姻状况', value: '已婚', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'select' },
+      { id: 'CORE010', name: '教育水平', value: '本科', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'select' },
+      { id: 'CORE011', name: '职业', value: '工程师', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'text' },
+      { id: 'CORE012', name: '民族', value: '汉族', confidence: 'high', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'select' },
+      { id: 'CORE013', name: '医保类型', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'select', extractable: true }
+    ]
+  },
+  // 基本信息 - 紧急联系人（不可重复）
+  emergencyContact: {
+    name: '紧急联系人',
+    repeatable: false,
+    fields: [
+      { id: 'CORE014', name: '紧急联系人姓名', value: '李四', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+      { id: 'CORE015', name: '紧急联系人电话', value: '139****1234', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+      { id: 'CORE016', name: '紧急联系人关系', value: '配偶', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'select', sensitive: true }
+    ]
+  },
+  // 健康状况 - 生活史（不可重复）
+  lifestyle: {
+    name: '生活史',
+    repeatable: false,
+    fields: [
+      { id: 'CORE026', name: '吸烟史_状态', value: '已戒烟', confidence: 'high', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'select' },
+      { id: 'CORE027', name: '吸烟史_年数', value: '20年', confidence: 'high', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'number' },
+      { id: 'CORE028', name: '吸烟史_日均支数', value: '20支', confidence: 'high', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'number' },
+      { id: 'CORE029', name: '吸烟史_戒烟年份', value: '2022年', confidence: 'high', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'date-picker' },
+      { id: 'CORE030', name: '饮酒史_状态', value: '从不饮酒', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'select' },
+      { id: 'CORE031', name: '饮酒史_频率', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'text', extractable: true },
+      { id: 'CORE032', name: '饮酒史_类型', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'text', extractable: true },
+      { id: 'CORE033', name: '饮酒史_戒酒年份', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'date-picker', extractable: true }
+    ]
+  },
+  // 健康状况 - 个体史（不可重复）
+  personalHistory: {
+    name: '个体史',
+    repeatable: false,
+    fields: [
+      { id: 'CORE034', name: '出生史', value: '足月顺产，出生体重3.2kg，北京协和医院', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'textarea', sensitive: true },
+      { id: 'CORE035', name: '生长发育史', value: '发育正常，无异常', confidence: 'low', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'textarea', sensitive: true },
+      { id: 'CORE036', name: '居住史', value: '1979-2010年北京；2010年至今上海', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'textarea' },
+      { id: 'CORE037', name: '职业暴露史', value: '无特殊职业暴露', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'textarea' },
+      { id: 'CORE038', name: '疫区旅行史', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'textarea', extractable: true }
+    ]
+  },
+  // 健康状况 - 免疫接种史（不可重复）
+  immunization: {
+    name: '免疫接种史',
+    repeatable: false,
+    fields: [
+      { 
+        id: 'CORE039_TABLE', 
+        name: '疫苗接种记录', 
+        fieldType: 'table_fields', 
+        confidence: 'medium', 
+        source: 'ehr_doc1', 
+        editable: true,
+        tableData: [
+          {
+            id: 'vaccine_1',
+            '疫苗名称': 'HPV疫苗',
+            '接种日期': '2020-03-15',
+            '疫苗剂次': '第1剂',
+            '接种备注': '左臂三角肌注射'
+          },
+          {
+            id: 'vaccine_2',
+            '疫苗名称': 'HPV疫苗',
+            '接种日期': '2020-09-15',
+            '疫苗剂次': '第2剂',
+            '接种备注': '左臂三角肌注射'
+          },
+          {
+            id: 'vaccine_3',
+            '疫苗名称': '流感疫苗',
+            '接种日期': '2023-10-20',
+            '疫苗剂次': '第1剂',
+            '接种备注': '年度接种'
+          }
+        ]
+      }
+    ]
+  },
+  // 健康状况 - 生育史（不可重复）
+  reproductive: {
+    name: '生育史',
+    repeatable: false,
+    fields: [
+      { 
+        id: 'CORE043_TABLE', 
+        name: '孕产史记录', 
+        fieldType: 'table_fields', 
+        confidence: 'medium', 
+        source: 'ehr_doc1', 
+        editable: true,
+        tableData: [
+          {
+            id: 'pregnancy_1',
+            '孕次序号': '1',
+            '分娩方式': '顺产',
+            '分娩日期': '2005-08-15',
+            '孕周数': '39',
+            '产时备注': '无异常'
+          },
+          {
+            id: 'pregnancy_2',
+            '孕次序号': '2',
+            '分娩方式': '剖宫产',
+            '分娩日期': '2008-03-22',
+            '孕周数': '38',
+            '产时备注': '胎位不正'
+          }
+        ]
+      }
+    ]
+  },
+  // 健康状况 - 生理史（不可重复）
+  menstrual: {
+    name: '生理史',
+    repeatable: false,
+    fields: [
+      { id: 'CORE048', name: '初潮年龄', value: '13岁', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'number', sensitive: true },
+      { id: 'CORE049', name: '月经周期长度', value: '28天', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+      { id: 'CORE050', name: '月经量', value: '中等', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'select', sensitive: true },
+      { id: 'CORE051', name: '周期规律性', value: '规律', confidence: 'medium', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'select', sensitive: true },
+      { id: 'CORE052', name: '末次月经日期', value: '2024-01-05', confidence: 'high', source: 'ehr_doc1', editable: true, fieldType: 'fields', uiType: 'date-picker', sensitive: true }
+    ]
+  },
+  // 健康状况 - 既往病史（可重复字段组）
+  pastMedical: {
+    name: '既往病史',
+    repeatable: true,
+    records: [
+      {
+        id: 'pmh_1',
+        fields: [
+          { id: 'CORE053', name: '既往病史_疾病', value: '高血压', confidence: 'high', source: 'ehr_doc1', editable: true, type: 'text' },
+          { id: 'CORE054', name: '既往病史_确诊日期', value: '2020-03', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'datepicker' }
+        ]
+      },
+      {
+        id: 'pmh_2',
+        fields: [
+          { id: 'CORE053', name: '既往病史_疾病', value: '糖尿病', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'text' },
+          { id: 'CORE054', name: '既往病史_确诊日期', value: '2018-06', confidence: 'low', source: 'ehr_doc1', editable: true, type: 'datepicker' }
+        ]
+      }
+    ]
+  },
+  // 健康状况 - 手术史（可重复字段组）
+  surgical: {
+    name: '手术史',
+    repeatable: true,
+    records: [
+      {
+        id: 'surgery_1',
+        fields: [
+          { id: 'CORE055', name: '手术史_手术名称', value: '胆囊切除术', confidence: 'high', source: 'ehr_doc1', editable: true, type: 'text' },
+          { id: 'CORE056', name: '手术史_日期', value: '2019-08', confidence: 'high', source: 'ehr_doc1', editable: true, type: 'datepicker' },
+          { id: 'CORE057', name: '手术史_医院', value: '北京协和医院', confidence: 'high', source: 'ehr_doc1', editable: true, type: 'text' }
+        ]
+      }
+    ]
+  },
+  // 健康状况 - 家族史（不可重复）
+  family: {
+    name: '家族史',
+    repeatable: false,
+    fields: [
+      { 
+        id: 'CORE058_TABLE', 
+        name: '家族疾病史', 
+        fieldType: 'table_fields', 
+        confidence: 'medium', 
+        source: 'ehr_doc1', 
+        editable: true,
+        tableData: [
+          {
+            id: 'family_1',
+            '家族史_关系': '父亲',
+            '家族史_疾病': '肺癌'
+          },
+          {
+            id: 'family_2',
+            '家族史_关系': '母亲',
+            '家族史_疾病': '高血压'
+          },
+          {
+            id: 'family_3',
+            '家族史_关系': '兄弟',
+            '家族史_疾病': '糖尿病'
+          }
+        ]
+      }
+    ]
+  },
+  // 健康状况 - 合并症（不可重复）
+  comorbidity: {
+    name: '合并症',
+    repeatable: false,
+    fields: [
+      { 
+        id: 'CORE060_TABLE', 
+        name: '合并症记录', 
+        fieldType: 'table_fields', 
+        confidence: 'high', 
+        source: 'ehr_doc1', 
+        editable: true,
+        tableData: [
+          {
+            id: 'comorbidity_1',
+            '合并症_疾病': '高血压',
+            '合并症_确诊日期': '2020-03'
+          },
+          {
+            id: 'comorbidity_2',
+            '合并症_疾病': '糖尿病',
+            '合并症_确诊日期': '2018-06'
+          }
+        ]
+      }
+    ]
+  },
+  // 健康状况 - 过敏史（不可重复）
+  allergy: {
+    name: '过敏史',
+    repeatable: false,
+    fields: [
+      { 
+        id: 'CORE062_TABLE', 
+        name: '过敏记录', 
+        fieldType: 'table_fields', 
+        confidence: 'high', 
+        source: 'ehr_doc1', 
+        editable: true,
+        tableData: [
+          {
+            id: 'allergy_1',
+            '过敏史': '青霉素'
+          },
+          {
+            id: 'allergy_2',
+            '过敏史': '花生'
+          }
+        ]
+      }
+    ]
+  },
+  // 诊疗信息 - 诊断记录（可重复字段组）
+  diagnosis: {
+    name: '诊断记录',
+    repeatable: true,
+    records: [
+      {
+        id: 'diag_1',
+        fields: [
+          { id: 'CORE063', name: '诊断名称（原文）', value: '右肺腺癌T1aN0M0', confidence: 'high', source: 'ehr_doc3', editable: true, type: 'text' },
+          { id: 'CORE064', name: '诊断标准编码', value: 'C34.1', confidence: 'high', source: 'ehr_doc3', editable: true, type: 'text' },
+          { id: 'CORE065', name: '诊断类型', value: '主诊断', confidence: 'high', source: 'ehr_doc3', editable: true, type: 'select' },
+          { id: 'CORE066', name: '确诊时间', value: '2024-01-10', confidence: 'high', source: 'ehr_doc3', editable: true, type: 'datepicker' },
+          { id: 'CORE067', name: '诊断机构', value: '中山大学附属第三医院', confidence: 'high', source: 'ehr_doc3', editable: true, type: 'text' },
+          { id: 'CORE068', name: '诊断医生', value: '李主任', confidence: 'medium', source: 'ehr_doc3', editable: true, type: 'text' },
+          { id: 'CORE069', name: '是否为当前诊断', value: 'true', confidence: 'high', source: 'ehr_doc3', editable: true, type: 'checkbox' }
+        ]
+      },
+      {
+        id: 'diag_2',
+        fields: [
+          { id: 'CORE063_2', name: '诊断名称（原文）', value: '高血压', confidence: 'high', source: 'ehr_doc1', editable: true, type: 'text' },
+          { id: 'CORE064_2', name: '诊断标准编码', value: 'I10', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'text' },
+          { id: 'CORE065_2', name: '诊断类型', value: '次诊断', confidence: 'high', source: 'ehr_doc1', editable: true, type: 'select' },
+          { id: 'CORE066_2', name: '确诊时间', value: '2020-03-15', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'datepicker' },
+          { id: 'CORE067_2', name: '诊断机构', value: '北京协和医院', confidence: 'medium', source: 'ehr_doc1', editable: true, type: 'text' },
+          { id: 'CORE068_2', name: '诊断医生', value: '王医生', confidence: 'low', source: 'ehr_doc1', editable: true, type: 'text' },
+          { id: 'CORE069_2', name: '是否为当前诊断', value: 'false', confidence: 'high', source: 'ehr_doc1', editable: true, type: 'checkbox' }
+        ]
+      }
+    ]
+  },
+  // 诊疗信息 - 治疗记录（可重复字段组）
+  treatment: {
+    name: '治疗记录',
+    repeatable: true,
+    records: [
+      {
+        id: 'treatment_1',
+        fields: [
+          { id: 'CORE070', name: '治疗类型', value: '靶向治疗', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE071', name: '治疗方案/药物', value: '吉非替尼', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE072', name: '开始时间', value: '2024-01-10', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE073', name: '结束时间', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'datepicker', extractable: true },
+          { id: 'CORE074', name: '治疗阶段', value: '一线', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE075', name: '是否住院实施', value: 'false', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'checkbox' },
+          { id: 'CORE076', name: '执行机构', value: '中山大学附属第三医院肿瘤科', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE077', name: '治疗结果', value: '进行中', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE078', name: '特殊说明', value: '因EGFR L858R突变选择吉非替尼', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'textarea' }
+        ]
+      }
+    ]
+  },
+  // 诊疗信息 - 用药记录（可重复字段组）
+  medication: {
+    name: '用药记录',
+    repeatable: true,
+    records: [
+      {
+        id: 'med_1',
+        fields: [
+          { id: 'CORE079', name: '药物名称', value: '吉非替尼', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE080', name: '剂量', value: '250mg', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE081', name: '给药途径', value: '口服', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE082', name: '给药频率', value: '每日一次', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE083', name: '周期时长', value: '持续用药', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE084', name: '周期次数', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'number', extractable: true },
+          { id: 'CORE085', name: '用药开始时间', value: '2024-01-10', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE086', name: '用药结束时间', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'datepicker', extractable: true },
+          { id: 'CORE087', name: '治疗记录关联ID', value: 'treatment_1', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE088', name: '不良反应/备注', value: '轻微皮疹，可耐受', confidence: 'medium', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'textarea', sensitive: true }
+        ]
+      },
+      {
+        id: 'med_2',
+        fields: [
+          { id: 'CORE079_2', name: '药物名称', value: '阿司匹林', confidence: 'medium', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE080_2', name: '剂量', value: '100mg', confidence: 'medium', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE081_2', name: '给药途径', value: '口服', confidence: 'medium', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE082_2', name: '给药频率', value: '每日一次', confidence: 'medium', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE083_2', name: '周期时长', value: '长期用药', confidence: 'medium', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE084_2', name: '周期次数', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'number', extractable: true },
+          { id: 'CORE085_2', name: '用药开始时间', value: '2020-03-15', confidence: 'medium', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE086_2', name: '用药结束时间', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'datepicker', extractable: true },
+          { id: 'CORE087_2', name: '治疗记录关联ID', value: '', confidence: null, source: null, editable: true, fieldType: 'fields', uiType: 'text', extractable: true },
+          { id: 'CORE088_2', name: '不良反应/备注', value: '无明显不良反应', confidence: 'medium', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'textarea' }
+        ]
+      }
+    ]
+  },
+  // 检查检验 - 病理报告（可重复）
+  pathology: {
+    name: '病理报告',
+    repeatable: true,
+    records: [
+      {
+        id: 'pathology_1',
+        fields: [
+          { id: 'CORE089', name: '报告类型', value: '病理', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE090', name: '标本部位', value: '右肺下叶', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE091', name: '标本类型', value: '石蜡切片', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE092', name: '病理诊断', value: '低分化腺癌', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'textarea' },
+          { id: 'CORE093', name: '附加描述', value: '可见腺体浸润，部分神经侵犯', confidence: 'medium', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'textarea' },
+          { id: 'CORE094', name: '报告编号', value: '2024-PL001238', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE095', name: '报告医生', value: '王医师', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+          { id: 'CORE096', name: '送检日期', value: '2024-01-10', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE097', name: '报告日期', value: '2024-01-12', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'datepicker' }
+        ]
+      },
+      {
+        id: 'pathology_2',
+        fields: [
+          { id: 'CORE089_2', name: '报告类型', value: '免疫组化', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE090_2', name: '标本部位', value: '右肺下叶', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE091_2', name: '标本类型', value: '石蜡切片', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE092_2', name: '病理诊断', value: 'TTF-1(+), CK7(+), CK20(-)', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'textarea' },
+          { id: 'CORE093_2', name: '附加描述', value: '符合肺腺癌免疫组化表型', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'textarea' },
+          { id: 'CORE094_2', name: '报告编号', value: '2024-IHC001239', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE095_2', name: '报告医生', value: '李医师', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+          { id: 'CORE096_2', name: '送检日期', value: '2024-01-10', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE097_2', name: '报告日期', value: '2024-01-13', confidence: 'high', source: 'ehr_doc4', editable: true, fieldType: 'fields', uiType: 'datepicker' }
+        ]
+      }
+    ]
+  },
+  // 检查检验 - 实验室检查（可重复）
+  laboratory: {
+    name: '实验室检查',
+    repeatable: true,
+    records: [
+      {
+        id: 'laboratory_1',
+        fields: [
+          // fields类型字段（普通字段）
+          { id: 'CORE131', name: '检查机构', value: '中山大学附属第三医院检验科', confidence: 'high', source: 'ehr_doc2', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE132', name: '报告编号', value: 'LAB2024-001567', confidence: 'high', source: 'ehr_doc2', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE133', name: '检查日期', value: '2024-01-15', confidence: 'high', source: 'ehr_doc2', editable: true, fieldType: 'fields', uiType: 'date' },
+          { id: 'CORE134', name: '报告日期', value: '2024-01-15', confidence: 'high', source: 'ehr_doc2', editable: true, fieldType: 'fields', uiType: 'date' },
+          { id: 'CORE135', name: '标本类型', value: '血液', confidence: 'high', source: 'ehr_doc2', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE136', name: '项目组名称', value: '血常规+生化全套', confidence: 'high', source: 'ehr_doc2', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE137', name: '报告医生', value: '张医师', confidence: 'medium', source: 'ehr_doc2', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+          
+          // table_fields类型字段（表格字段）
+          { 
+            id: 'CORE138_TABLE', 
+            name: '检验指标', 
+            fieldType: 'table_fields', 
+            confidence: 'high', 
+            source: 'ehr_doc2', 
+            editable: true,
+            tableData: [
+              {
+                id: 'lab_item_1',
+                '指标名称（中文）': '甲胎蛋白',
+                '英文简称': 'AFP',
+                '检测值': '3.2',
+                '单位': 'ng/mL',
+                '参考范围': '0-10',
+                '是否异常': false,
+                '异常标志': ''
+              },
+              {
+                id: 'lab_item_2',
+                '指标名称（中文）': '癌胚抗原',
+                '英文简称': 'CEA',
+                '检测值': '15.8',
+                '单位': 'ng/mL',
+                '参考范围': '0-5',
+                '是否异常': true,
+                '异常标志': '↑'
+              },
+              {
+                id: 'lab_item_3',
+                '指标名称（中文）': '白细胞计数',
+                '英文简称': 'WBC',
+                '检测值': '6.5',
+                '单位': '×10⁹/L',
+                '参考范围': '3.5-9.5',
+                '是否异常': false,
+                '异常标志': ''
+              }
+            ]
+          }
+        ]
+      },
+      {
+        id: 'laboratory_2',
+        fields: [
+          // fields类型字段（普通字段）
+          { id: 'CORE131_2', name: '检查机构', value: '中山大学附属第三医院检验科', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE132_2', name: '报告编号', value: 'LAB2024-001789', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE133_2', name: '检查日期', value: '2024-02-01', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'date' },
+          { id: 'CORE134_2', name: '报告日期', value: '2024-02-01', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'date' },
+          { id: 'CORE135_2', name: '标本类型', value: '血液', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE136_2', name: '项目组名称', value: '肿瘤标志物检测', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE137_2', name: '报告医生', value: '李医师', confidence: 'medium', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+          
+          // table_fields类型字段（表格字段）
+          { 
+            id: 'CORE138_TABLE_2', 
+            name: '检验指标', 
+            fieldType: 'table_fields', 
+            confidence: 'high', 
+            source: 'ehr_doc5', 
+            editable: true,
+            tableData: [
+              {
+                id: 'lab_item_4',
+                '指标名称（中文）': 'CA199',
+                '英文简称': 'CA199',
+                '检测值': '45.2',
+                '单位': 'U/mL',
+                '参考范围': '0-37',
+                '是否异常': true,
+                '异常标志': '↑'
+              },
+              {
+                id: 'lab_item_5',
+                '指标名称（中文）': 'CA125',
+                '英文简称': 'CA125',
+                '检测值': '28.5',
+                '单位': 'U/mL',
+                '参考范围': '0-35',
+                '是否异常': false,
+                '异常标志': ''
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  // 检查检验 - 影像检查（可重复）
+  imaging: {
+    name: '影像检查',
+    repeatable: true,
+    records: [
+      {
+        id: 'imaging_1',
+        fields: [
+          { id: 'CORE118', name: '检查机构', value: '中山大学附属第三医院影像科', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE119', name: '检查日期', value: '2024-01-12', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE120', name: '报告日期', value: '2024-01-12', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE121', name: '检查项目名称', value: '胸部增强CT', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE122', name: '检查方式', value: 'CT', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE123', name: '检查部位', value: '胸部', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE125', name: '所见描述', value: '左肺下叶结节，大小约2.5cm', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'textarea' },
+          { id: 'CORE126', name: '诊断印象/结论', value: '左肺下叶占位性病变，考虑恶性', confidence: 'high', source: 'ehr_doc3', editable: true, fieldType: 'fields', uiType: 'textarea' }
+        ]
+      },
+      {
+        id: 'imaging_2',
+        fields: [
+          { id: 'CORE118_2', name: '检查机构', value: '中山大学附属第三医院影像科', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE119_2', name: '检查日期', value: '2024-02-15', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE120_2', name: '报告日期', value: '2024-02-15', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE121_2', name: '检查项目名称', value: 'PET-CT全身显像', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE122_2', name: '检查方式', value: 'PET-CT', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE123_2', name: '检查部位', value: '全身', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE125_2', name: '所见描述', value: '左肺下叶结节FDG摄取增高，SUVmax=8.5，纵隔淋巴结肿大', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'textarea' },
+          { id: 'CORE126_2', name: '诊断印象/结论', value: '左肺下叶恶性肿瘤，纵隔淋巴结转移', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'textarea' }
+        ]
+      }
+    ]
+  },
+  
+  // 检查检验 - 基因检测（可重复）
+  genetics: {
+    name: '基因检测',
+    repeatable: true,
+    records: [
+      {
+        id: 'genetics_1',
+        fields: [
+          // fields类型字段（普通字段）
+          { id: 'CORE099', name: '检测类型', value: 'NGS', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE100', name: '标本类型', value: '组织切片', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE101', name: '检测项目名称', value: '肿瘤靶向药物基因检测', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE113', name: '报告编号', value: 'NGS2024-001234', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE114', name: '医疗机构', value: '华大基因', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE116', name: '送检日期', value: '2024-01-10', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE117', name: '报告日期', value: '2024-01-14', confidence: 'high', source: 'ehr_doc5', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          
+          // table_fields类型字段（表格字段）
+          { 
+            id: 'CORE102_TABLE', 
+            name: '突变结果', 
+            fieldType: 'table_fields', 
+            confidence: 'high', 
+            source: 'ehr_doc5', 
+            editable: true,
+            tableData: [
+              {
+                id: 'mutation_1',
+                '基因名称': 'EGFR',
+                '突变位点': 'L858R',
+                '突变效应类型': '敏感突变',
+                '突变频率': '35%',
+                '外显子编号': 'Exon 21',
+                '变异类型': '错义突变'
+              },
+              {
+                id: 'mutation_2',
+                '基因名称': 'TP53',
+                '突变位点': 'R273H',
+                '突变效应类型': '未知意义',
+                '突变频率': '42%',
+                '外显子编号': 'Exon 8',
+                '变异类型': '错义突变'
+              }
+            ]
+          }
+        ]
+      },
+      {
+        id: 'genetics_2',
+        fields: [
+          // fields类型字段（普通字段）
+          { id: 'CORE099_2', name: '检测类型', value: 'PCR', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE100_2', name: '标本类型', value: '血液', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'select' },
+          { id: 'CORE101_2', name: '检测项目名称', value: 'EGFR突变检测', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE113_2', name: '报告编号', value: 'PCR2024-001456', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE114_2', name: '医疗机构', value: '中山大学附属第三医院检验科', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'text' },
+          { id: 'CORE116_2', name: '送检日期', value: '2024-02-05', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          { id: 'CORE117_2', name: '报告日期', value: '2024-02-07', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'datepicker' },
+          
+          // table_fields类型字段（表格字段）
+          { 
+            id: 'CORE102_TABLE_2', 
+            name: '突变结果', 
+            fieldType: 'table_fields', 
+            confidence: 'high', 
+            source: 'ehr_doc7', 
+            editable: true,
+            tableData: [
+              {
+                id: 'mutation_3',
+                '基因名称': 'EGFR',
+                '突变位点': 'L858R',
+                '突变效应类型': '敏感突变',
+                '突变频率': '38%',
+                '外显子编号': 'Exon 21',
+                '变异类型': '错义突变'
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+   
+   // 检查检验 - 其他检查（可重复）
+   otherExam: {
+     name: '其他检查',
+     repeatable: true,
+     records: [
+       {
+         id: 'other_exam_1',
+         fields: [
+           // fields类型字段
+           { id: 'CORE146', name: '报告项目名称', value: '肺功能检查', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'text' },
+           { id: 'CORE147', name: '检查机构', value: '中山大学附属第三医院呼吸科', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'text' },
+           { id: 'CORE148', name: '检查日期', value: '2024-01-08', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'date-picker' },
+           { id: 'CORE149', name: '报告日期', value: '2024-01-08', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'date-picker' },
+           { id: 'CORE150', name: '检查编号', value: 'PFT2024-001234', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'text' },
+           { id: 'CORE153', name: '报告结论文字', value: '肺功能轻度受限，FEV1/FVC比值降低', confidence: 'high', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'textarea' },
+           { id: 'CORE154', name: '报告医生', value: '李医师', confidence: 'medium', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+           { id: 'CORE155', name: '审核医生', value: '王主任', confidence: 'medium', source: 'ehr_doc6', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true }
+         ]
+       }
+     ]
+   },
+   
+   // 其他材料 - 材料信息（可重复）
+   materialInfo: {
+     name: '材料信息',
+     repeatable: true,
+     records: [
+       {
+         id: 'material_1',
+         fields: [
+           { id: 'CORE156', name: '材料类型', value: '处方', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'select', sensitive: true },
+           { id: 'CORE157', name: '名称', value: '门诊处方单', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'text' },
+           { id: 'CORE158', name: '来源机构', value: '中山大学附属第三医院', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+           { id: 'CORE159', name: '日期', value: '2024-01-10', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'date-picker' },
+           { id: 'CORE160', name: '金额', value: '1250.00', confidence: 'medium', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'number', sensitive: true },
+           { id: 'CORE161', name: '摘要', value: '吉非替尼片 250mg×30片', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'textarea' },
+           { id: 'CORE162', name: '开具人员', value: '李主任', confidence: 'medium', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true },
+           { id: 'CORE163', name: '编号', value: 'RX2024-001567', confidence: 'high', source: 'ehr_doc7', editable: true, fieldType: 'fields', uiType: 'text', sensitive: true }
+         ]
+       }
+     ]
+   }
+}
+
+// 字段组结构配置（用于构建病历夹树形结构，不包含 mock 数据值）
+export const ehrFieldGroupsConfig = [
+  {
+    key: 'basicInfo',
+    name: '基本信息',
+    children: [
+      { key: 'personalInfo', name: '个人信息', fieldCount: 6 },
+      { key: 'contactInfo', name: '联系方式', fieldCount: 5 },
+      { key: 'demographics', name: '人口学', fieldCount: 5 },
+      { key: 'emergencyContact', name: '紧急联系人', fieldCount: 3 }
+    ]
+  },
+  {
+    key: 'healthStatus',
+    name: '健康状况',
+    children: [
+      { key: 'lifestyle', name: '生活史', fieldCount: 8 },
+      { key: 'personalHistory', name: '个体史', fieldCount: 5 },
+      { key: 'immunization', name: '免疫接种史', fieldCount: 1 },
+      { key: 'reproductive', name: '生育史', fieldCount: 1 },
+      { key: 'menstrual', name: '生理史', fieldCount: 5 },
+      { key: 'pastMedical', name: '既往病史', fieldCount: 2 },
+      { key: 'surgical', name: '手术史', fieldCount: 3 },
+      { key: 'family', name: '家族史', fieldCount: 1 },
+      { key: 'comorbidity', name: '合并症', fieldCount: 1 },
+      { key: 'allergy', name: '过敏史', fieldCount: 1 }
+    ]
+  },
+  {
+    key: 'clinicalInfo',
+    name: '诊疗信息',
+    children: [
+      { key: 'diagnosis', name: '诊断记录', fieldCount: 7 },
+      { key: 'treatment', name: '治疗记录', fieldCount: 9 },
+      { key: 'medication', name: '用药记录', fieldCount: 10 }
+    ]
+  },
+  {
+    key: 'examination',
+    name: '检查检验',
+    children: [
+      { key: 'pathology', name: '病理报告', fieldCount: 9 },
+      { key: 'genetics', name: '基因检测', fieldCount: 8 },
+      { key: 'imaging', name: '影像检查', fieldCount: 8 },
+      { key: 'laboratory', name: '实验室检查', fieldCount: 8 },
+      { key: 'otherExam', name: '其他检查', fieldCount: 8 }
+    ]
+  },
+  {
+    key: 'otherMaterials',
+    name: '其他材料',
+    children: [
+      { key: 'materialInfo', name: '材料信息', fieldCount: 8 }
+    ]
+  }
+]
+
+export default ehrFieldsData

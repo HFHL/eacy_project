@@ -1,0 +1,148 @@
+/* FieldSourceViewer 样式 */
+
+.field-source-modal {
+  padding: 8px 0;
+}
+
+.clickable-field-value {
+  transition: all 0.2s ease;
+}
+
+.clickable-field-value:hover {
+  background: #e6f4ff !important;
+  border-color: #69b1ff !important;
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.15);
+}
+
+/* 原文高亮样式 */
+.raw-text-highlight {
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #f8f9fb 100%);
+  border-radius: 6px;
+  border-left: 4px solid #1890ff;
+  position: relative;
+}
+
+.raw-text-highlight::before {
+  content: '"';
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  font-size: 24px;
+  color: #d9d9d9;
+  font-family: Georgia, serif;
+}
+
+/* 来源标签动画 */
+.source-tag-animated {
+  animation: tagPulse 2s ease-in-out infinite;
+}
+
+@keyframes tagPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* 文档信息卡片 */
+.document-info-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 8px;
+  padding: 16px;
+  color: white;
+}
+
+.document-info-card .ant-typography {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.document-info-card .ant-tag {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: white;
+}
+
+/* 字段追踪时间线 */
+.field-trace-timeline {
+  padding: 12px 0;
+}
+
+.field-trace-timeline .ant-timeline-item-content {
+  padding-bottom: 16px;
+}
+
+/* 置信度指示器 */
+.confidence-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confidence-bar {
+  width: 100px;
+  height: 6px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.confidence-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.confidence-high {
+  background: linear-gradient(90deg, #52c41a, #73d13d);
+}
+
+.confidence-medium {
+  background: linear-gradient(90deg, #faad14, #ffc53d);
+}
+
+.confidence-low {
+  background: linear-gradient(90deg, #ff4d4f, #ff7875);
+}
+
+/* 悬浮预览 */
+.hover-preview {
+  position: fixed;
+  z-index: 1050;
+  max-width: 400px;
+  padding: 12px 16px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.08),
+              0 3px 6px -4px rgba(0, 0, 0, 0.12),
+              0 9px 28px 8px rgba(0, 0, 0, 0.05);
+  pointer-events: none;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .field-source-modal .ant-card {
+    margin-bottom: 12px;
+  }
+  
+  .clickable-field-value {
+    padding: 8px;
+  }
+}

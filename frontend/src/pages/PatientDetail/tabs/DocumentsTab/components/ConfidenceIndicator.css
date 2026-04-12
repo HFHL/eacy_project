@@ -1,0 +1,33 @@
+/* 置信度指示器样式 */
+.confidence-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: default;
+  transition: all 0.2s ease;
+}
+
+.confidence-indicator:hover {
+  background-color: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.confidence-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.confidence-text {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}

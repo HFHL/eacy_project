@@ -1,0 +1,115 @@
+.extraction-debugger {
+  padding: 24px;
+  background: #f0f2f5;
+  min-height: 100vh;
+}
+
+.extraction-debugger .ant-card {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.extraction-debugger code {
+  background: #f5f5f5;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+}
+
+.extraction-debugger pre,
+.extraction-debugger .extraction-debugger-pre {
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 520px;
+  overflow: auto;
+  background: #0b1220;
+  color: #e6edf3;
+  padding: 12px;
+  border-radius: 8px;
+}
+
+.extraction-debugger .ant-statistic-title {
+  font-size: 14px;
+  color: #666;
+}
+
+.extraction-debugger .ant-statistic-content {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.extraction-debugger-layout {
+  background: transparent;
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.extraction-debugger-sider {
+  background: #111827;
+}
+
+.extraction-debugger-sider-title {
+  padding: 16px 16px 10px;
+  color: #e5e7eb;
+  font-weight: 600;
+}
+
+.extraction-debugger-sider .ant-menu {
+  background: #111827;
+  color: #e5e7eb;
+  border-right: none;
+}
+
+.extraction-debugger-sider .ant-menu-item-selected {
+  background: rgba(59, 130, 246, 0.25) !important;
+}
+
+.extraction-debugger-content {
+  padding: 16px;
+  background: #fff;
+  min-height: 560px;
+}
+
+.extraction-debugger-logs {
+  max-height: 360px;
+  overflow: auto;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.extraction-debugger-logs .log-item {
+  display: grid;
+  grid-template-columns: 90px 70px 1fr;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.extraction-debugger-logs .log-time {
+  color: #6b7280;
+}
+
+.extraction-debugger-logs .log-level {
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.extraction-debugger-logs .log-info .log-level {
+  color: #2563eb;
+}
+
+.extraction-debugger-logs .log-success .log-level {
+  color: #16a34a;
+}
+
+.extraction-debugger-logs .log-warning .log-level {
+  color: #d97706;
+}
+
+.extraction-debugger-logs .log-error .log-level {
+  color: #dc2626;
+}
+

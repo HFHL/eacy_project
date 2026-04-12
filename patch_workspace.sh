@@ -1,0 +1,1 @@
+sed -i '' 's/const handleProcessGroup = (id) => {/const handleProcessGroup = async (id, overridePatientId = null) => {/g' /Users/apple/project/first-project/frontend/src/pages/BatchArchiveWorkspace.jsx

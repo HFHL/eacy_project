@@ -1,0 +1,157 @@
+/* ─── 上传悬浮球 ─── */
+.upload-floating-btn {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1050;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.3s ease,
+              opacity 0.3s ease;
+}
+
+.upload-floating-btn.dragging {
+  cursor: grabbing;
+  transition: none;
+}
+
+.upload-floating-btn-inner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border-radius: 28px;
+  padding: 6px 16px 6px 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12),
+              0 2px 4px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 0.3s ease,
+              padding 0.3s ease,
+              border-radius 0.3s ease;
+}
+
+.upload-floating-btn:hover .upload-floating-btn-inner {
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16),
+              0 3px 8px rgba(0, 0, 0, 0.10);
+}
+
+.upload-floating-btn:active .upload-floating-btn-inner {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+/* Minimized: just the circle */
+.upload-floating-btn.minimized .upload-floating-btn-inner {
+  padding: 4px;
+  border-radius: 50%;
+}
+
+/* ─── Progress ring ─── */
+.upload-floating-progress {
+  flex-shrink: 0;
+}
+
+.upload-floating-progress .ant-progress-inner {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── Center icon ─── */
+.upload-floating-icon {
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  pointer-events: none;
+  width: 52px;
+  height: 52px;
+}
+
+.upload-floating-btn.minimized .upload-floating-icon {
+  left: 4px;
+  font-size: 16px;
+  width: 40px;
+  height: 40px;
+}
+
+.upload-floating-icon .ant-badge {
+  line-height: 1;
+}
+
+/* ─── Info text ─── */
+.upload-floating-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: 80px;
+  transition: max-width 0.3s ease, opacity 0.3s ease;
+}
+
+.upload-floating-btn.minimized .upload-floating-info {
+  max-width: 0;
+  opacity: 0;
+}
+
+.upload-floating-stats {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.85);
+  line-height: 1.2;
+}
+
+/* ─── Phase-specific styles ─── */
+
+/* Uploading: pulse glow */
+.upload-floating-btn.uploading .upload-floating-btn-inner {
+  animation: upload-float-pulse 2s ease-in-out infinite;
+}
+
+@keyframes upload-float-pulse {
+  0%, 100% {
+    box-shadow: 0 4px 16px rgba(22, 119, 255, 0.15),
+                0 2px 4px rgba(0, 0, 0, 0.08);
+  }
+  50% {
+    box-shadow: 0 4px 24px rgba(22, 119, 255, 0.30),
+                0 2px 8px rgba(22, 119, 255, 0.15);
+  }
+}
+
+/* Failed: red tint */
+.upload-floating-btn.failed .upload-floating-btn-inner {
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+}
+
+/* All done: green tint, then fade */
+.upload-floating-btn.allDone .upload-floating-btn-inner {
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+}
+
+/* Paused: amber tint */
+.upload-floating-btn.paused .upload-floating-btn-inner {
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 768px) {
+  .upload-floating-btn {
+    right: 12px;
+    bottom: 12px;
+  }
+  .upload-floating-btn-inner {
+    padding: 4px 12px 4px 4px;
+  }
+  .upload-floating-stats {
+    font-size: 12px;
+  }
+}

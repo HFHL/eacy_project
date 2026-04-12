@@ -1,0 +1,166 @@
+/**
+ * OCR 可视化测试页面样式
+ */
+
+.ocr-viewer-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #0a0a14;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+/* ========== 控制栏 ========== */
+.control-card {
+  background: #16213e !important;
+  border: 1px solid #0f3460 !important;
+  border-radius: 8px !important;
+  margin-bottom: 16px;
+}
+
+.control-card .ant-card-body {
+  padding: 12px 16px !important;
+}
+
+.control-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.control-left {
+  display: flex;
+  align-items: center;
+}
+
+.control-center {
+  display: flex;
+  align-items: center;
+}
+
+.control-right {
+  display: flex;
+  align-items: center;
+}
+
+/* ========== 可视化容器 ========== */
+.viewer-wrapper {
+  flex: 1;
+  min-height: 0;
+  background: #1a1a2e;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.parsing-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #ccc;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #666;
+}
+
+/* ========== 统计卡片 ========== */
+.stats-card {
+  margin-top: 16px;
+  background: #16213e !important;
+  border: 1px solid #0f3460 !important;
+  border-radius: 8px !important;
+}
+
+.stats-card .ant-card-body {
+  padding: 10px 16px !important;
+}
+
+/* ========== Ant Design 主题覆盖 ========== */
+.ocr-viewer-page .ant-btn-primary {
+  background: #e94560;
+  border-color: #e94560;
+}
+
+.ocr-viewer-page .ant-btn-primary:hover {
+  background: #ff6b8a;
+  border-color: #ff6b8a;
+}
+
+.ocr-viewer-page .ant-radio-button-wrapper-checked {
+  background: #e94560 !important;
+  border-color: #e94560 !important;
+}
+
+.ocr-viewer-page .ant-switch-checked {
+  background: #e94560;
+}
+
+.ocr-viewer-page .ant-upload {
+  color: #ccc;
+}
+
+.ocr-viewer-page .ant-typography {
+  color: #ccc;
+}
+
+.ocr-viewer-page .ant-divider {
+  border-color: #333;
+}
+
+.ocr-viewer-page .ant-alert {
+  background: #16213e;
+  border-color: #0f3460;
+}
+
+.ocr-viewer-page .ant-alert-message {
+  color: #e94560;
+}
+
+.ocr-viewer-page .ant-alert-description {
+  color: #ccc;
+}
+
+.ocr-viewer-page .ant-alert-description p {
+  margin: 4px 0;
+}
+
+/* ========== 历史记录抽屉 ========== */
+.history-item {
+  padding: 12px !important;
+  margin-bottom: 8px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.history-item:hover {
+  background: #e6f4ff;
+  transform: translateX(-4px);
+}
+
+.history-item .ant-list-item-meta-title {
+  margin-bottom: 4px !important;
+}
+
+/* ========== 响应式 ========== */
+@media (max-width: 1200px) {
+  .control-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .control-center {
+    flex-wrap: wrap;
+  }
+}
+

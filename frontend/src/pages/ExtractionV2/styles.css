@@ -1,0 +1,336 @@
+/* V2 抽取测试页面样式 */
+
+.extraction-v2-page {
+  padding: 16px;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+}
+
+.control-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
+.control-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ========== 工作流可视化 ========== */
+.workflow-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
+.workflow-steps {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 0;
+  overflow-x: auto;
+}
+
+.workflow-step {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 140px;
+}
+
+.step-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #f0f0f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #8c8c8c;
+  transition: all 0.3s;
+  flex-shrink: 0;
+}
+
+.workflow-step.running .step-icon {
+  background: #e6f7ff;
+  color: #1890ff;
+  box-shadow: 0 0 0 4px rgba(24, 144, 255, 0.2);
+  animation: pulse 1.5s infinite;
+}
+
+.workflow-step.completed .step-icon {
+  background: #f6ffed;
+  color: #52c41a;
+}
+
+.workflow-step.error .step-icon {
+  background: #fff2f0;
+  color: #f5222d;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(114, 46, 209, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(114, 46, 209, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(114, 46, 209, 0);
+  }
+}
+
+.step-content {
+  margin-left: 12px;
+  flex: 1;
+}
+
+.step-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: #262626;
+}
+
+.step-desc {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-top: 2px;
+}
+
+.workflow-step.running .step-name {
+  color: #1890ff;
+}
+
+.workflow-step.completed .step-name {
+  color: #52c41a;
+}
+
+.workflow-step.error .step-name {
+  color: #f5222d;
+}
+
+.step-arrow {
+  margin: 0 8px;
+  color: #d9d9d9;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.step-arrow.completed {
+  color: #52c41a;
+}
+
+/* 步骤详情 */
+.step-details {
+  border-top: 1px solid #f0f0f0;
+  padding-top: 16px;
+}
+
+.io-section {
+  background: #fafafa;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.io-content {
+  margin: 8px 0 0 0;
+  padding: 8px;
+  background: #1a1a2e;
+  color: #a5d6a7;
+  border-radius: 4px;
+  font-size: 11px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+/* ========== 结果展示 ========== */
+.result-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.status-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+}
+
+.doc-sources-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+}
+
+.result-tabs-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+}
+
+/* Result 样式 */
+.result-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.result-field {
+  display: flex;
+  padding: 8px 12px;
+  background: #fafafa;
+  border-radius: 6px;
+  border-left: 3px solid #722ed1;
+}
+
+.field-key {
+  min-width: 180px;
+  color: #666;
+  font-weight: 500;
+}
+
+.field-value {
+  flex: 1;
+}
+
+.field-value pre {
+  margin: 0;
+  padding: 8px;
+  background: #f0f0f0;
+  border-radius: 4px;
+  font-size: 12px;
+  max-height: 150px;
+  overflow: auto;
+}
+
+.result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.result-item {
+  border-left: 3px solid #1890ff;
+}
+
+/* Audit 样式 */
+.audit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.audit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.raw-text {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Metadata 样式 */
+.metadata-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.metadata-item {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 8px;
+}
+
+.metadata-item .ant-typography:first-child {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+/* Raw JSON */
+.raw-json {
+  margin: 0;
+  padding: 16px;
+  background: #1a1a2e;
+  color: #a5d6a7;
+  border-radius: 8px;
+  font-size: 12px;
+  max-height: 500px;
+  overflow: auto;
+}
+
+/* 空状态 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  text-align: center;
+}
+
+.empty-state .ant-typography {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.empty-state .ant-typography-secondary {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.step-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 24px;
+}
+
+.step-preview:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #722ed1;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .extraction-v2-page {
+    padding: 8px;
+  }
+  
+  .workflow-steps {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 16px;
+  }
+  
+  .workflow-step {
+    flex-direction: column;
+    text-align: center;
+    min-width: 100px;
+  }
+  
+  .step-content {
+    margin-left: 0;
+    margin-top: 8px;
+  }
+  
+  .step-arrow {
+    display: none;
+  }
+  
+  .field-key {
+    min-width: 120px;
+  }
+  
+  .metadata-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

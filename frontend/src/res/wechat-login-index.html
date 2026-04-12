@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>易悉EACY - 微信登录</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: #f5f5f5;
+            min-height: 100vh;
+            display: flex;
+        }
+
+        .container {
+            display: flex;
+            width: 100%;
+            min-height: 100vh;
+        }
+
+        /* 左侧登录面板 */
+        .login-panel {
+            width: 420px;
+            background: white;
+            padding: 60px 50px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 2px 0 8px rgba(0, 0, 0, 0.05);
+        }  
+
+        .login-header {
+            margin-bottom: 40px;
+        }
+
+        .register-link {
+            text-align: right;
+            margin-bottom: 20px;
+        }
+
+        .register-link a {
+            color: #1890ff;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .register-link a:hover {
+            text-decoration: underline;
+        }
+
+        .login-tabs {
+            display: flex;
+            border-bottom: 1px solid #e8e8e8;
+            margin-bottom: 30px;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px 0;
+            text-align: center;
+            font-size: 16px;
+            color: #666;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            color: #1890ff;
+            border-bottom-color: #1890ff;
+            font-weight: 500;
+        }
+
+        .qr-section {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .qr-container {
+            width: 200px;
+            height: 200px;
+            margin: 0 auto 20px;
+            background: #fafafa;
+            border: 1px solid #e8e8e8;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .qr-loading {
+            color: #999;
+            font-size: 14px;
+        }
+
+        .qr-image {
+            width: 100%;
+            height: 100%;
+            padding: 10px;
+        }
+
+        .qr-image img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .qr-tips {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .last-login {
+            margin-bottom: 20px;
+        }
+
+        .last-login-title {
+            font-size: 14px;
+            color: #333;
+            margin-bottom: 12px;
+            font-weight: 500;
+        }
+
+        .login-methods {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .method-btn {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            background: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-size: 14px;
+            color: #666;
+            transition: all 0.3s;
+        }
+
+        .method-btn:hover {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+
+        .method-btn.wechat {
+            border-color: #07c160;
+            color: #07c160;
+        }
+
+        .divider {
+            height: 1px;
+            background: #e8e8e8;
+            margin: 20px 0;
+            position: relative;
+        }
+
+        .divider::before {
+            content: '其他登录方式';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 0 10px;
+            color: #999;
+            font-size: 12px;
+        }
+
+        .other-methods {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 30px;
+        }
+
+        .other-method {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            color: #666;
+            font-size: 12px;
+            transition: color 0.3s;
+        }
+
+        .other-method:hover {
+            color: #1890ff;
+        }
+
+        .other-method-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            background: #f5f5f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .help-links {
+            text-align: center;
+            font-size: 12px;
+            color: #999;
+            padding-top: 20px;
+            border-top: 1px solid #f0f0f0;
+        }
+
+        .help-links a {
+            color: #999;
+            text-decoration: none;
+            margin: 0 8px;
+        }
+
+        .help-links a:hover {
+            color: #1890ff;
+        }
+
+        /* 右侧宣传区域 */
+        .promo-panel {
+            flex: 1;
+            background: linear-gradient(135deg, #f0f2f5 0%, #e8ebef 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .promo-content {
+            text-align: center;
+            z-index: 1;
+            padding: 40px;
+        }
+
+        .promo-title {
+            font-size: 48px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-bottom: 30px;
+            letter-spacing: 2px;
+        }
+
+        .promo-subtitle {
+            font-size: 20px;
+            color: #666;
+            line-height: 1.8;
+            margin-bottom: 40px;
+        }
+
+        .promo-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 32px;
+            background: #1890ff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .promo-button:hover {
+            background: #40a9ff;
+        }
+
+        .promo-shapes {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            opacity: 0.1;
+        }
+
+        .shape {
+            position: absolute;
+            background: #1890ff;
+            border-radius: 50%;
+        }
+
+        .shape-1 {
+            width: 200px;
+            height: 200px;
+            top: 10%;
+            right: 10%;
+            animation: float 6s ease-in-out infinite;
+        }
+
+        .shape-2 {
+            width: 150px;
+            height: 150px;
+            bottom: 20%;
+            left: 15%;
+            animation: float 8s ease-in-out infinite;
+        }
+
+        .shape-3 {
+            width: 100px;
+            height: 100px;
+            top: 50%;
+            right: 30%;
+            animation: float 7s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% {
+                transform: translateY(0);
+            }
+            50% {
+                transform: translateY(-20px);
+            }
+        }
+
+        /* 响应式 */
+        @media (max-width: 1024px) {
+            .container {
+                flex-direction: column;
+            }
+
+            .login-panel {
+                width: 100%;
+                max-width: 500px;
+                margin: 0 auto;
+            }
+
+            .promo-panel {
+                min-height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 左侧登录面板 -->
+        <div class="login-panel">
+            <div class="login-header">
+                <div class="register-link">
+                    <a href="#">注册</a>
+                </div>
+                <div class="login-tabs">
+                    <div class="tab active">微信登录</div>
+                    <div class="tab">邮箱登录</div>
+                </div>
+            </div>
+
+            <div class="qr-section">
+                <div class="qr-container" id="qrContainer">
+                    <div class="qr-loading" id="qrLoading">正在生成二维码...</div>
+                    <div class="qr-image" id="qrImage" style="display: none;"></div>
+                </div>
+                <div class="qr-tips">
+                    使用微信扫一扫<br>
+                    扫描上方二维码登录
+                </div>
+            </div>
+
+            <div class="last-login">
+                <div class="last-login-title">上次登录</div>
+                <div class="login-methods">
+                    <div class="method-btn wechat">
+                        <span>微信</span>
+                    </div>
+                    <div class="method-btn">
+                        <span>企业微信</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="other-methods">
+                <div class="other-method">
+                    <div class="other-method-icon">QQ</div>
+                    <span>QQ</span>
+                </div>
+                <div class="other-method">
+                    <div class="other-method-icon">小程序</div>
+                    <span>小程序公众号</span>
+                </div>
+                <div class="other-method">
+                    <div class="other-method-icon">👤</div>
+                    <span>子用户</span>
+                </div>
+            </div>
+
+            <div class="help-links">
+                <a href="#">忘记账号</a>
+                <span>|</span>
+                <a href="#">忘记密码</a>
+                <span>|</span>
+                <a href="#">登录异常帮助文档</a>
+            </div>
+        </div>
+
+        <!-- 右侧宣传区域 -->
+        <div class="promo-panel">
+            <div class="promo-shapes">
+                <div class="shape shape-1"></div>
+                <div class="shape shape-2"></div>
+                <div class="shape shape-3"></div>
+            </div>
+            <div class="promo-content">
+                <h1 class="promo-title">易悉EACY</h1>
+                <div class="promo-subtitle">
+                    智能医疗数据平台<br>
+                    AI驱动的科研数据管理<br>
+                    让数据创造价值
+                </div>
+                <button class="promo-button">
+                    <span>了解更多</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 微信AppID配置
+        const WECHAT_APP_ID = 'wx80adbb9e0061ee26';
+        const CALLBACK_URL = 'https://capoo.site/eacy/website/wechat-login-callback.html';
+
+        // 生成微信登录二维码
+        function generateQRCode() {
+            const qrContainer = document.getElementById('qrContainer');
+            const qrLoading = document.getElementById('qrLoading');
+            const qrImage = document.getElementById('qrImage');
+            
+            // 回调地址
+            const redirectUri = encodeURIComponent(CALLBACK_URL);
+            
+            // 状态参数
+            const state = 'STATE_' + Date.now();
+            
+            // 构建微信授权URL
+            const authUrl = `https://open.weixin.qq.com/connect/oauth2/authorize?appid=${WECHAT_APP_ID}&redirect_uri=${redirectUri}&response_type=code&scope=snsapi_userinfo&state=${state}&forcePopup=true#wechat_redirect`;
+            
+            console.log('授权URL:', authUrl);
+            
+            try {
+                // 使用在线二维码生成API
+                const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(authUrl)}`;
+                
+                // 创建图片元素
+                const img = document.createElement('img');
+                img.src = qrApiUrl;
+                img.alt = '微信登录二维码';
+                
+                img.onload = function() {
+                    qrLoading.style.display = 'none';
+                    qrImage.style.display = 'block';
+                    qrImage.innerHTML = '';
+                    qrImage.appendChild(img);
+                };
+                
+                img.onerror = function() {
+                    qrLoading.textContent = '二维码加载失败，请刷新页面';
+                };
+                
+            } catch (error) {
+                qrLoading.textContent = '生成二维码失败';
+                console.error('二维码生成错误:', error);
+            }
+        }
+
+        // 页面加载时生成二维码
+        window.onload = function() {
+            generateQRCode();
+        };
+    </script>
+</body>
+</html>
+
