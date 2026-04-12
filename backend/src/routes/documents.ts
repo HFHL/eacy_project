@@ -74,6 +74,15 @@ function now() {
   return new Date().toISOString()
 }
 
+function safeParseMetadata(raw: string | null | undefined): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw ?? '{}')
+    return v != null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
 /** 获取默认 schema 的 UUID id */
 function getDefaultSchemaId(): string | null {
   const row = db.prepare(
@@ -96,7 +105,7 @@ function getJobStatus(documentId: string, jobType: string): string {
 function serialize(row: DocumentRecord) {
   return {
     ...row,
-    metadata: JSON.parse(row.metadata ?? '{}'),
+    metadata: safeParseMetadata(row.metadata),
   }
 }
 
@@ -408,41 +417,51 @@ router.post('/complete', async (req: Request, res: Response) => {
  * GET /api/v1/documents
  */
 router.get('/', (req: Request, res: Response) => {
-  const { patientId, status, ids } = req.query
+  try {
+    const { patientId, status, ids } = req.query
 
-  let sql = `SELECT * FROM documents WHERE status != 'deleted'`
-  const params: string[] = []
+    let sql = `SELECT * FROM documents WHERE status != 'deleted'`
+    const params: string[] = []
 
-  if (patientId) {
-    sql += ` AND patient_id = ?`
-    params.push(String(patientId))
-  }
-  if (status) {
-    sql += ` AND status = ?`
-    params.push(String(status))
-  }
-  // 支持按 id 列表过滤（逗号分隔）
-  if (ids) {
-    const idList = String(ids).split(',')
-    const placeholders = idList.map(() => '?').join(',')
-    sql += ` AND id IN (${placeholders})`
-    params.push(...idList)
-  }
-  sql += ` ORDER BY created_at DESC`
+    if (patientId) {
+      sql += ` AND patient_id = ?`
+      params.push(String(patientId))
+    }
+    if (status) {
+      sql += ` AND status = ?`
+      params.push(String(status))
+    }
+    // 支持按 id 列表过滤（逗号分隔）
+    if (ids) {
+      const idList = String(ids).split(',')
+      const placeholders = idList.map(() => '?').join(',')
+      sql += ` AND id IN (${placeholders})`
+      params.push(...idList)
+    }
+    sql += ` ORDER BY created_at DESC`
 
-  const rows = db.prepare(sql).all(...params) as any[]
-  // 返回完整的流水线状态字段
-  return res.json({
-    success: true, code: 0, message: 'ok',
-    data: rows.map(row => ({
-      ...row,
-      metadata: JSON.parse(row.metadata ?? '{}'),
-      // 确保流水线状态字段始终存在
-      meta_status: row.meta_status ?? 'pending',
-      extract_status: getJobStatus(row.id, 'extract'),
-      materialize_status: getJobStatus(row.id, 'materialize'),
-    })),
-  })
+    const rows = db.prepare(sql).all(...params) as any[]
+    // 返回完整的流水线状态字段
+    return res.json({
+      success: true, code: 0, message: 'ok',
+      data: rows.map(row => ({
+        ...row,
+        metadata: safeParseMetadata(row.metadata),
+        // 确保流水线状态字段始终存在
+        meta_status: row.meta_status ?? 'pending',
+        extract_status: getJobStatus(row.id, 'extract'),
+        materialize_status: getJobStatus(row.id, 'materialize'),
+      })),
+    })
+  } catch (err: any) {
+    console.error('[GET /documents]', err)
+    return res.status(500).json({
+      success: false,
+      code: 500,
+      message: err?.message || '服务器错误',
+      data: null,
+    })
+  }
 })
 
 /**

@@ -35,18 +35,18 @@ def main():
     added = []
     for col_name, col_def in COLUMNS:
         if col_name in existing:
-            print(f"  ✓ 列 {col_name} 已存在，跳过")
+            print(f"  [skip] column {col_name} already exists")
             continue
         sql = f"ALTER TABLE documents ADD COLUMN {col_name} {col_def}"
         cur.execute(sql)
         added.append(col_name)
-        print(f"  + 新增列 {col_name}")
+        print(f"  [add] column {col_name}")
 
     if added:
         conn.commit()
-        print(f"\n✅ 成功新增 {len(added)} 列: {', '.join(added)}")
+        print(f"\nOK: added {len(added)} column(s): {', '.join(added)}")
     else:
-        print("\n✅ 所有列均已存在，无需变更")
+        print("\nOK: no column changes needed")
 
     # 回填现有数据：
     # 已经有 metadata 且非空的文档 → meta_status = 'completed'
@@ -95,7 +95,7 @@ def main():
         pass  # instance_documents 可能还不存在
 
     conn.commit()
-    print("✅ 数据回填完成")
+    print("OK: backfill done")
     conn.close()
 
 

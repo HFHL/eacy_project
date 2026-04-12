@@ -1,0 +1,5 @@
+# Daemon 仅派发 OCR + metadata_extractor；与单 conda 解释器用法对齐
+-r ../ocr-worker/requirements.txt
+jsonschema>=4.20
+openai>=1.0
+tenacity>=8.2

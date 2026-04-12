@@ -1,0 +1,8 @@
+# metadata_extractor_worker + ehr_pipeline / EhrExtractorAgent
+python-dotenv>=1.0
+jsonschema>=4.20
+openai>=1.0
+tenacity>=8.2
+litellm>=1.0
+google-adk>=1.0
+google-genai>=1.0

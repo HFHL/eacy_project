@@ -188,6 +188,33 @@ export class SchemaValidator {
   }
 
   /**
+   * 叶子字段在 JSON Schema 中的「有效类型」：
+   * - 支持 integer、type 为数组（如 ["string","null"]）
+   * - 支持仅 allOf/oneOf/anyOf/$ref、无顶层 type（临床 schema 里常见 enum 引用写法）
+   */
+  _effectiveLeafFieldType(fieldSchema) {
+    if (!fieldSchema || typeof fieldSchema !== 'object') return undefined;
+    const t = fieldSchema.type;
+    const primitives = ['string', 'number', 'integer', 'boolean', 'array'];
+    if (Array.isArray(t)) {
+      const hit = t.filter((x) => primitives.includes(x));
+      if (hit.length) return hit[0];
+      return undefined;
+    }
+    if (t && primitives.includes(t)) return t;
+    // 无 type：嵌套 object（缺省 type）交给下方「子表格」分支；此处只认标量组合写法
+    if (
+      Array.isArray(fieldSchema.allOf) && fieldSchema.allOf.length > 0 ||
+      Array.isArray(fieldSchema.anyOf) && fieldSchema.anyOf.length > 0 ||
+      Array.isArray(fieldSchema.oneOf) && fieldSchema.oneOf.length > 0 ||
+      typeof fieldSchema.$ref === 'string'
+    ) {
+      return 'string';
+    }
+    return undefined;
+  }
+
+  /**
    * 验证字段
    */
   _validateFields(properties, folderName, groupName) {
@@ -199,10 +226,20 @@ export class SchemaValidator {
           (fieldSchema.type === 'array' && fieldSchema.items?.type === 'object')) {
         continue;
       }
+      // 缺省 type 但有 properties → 按嵌套对象（子表）处理，不参与叶子类型校验
+      if (
+        fieldSchema.properties &&
+        typeof fieldSchema.properties === 'object' &&
+        Object.keys(fieldSchema.properties).length > 0 &&
+        fieldSchema.type !== 'array'
+      ) {
+        continue;
+      }
 
-      // 验证字段类型
-      const validTypes = ['string', 'number', 'boolean', 'array'];
-      if (!validTypes.includes(fieldSchema.type)) {
+      // 验证字段类型（与 SchemaParser 对 allOf/$ref 的推断一致）
+      const validTypes = ['string', 'number', 'integer', 'boolean', 'array'];
+      const effective = this._effectiveLeafFieldType(fieldSchema);
+      if (!effective || !validTypes.includes(effective)) {
         errors.push({
           message: `字段"${folderName}.${groupName}.${fieldName}"的类型无效`,
           path: `properties.${folderName}.properties.${groupName}.properties.${fieldName}.type`

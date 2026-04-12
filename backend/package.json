@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "db:init": "node sql/initDatabase.mjs"
   },
   "dependencies": {
     "@types/ali-oss": "^6.23.3",

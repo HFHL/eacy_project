@@ -53,7 +53,7 @@ const SUPPORTED_TYPES = [
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
 
-const POLL_INTERVAL = 3000 // 3秒
+const POLL_INTERVAL = 2000 // 2秒：OCR/元数据阶段后端无细粒度进度，靠轮询刷新状态
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
@@ -158,8 +158,9 @@ function FileRow({ file, onDelete, onRetry, deletingId, onClick }) {
     if (file.uploadStatus !== 'success') return { status: 'waiting', percent: 0 }
     const s = file.serverStatus
     if (!s || s === 'pending_upload' || s === 'uploaded') return { status: 'waiting', percent: 0 }
-    if (s === 'ocr_pending') return { status: 'waiting', percent: 0 }
-    if (s === 'ocr_running') return { status: 'running', percent: 50 }
+    // ocr_pending：daemon 已排队或即将执行，与「等待中 0%」区分，避免进度条看起来卡住
+    if (s === 'ocr_pending') return { status: 'running', percent: 28 }
+    if (s === 'ocr_running') return { status: 'running', percent: 62 }
     if (s === 'ocr_succeeded') return { status: 'success', percent: 100 }
     if (s === 'ocr_failed') return { status: 'failed', percent: 100 }
     // 后续状态说明 OCR 已完成
@@ -169,8 +170,8 @@ function FileRow({ file, onDelete, onRetry, deletingId, onClick }) {
   const metaStage = (() => {
     if (ocrStage.status !== 'success') return { status: 'waiting', percent: 0 }
     const m = file.metaStatus || 'pending'
-    if (m === 'pending') return { status: 'waiting', percent: 0 }
-    if (m === 'running') return { status: 'running', percent: 50 }
+    if (m === 'pending') return { status: 'running', percent: 30 }
+    if (m === 'running') return { status: 'running', percent: 65 }
     if (m === 'completed') return { status: 'success', percent: 100 }
     if (m === 'failed') return { status: 'failed', percent: 100 }
     return { status: 'waiting', percent: 0 }
@@ -384,6 +385,7 @@ const DocumentUpload = () => {
     )
 
     if (hasActiveDocs && !pollingRef.current) {
+      pollStatus() // 立即拉一次，避免首屏要等一个整间隔才更新
       pollingRef.current = setInterval(pollStatus, POLL_INTERVAL)
     }
 

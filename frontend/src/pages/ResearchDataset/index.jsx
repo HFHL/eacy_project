@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { getProjects, createProject, updateProject, deleteProject, toggleProjectStatus, enrollPatient } from '../../api/project'
-import { getCRFTemplates, assignTemplateToProject, getCRFTemplate, importCrfTemplateFromCsv, deleteCrfTemplate, listCrfTemplateVersions, activateCrfTemplateVersion, cloneCrfTemplate, convertTemplate } from '../../api/crfTemplate'
+import { getProjects, createProject, updateProject, deleteProject, toggleProjectStatus } from '../../api/project'
+import { getCRFTemplates, getCRFTemplate, importCrfTemplateFromCsv, deleteCrfTemplate, listCrfTemplateVersions, activateCrfTemplateVersion, cloneCrfTemplate, convertTemplate } from '../../api/crfTemplate'
 import { getPatientList } from '../../api/patient'
 import {
   Card,
@@ -122,6 +122,8 @@ const ResearchDataset = () => {
   
   // CRF 模板状态
   const [crfTemplates, setCrfTemplates] = useState([])
+  /** API 可能返回分页对象，历史上 mock 曾把 data 设成非数组；统一成数组再参与 .map/.filter */
+  const crfTemplateList = Array.isArray(crfTemplates) ? crfTemplates : []
   const [templatesLoading, setTemplatesLoading] = useState(false)
   const [importTemplateVisible, setImportTemplateVisible] = useState(false)
   const [importingTemplate, setImportingTemplate] = useState(false)
@@ -195,10 +197,19 @@ const ResearchDataset = () => {
     try {
       const response = await getCRFTemplates()
       if (response.success) {
-        setCrfTemplates(response.data || [])
+        const raw = response.data
+        const list = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.items)
+            ? raw.items
+            : []
+        setCrfTemplates(list)
+      } else {
+        setCrfTemplates([])
       }
     } catch (error) {
       console.error('获取 CRF 模板列表失败:', error)
+      setCrfTemplates([])
     } finally {
       setTemplatesLoading(false)
     }
@@ -336,70 +347,38 @@ const ResearchDataset = () => {
         setWizardStep(0)  // 返回第一步
         return
       }
-      
+
+      if (!projectForm.crfTemplate || projectForm.crfTemplate === 'custom') {
+        message.error('请选择 CRF 模板（第二步）')
+        setWizardStep(1)
+        return
+      }
+
+      const patient_ids = Array.isArray(projectForm.selectedPatients)
+        ? projectForm.selectedPatients.map((p) => p.id).filter(Boolean)
+        : []
+
       const projectCreateData = {
         project_name: basicInfo.project_name,
         description: basicInfo.description || '',
         principal_investigator_id: basicInfo.principal_investigator_id || null,
-        expected_patient_count: basicInfo.expected_patient_count ? parseInt(basicInfo.expected_patient_count) : null,
-        start_date: basicInfo.project_period?.[0]?.format('YYYY-MM-DD') || null,
-        end_date: basicInfo.project_period?.[1]?.format('YYYY-MM-DD') || null,
-        crf_template_id: null,
-        patient_criteria: {},
+        schema_id: projectForm.crfTemplate,
+        crf_template_id: projectForm.crfTemplate,
+        status: 'draft',
+        patient_ids,
       }
-      
-      console.log('创建项目数据:', projectCreateData)
-      
+
       const response = await createProject(projectCreateData)
       if (response.success) {
-        const projectId = response.data?.id
-
-        // 将勾选的患者真正入组到项目（写入 /projects/{projectId}/patients/enroll）
-        // 这里必须串行入组：后端默认按“当前人数+1”生成 subject_id，
-        // 并发请求会导致多个患者拿到相同编号（如都为 001）
-        if (projectId && Array.isArray(projectForm.selectedPatients) && projectForm.selectedPatients.length > 0) {
-          let successCount = 0
-          let failCount = 0
-          const failedItems = []
-
-          for (const p of projectForm.selectedPatients) {
-            try {
-              const res = await enrollPatient(projectId, { patient_id: p.id })
-              if (res?.success) {
-                successCount += 1
-              } else {
-                failCount += 1
-                failedItems.push({ patientId: p.id, response: res })
-              }
-            } catch (err) {
-              failCount += 1
-              failedItems.push({ patientId: p.id, error: err?.message || String(err) })
-            }
-          }
-
-          if (failCount > 0) {
-            console.error('部分患者入组失败:', failedItems)
-            message.warning(`项目创建成功：已入组 ${successCount} 人，失败 ${failCount} 人（可在项目内继续添加）`)
-          } else {
-            message.success(`已自动入组 ${successCount} 名患者`)
-          }
-        }
-        
-        // 如果选择了 CRF 模板，关联到项目
-        if (projectId && projectForm.crfTemplate) {
-          try {
-            await assignTemplateToProject(projectId, projectForm.crfTemplate)
-            message.success('项目创建成功，已关联 CRF 模板！')
-          } catch (err) {
-            console.error('关联模板失败:', err)
-            message.warning('项目创建成功，但模板关联失败')
-          }
+        const enrolled = response.data?.enrolled_patient_count ?? patient_ids.length
+        if (patient_ids.length > 0) {
+          message.success(`项目创建成功，已入组 ${enrolled} 名患者`)
         } else {
-          message.success('项目创建成功！')
+          message.success('项目创建成功')
         }
-        
+
         setProjectWizardVisible(false)
-        fetchProjects()  // 刷新列表
+        fetchProjects()
       } else {
         message.error(response.message || '创建项目失败')
       }
@@ -1429,7 +1408,7 @@ const ResearchDataset = () => {
         <Space>
           <FileTextOutlined />
           CRF模版
-          <Badge count={crfTemplates.length} style={{ backgroundColor: '#8b5cf6' }} />
+          <Badge count={crfTemplateList.length} style={{ backgroundColor: '#8b5cf6' }} />
         </Space>
       ),
       children: (
@@ -1479,7 +1458,7 @@ const ResearchDataset = () => {
             </div>
           ) : (
             <List
-              dataSource={crfTemplates}
+              dataSource={crfTemplateList}
               renderItem={item => (
                 <List.Item
                   actions={[
@@ -1503,12 +1482,15 @@ const ResearchDataset = () => {
                       </Tooltip>
                     ),
                     item.source === 'database' && !item.is_system && (
-                      <Button 
-                        type="link"
-                        onClick={() => navigate(`/research/templates/${item.id}/edit`)}
-                      >
-                        编辑
-                      </Button>
+                      <Tooltip title="进入表单设计器，从 schema 自动还原表单结构">
+                        <Button
+                          type="link"
+                          icon={<EditOutlined />}
+                          onClick={() => navigate(`/research/templates/${item.id}/edit`)}
+                        >
+                          编辑
+                        </Button>
+                      </Tooltip>
                     ),
                     item.source === 'database' && !item.is_system && (
                       <Button
@@ -1562,7 +1544,9 @@ const ResearchDataset = () => {
                         {item.description && (
                           <div style={{ marginTop: 4 }}>
                             <Text type="secondary" style={{ fontSize: 12 }}>
-                              {item.description.substring(0, 80)}...
+                              {item.description.length > 80
+                                ? `${item.description.substring(0, 80)}…`
+                                : item.description}
                             </Text>
                           </div>
                         )}
@@ -1574,7 +1558,7 @@ const ResearchDataset = () => {
             />
           )}
           
-          {crfTemplates.length === 0 && !templatesLoading && (
+          {crfTemplateList.length === 0 && !templatesLoading && (
             <div style={{ textAlign: 'center', padding: 40 }}>
               <Text type="secondary">暂无 CRF 模版</Text>
             </div>
@@ -1683,10 +1667,10 @@ const ResearchDataset = () => {
                   <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 14 }}>CRF模版</Text>
                 </div>
                 <div style={{ fontSize: 24, fontWeight: 'bold', marginBottom: 4 }}>
-                  {crfTemplates.length}
+                  {crfTemplateList.length}
                 </div>
                 <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>
-                  已发布: {crfTemplates.filter(t => t.is_published).length}个
+                  已发布: {crfTemplateList.filter(t => t.is_published).length}个
                 </Text>
               </div>
             </Col>
@@ -1844,7 +1828,7 @@ const ResearchDataset = () => {
                 </div>
               ) : (
                 <Row gutter={[16, 16]}>
-                  {crfTemplates.map(template => {
+                  {crfTemplateList.map(template => {
                     const isSelected = projectForm.crfTemplate === template.id
                     const iconColor = template.category === '肺癌' ? '#1677ff' : 
                                      template.category === '糖尿病' ? '#52c41a' :
@@ -1926,7 +1910,7 @@ const ResearchDataset = () => {
               {projectForm.crfTemplate && projectForm.crfTemplate !== 'custom' && (
                 <Card size="small" style={{ marginTop: 16 }} title="已选择的模版">
                   {(() => {
-                    const selected = crfTemplates.find(t => t.id === projectForm.crfTemplate)
+                    const selected = crfTemplateList.find(t => t.id === projectForm.crfTemplate)
                     if (!selected) return null
                     return (
                       <div>

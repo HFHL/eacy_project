@@ -5,9 +5,10 @@ const router = Router()
 
 router.get('/', (req: Request, res: Response) => {
   try {
-    const { page = 1, page_size = 20, search } = req.query
-    const limit = Number(page_size)
-    const offset = (Number(page) - 1) * limit
+    const { page = 1, page_size = 20, search, project_id } = req.query
+    const pageNum = Math.max(1, Number(page) || 1)
+    const limit = Math.min(200, Math.max(1, Number(page_size) || 20))
+    const offset = (pageNum - 1) * limit
 
     let sql = `SELECT * FROM patients`
     const params: string[] = []
@@ -18,8 +19,8 @@ router.get('/', (req: Request, res: Response) => {
     }
 
     sql += ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
-    params.push(limit.toString())
-    params.push(offset.toString())
+    params.push(String(limit))
+    params.push(String(offset))
 
     const rows = db.prepare(sql).all(...params) as any[]
     
@@ -32,6 +33,25 @@ router.get('/', (req: Request, res: Response) => {
     }
     const countRow = db.prepare(countSql).get(...countParams) as any
     const total = countRow.count
+
+    const filterProjectId =
+      project_id != null && String(project_id).trim() !== '' ? String(project_id).trim() : ''
+    let enrolledSet = new Set<string>()
+    let filterProjectName = ''
+    if (filterProjectId) {
+      try {
+        const pr = db.prepare(`SELECT project_name FROM projects WHERE id = ?`).get(filterProjectId) as
+          | { project_name: string }
+          | undefined
+        filterProjectName = pr?.project_name || ''
+        const enrolledRows = db
+          .prepare(`SELECT patient_id FROM project_patients WHERE project_id = ?`)
+          .all(filterProjectId) as { patient_id: string }[]
+        enrolledSet = new Set(enrolledRows.map((x) => x.patient_id))
+      } catch {
+        enrolledSet = new Set()
+      }
+    }
 
     const stmtDocCount = db.prepare(`SELECT COUNT(*) as cnt FROM documents WHERE patient_id = ? AND status != 'deleted'`)
 
@@ -67,7 +87,15 @@ router.get('/', (req: Request, res: Response) => {
         pending_field_conflict_count: 0,
         has_pending_field_conflicts: false,
         data_completeness: data_completeness.toFixed(1),
-        projects: [],
+        projects: enrolledSet.has(r.id)
+          ? [
+              {
+                id: filterProjectId,
+                project_name: filterProjectName,
+                enrollment_status: 'enrolled',
+              },
+            ]
+          : [],
         updated_at: r.updated_at,
         created_at: r.created_at,
         status: 'active'
@@ -83,7 +111,7 @@ router.get('/', (req: Request, res: Response) => {
       data,
       pagination: {
         total,
-        page: Number(page),
+        page: pageNum,
         page_size: limit
       },
       statistics: {

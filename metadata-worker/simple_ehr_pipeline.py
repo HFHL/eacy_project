@@ -822,6 +822,15 @@ class SimpleEhrPipeline:
                 include_failed=include_failed,
             )
 
+        pending_n = len([d for d in docs if d])
+        logger.info(
+            "待处理队列: %d 条 | schema=%s | limit=%s | include_failed=%s",
+            pending_n,
+            schema_code,
+            limit,
+            include_failed,
+        )
+
         outputs: List[Dict[str, Any]] = []
         for doc in docs:
             if not doc:
@@ -841,6 +850,18 @@ class SimpleEhrPipeline:
                         "error": str(exc),
                     }
                 )
+
+        done = sum(1 for o in outputs if o.get("extract_status") == "completed")
+        failed = sum(1 for o in outputs if o.get("extract_status") == "failed")
+        skipped = sum(1 for o in outputs if o.get("status") == "skipped")
+        logger.info(
+            "本轮结束 | 待处理=%d | 实际输出=%d | 抽取完成=%d | 失败=%d | 跳过=%d",
+            pending_n,
+            len(outputs),
+            done,
+            failed,
+            skipped,
+        )
         return outputs
 
     def _extract_document(self, document: Dict[str, Any], schema_rec: Dict[str, Any]) -> Dict[str, Any]:
@@ -1077,10 +1098,21 @@ class SimpleEhrPipeline:
 
 
 def _setup_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    """
+    为本 logger 单独挂 StreamHandler。
+    若先 import 了 google.adk 等库，它们可能已调用过 basicConfig，此时再 basicConfig 不会生效，
+    导致控制台看不到 simple-ehr-pipeline 的 INFO。
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    log = logging.getLogger("simple-ehr-pipeline")
+    log.setLevel(level)
+    log.handlers.clear()
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    handler.setFormatter(fmt)
+    log.addHandler(handler)
+    log.propagate = False
 
 
 
@@ -1133,6 +1165,7 @@ def main() -> None:
             )
         except Exception:
             logger.exception("轮询执行异常")
+        logger.info("休眠 %s 秒后继续扫描…", args.interval)
         time.sleep(args.interval)
 
 

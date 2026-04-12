@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 """
-EHR Extractor Agent — 基于 Google ADK + Prefect 的电子病历结构化抽取器
+EHR Extractor Agent — 基于 Google ADK 的电子病历结构化抽取器
 
 目标：
 1. 保持与原 DocumentCRFExtractor.extract_single_document 基本兼容的输入输出接口。
 2. 使用 Google ADK 负责单个 task root 的 LLM 抽取与格式自修复。
-3. 使用 Prefect 对 task root 抽取过程做可观测编排（当前默认串行，便于稳定接入）。
+3. task root 抽取在进程内串行执行（不依赖 Prefect Server；与 .env 中供 OCR 使用的 PREFECT_API_URL 解耦）。
 4. 支持基于大 schema 自动发现 task roots，并按 x-sources 过滤当前文档是否适合抽取。
 
 说明：
@@ -25,8 +25,6 @@ from collections import defaultdict
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
-
-from prefect import flow, task, get_run_logger
 
 from google.adk.agents import LlmAgent, LoopAgent
 from google.adk.agents.base_agent import BaseAgent
@@ -636,8 +634,7 @@ async def _extract_single_task_adk(
 
 _GLOBAL_PAYLOAD_STORE: Dict[str, Any] = {}
 
-# Prefect 包装：当前默认串行，后续可改并发 submit
-@task(name="extract-ehr-task-root")
+# 进程内串行执行（不经过 Prefect Server，避免 .env 里 PREFECT_API_URL=4200 导致连接失败）
 def _extract_task_sync(payload_id: str, task_idx: int) -> Dict[str, Any]:
     shared = _GLOBAL_PAYLOAD_STORE.get(payload_id)
     if not shared:
@@ -650,16 +647,14 @@ def _extract_task_sync(payload_id: str, task_idx: int) -> Dict[str, Any]:
     return asyncio.run(_extract_single_task_adk(**payload))
 
 
-@flow(name="ehr-extract-document-flow", log_prints=False, validate_parameters=False)
 def _extract_document_flow(payload_id: str) -> List[Dict[str, Any]]:
-    flow_logger = get_run_logger()
     outputs: List[Dict[str, Any]] = []
     shared = _GLOBAL_PAYLOAD_STORE.get(payload_id)
     if not shared:
         raise RuntimeError(f"未找到 payload_id: {payload_id}")
     tasks = shared["tasks"]
     for i, t in enumerate(tasks):
-        flow_logger.info("开始 task root: %s", t.get("task_name"))
+        logger.info("[ehr-flow] 开始 task root: %s", t.get("task_name"))
         outputs.append(_extract_task_sync(payload_id, i))
     return outputs
 

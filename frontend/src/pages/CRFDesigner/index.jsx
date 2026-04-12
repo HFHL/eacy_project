@@ -187,9 +187,15 @@ const CRFDesigner = () => {
       setTemplateInfoVisible(true)
       return
     }
+    let cancelled = false
     const loadTemplate = async () => {
       try {
         const res = await getCRFTemplate(templateId)
+        if (cancelled) return
+        if (!res?.success) {
+          message.error(res?.message || '加载模板失败')
+          return
+        }
         const tpl = res?.data
         if (!tpl) return
         const nextTemplateInfo = {
@@ -197,7 +203,7 @@ const CRFDesigner = () => {
           name: tpl.template_name || tpl.name || '未命名模板',
           category: tpl.category || '通用',
           description: tpl.description || '',
-          version: tpl.version ? String(tpl.version) : '1',
+          version: tpl.version != null ? String(tpl.version) : '1',
           status: tpl.is_published ? 'published' : 'draft'
         }
         setTemplateInfo(nextTemplateInfo)
@@ -209,13 +215,39 @@ const CRFDesigner = () => {
 
         const layoutCfg = tpl.layout_config && typeof tpl.layout_config === 'object' ? tpl.layout_config : null
         const designer = layoutCfg?.designer || tpl.designer
-        const schema = layoutCfg?.schema_json || tpl.schema_json
-        await loadTemplateIntoDesigner(formDesignerRef, { designer, schema, mode: 'auto' })
+        let schema = layoutCfg?.schema_json || tpl.schema_json || tpl.content_json
+        if (typeof schema === 'string') {
+          try {
+            schema = JSON.parse(schema)
+          } catch {
+            schema = null
+          }
+        }
+
+        const mode = schema && (!designer?.folders?.length) ? 'schema' : 'auto'
+        const tryInject = async () => {
+          for (let i = 0; i < 20 && !cancelled; i++) {
+            if (formDesignerRef.current) {
+              await loadTemplateIntoDesigner(formDesignerRef, { designer, schema, mode })
+              return true
+            }
+            await new Promise((r) => setTimeout(r, 50))
+          }
+          return false
+        }
+        if (!(await tryInject()) && !cancelled) {
+          message.warning('设计器尚未就绪，请稍后点击「重置」或刷新页面重试')
+        }
       } catch (error) {
-        message.error(`加载模板失败: ${error.message}`)
+        if (!cancelled) {
+          message.error(`加载模板失败: ${error.message}`)
+        }
       }
     }
     loadTemplate()
+    return () => {
+      cancelled = true
+    }
   }, [templateId, templateForm])
 
   return (

@@ -2,6 +2,8 @@ import { Router } from 'express'
 import { notImplemented } from './notImplemented.js'
 import documentsRouter from './documents.js'
 import archiveBatchesRouter from './archiveBatches.js'
+import projectsRouter from './projects.js'
+import schemasRouter from './schemas.js'
 
 const router = Router()
 
@@ -23,7 +25,8 @@ router.use('/patients', patientsRouter)
 router.use('/patients', ehrDataRouter)
 router.use('/documents', documentsRouter)
 router.use('/archive-batches', archiveBatchesRouter)
-router.use('/projects', notImplemented('项目模块'))
+router.use('/schemas', schemasRouter)
+router.use('/projects', projectsRouter)
 router.use('/crf-templates', notImplemented('CRF模板模块'))
 router.use('/stats', notImplemented('统计模块'))
 

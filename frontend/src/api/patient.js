@@ -8,9 +8,30 @@ export const getPatientList = async (params) => {
     if (params?.page_size) query.append('page_size', params.page_size)
     if (params?.search) query.append('search', params.search)
     if (params?.department_id) query.append('department_id', params.department_id)
+    if (params?.project_id) query.append('project_id', params.project_id)
     
     const response = await fetch(`/api/v1/patients?${query.toString()}`)
-    return await response.json()
+    const text = await response.text()
+    if (!text?.trim()) {
+      return {
+        success: false,
+        code: response.status || 500,
+        message: response.status >= 500 ? '服务器错误（空响应）' : `请求失败 (${response.status})`,
+        data: [],
+      }
+    }
+    let json
+    try {
+      json = JSON.parse(text)
+    } catch {
+      return {
+        success: false,
+        code: response.status || 500,
+        message: '响应不是有效的 JSON',
+        data: [],
+      }
+    }
+    return json
   } catch (error) {
     console.error('API Error:', error)
     return { success: false, code: 500, message: error.message, data: [] }

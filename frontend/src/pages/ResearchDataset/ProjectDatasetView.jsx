@@ -163,8 +163,9 @@ const ProjectDatasetView = () => {
     try {
       const response = await getProjectPatients(projectId, { page, page_size: pageSize })
       if (response.success) {
+        const rawList = Array.isArray(response.data) ? response.data : []
         // 转换 API 返回的数据格式为组件需要的格式
-        const patients = response.data.map(patient => {
+        const patients = rawList.map(patient => {
           // 解析 CRF 数据 - 新结构：crfData.groups.{group_id}.fields.{field_id}
           const crfData = patient.crf_data || {}
           const groups = crfData.groups || {}
@@ -296,10 +297,11 @@ const ProjectDatasetView = () => {
           }
         })
         setPatientDataset(patients)
+        const pg = response.pagination || {}
         setPagination({
-          current: response.pagination.page,
-          pageSize: response.pagination.page_size,
-          total: response.pagination.total
+          current: pg.page ?? page,
+          pageSize: pg.page_size ?? pageSize,
+          total: pg.total ?? rawList.length
         })
       } else {
         message.error(response.message || '获取受试者列表失败')
@@ -357,7 +359,8 @@ const ProjectDatasetView = () => {
       const response = await getPatientList({
         page,
         page_size: pageSize,
-        search: search || undefined
+        search: search || undefined,
+        project_id: projectId,
       })
       if (response.success) {
         // 转换数据格式
@@ -387,7 +390,7 @@ const ProjectDatasetView = () => {
     } finally {
       setPatientPoolLoading(false)
     }
-  }, [])
+  }, [projectId])
 
   // 用于追踪轮询是否需要继续
   const pollingRef = useRef(false)
@@ -2022,40 +2025,24 @@ const ProjectDatasetView = () => {
       message.warning('请先选择要添加的患者')
       return
     }
-    
+
     setPatientPoolLoading(true)
     try {
-      let successCount = 0
-      let failedCount = 0
-      const failedPatients = []
-      
-      // 逐个入组患者
-      for (const patientId of selectedNewPatients) {
-        try {
-          const response = await enrollPatient(projectId, { patient_id: patientId })
-          if (response.success) {
-            successCount++
-          } else {
-            failedCount++
-            failedPatients.push(patientId)
-          }
-        } catch (err) {
-          failedCount++
-          failedPatients.push(patientId)
+      const response = await enrollPatient(projectId, { patient_ids: [...selectedNewPatients] })
+      if (response?.success) {
+        const added = response.data?.added ?? selectedNewPatients.length
+        const skipped = response.data?.skipped ?? 0
+        if (skipped > 0) {
+          message.success(`已添加 ${added} 名患者，${skipped} 名已在项目中`)
+        } else {
+          message.success(`成功添加 ${added} 名患者到项目`)
         }
-      }
-      
-      if (successCount > 0) {
-        message.success(`成功添加 ${successCount} 名患者到项目`)
-        // 刷新项目患者列表
-        fetchProjectPatients()
+        fetchProjectPatients(pagination.current, pagination.pageSize)
         fetchProjectDetail()
+      } else {
+        message.error(response?.message || '添加患者失败')
       }
-      
-      if (failedCount > 0) {
-        message.warning(`${failedCount} 名患者添加失败`)
-      }
-      
+
       setPatientSelectionVisible(false)
       setSelectedNewPatients([])
     } catch (error) {

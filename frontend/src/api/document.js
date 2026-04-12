@@ -14,8 +14,22 @@ async function request(url, options = {}) {
     headers: { 'Content-Type': 'application/json', ...options.headers },
     ...options,
   })
-  const json = await res.json()
-  if (!res.ok) throw Object.assign(new Error(json.message || '请求失败'), { response: { data: json } })
+  const text = await res.text()
+  let json = null
+  if (text?.trim()) {
+    try {
+      json = JSON.parse(text)
+    } catch {
+      throw Object.assign(new Error('响应不是有效的 JSON'), { response: { status: res.status, data: null } })
+    }
+  }
+  if (!res.ok) {
+    const msg = json?.message || `请求失败 (${res.status})`
+    throw Object.assign(new Error(msg), { response: { data: json } })
+  }
+  if (json == null) {
+    throw Object.assign(new Error('空响应'), { response: { data: null } })
+  }
   return json
 }
 

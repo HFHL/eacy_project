@@ -7,12 +7,28 @@ CREATE TABLE ehr_schema (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 运行时 EHR/CRF 模板（后端 ehrData、抽取任务等依赖此表；可与 ehr_schema 并存）
+CREATE TABLE schemas (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  code         TEXT NOT NULL,
+  schema_type  TEXT NOT NULL DEFAULT 'ehr',
+  version      INTEGER NOT NULL DEFAULT 1,
+  content_json TEXT NOT NULL DEFAULT '{}',
+  is_active    INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (code, version)
+);
+CREATE INDEX idx_schemas_code ON schemas(code);
+
 CREATE TABLE patients (
     id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    pinyin TEXT NOT NULL,
-    identifier TEXT UNIQUE NOT NULL,      
-    date_of_birth TEXT NOT NULL,
+    name TEXT,
+    pinyin TEXT NOT NULL DEFAULT '',
+    identifier TEXT UNIQUE,
+    date_of_birth TEXT NOT NULL DEFAULT '',
     gender TEXT,                          
     contact_number TEXT,
     address TEXT,
@@ -21,7 +37,8 @@ CREATE TABLE patients (
     emergency_contact_phone TEXT,
     tags TEXT,                            
     avatar_url TEXT,                      
-    status TEXT DEFAULT 'active',         
+    status TEXT DEFAULT 'active',
+    metadata TEXT NOT NULL DEFAULT '{}',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -33,12 +50,28 @@ CREATE TABLE documents (
     patient_id TEXT,
     file_name TEXT NOT NULL,
     file_size INTEGER NOT NULL,
-    file_type TEXT NOT NULL,              
+    file_type TEXT,
     document_type TEXT,                   
     document_sub_type TEXT,               
-    oss_path TEXT NOT NULL,               
-    oss_bucket TEXT NOT NULL,             
-    status TEXT DEFAULT 'uploaded',       
+    oss_path TEXT DEFAULT '',
+    oss_bucket TEXT DEFAULT '',
+    status TEXT DEFAULT 'uploaded',
+
+    mime_type TEXT,
+    object_key TEXT,
+    batch_id TEXT,
+    doc_type TEXT,
+    doc_title TEXT,
+    effective_at TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    raw_text TEXT,
+    error_message TEXT,
+    meta_status TEXT DEFAULT 'pending',
+    meta_error_message TEXT,
+    meta_started_at TEXT,
+    meta_completed_at TEXT,
+    materialize_status TEXT DEFAULT 'pending',
+    ocr_payload TEXT,
     
     ocr_status TEXT DEFAULT 'pending',
     ocr_task_id TEXT,                     
@@ -58,6 +91,10 @@ CREATE TABLE documents (
     uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     process_started_at DATETIME,
     process_completed_at DATETIME,
+
+    -- 与后端 API（documents 路由）一致的时间戳列
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     
     FOREIGN KEY(patient_id) REFERENCES patients(id)
 );
@@ -71,12 +108,33 @@ CREATE TABLE IF NOT EXISTS "alembic_version" (
     version_num VARCHAR(32) NOT NULL, 
     CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
-CREATE TABLE project_schemas (
-    project_id TEXT PRIMARY KEY,
-    schema_json TEXT NOT NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+-- 科研项目主表：CRF 模板 = 运行时 schemas 表中的一条模板（content_json 为表单定义）
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    project_name TEXT NOT NULL,
+    description TEXT,
+    principal_investigator_name TEXT,
+    schema_id TEXT NOT NULL REFERENCES schemas(id),
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+CREATE INDEX idx_projects_schema_id ON projects(schema_id);
+CREATE INDEX idx_projects_status ON projects(status);
+
+-- 受试者入组：多对多（患者可参与多个项目，项目内患者唯一）
+CREATE TABLE project_patients (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    patient_id TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    enrolled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    subject_label TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (project_id, patient_id)
+);
+CREATE INDEX idx_project_patients_project ON project_patients(project_id);
+CREATE INDEX idx_project_patients_patient ON project_patients(patient_id);
+
 CREATE TABLE project_documents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -84,6 +142,7 @@ CREATE TABLE project_documents (
     status TEXT DEFAULT 'pending', -- pending, extracting, completed, failed
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY(document_id) REFERENCES documents(id)
 );
 CREATE INDEX idx_project_docs_project_id ON project_documents(project_id);
@@ -98,7 +157,7 @@ CREATE TABLE project_extractions (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(project_id, document_id, field_path),
-    FOREIGN KEY(project_id) REFERENCES project_schemas(project_id),
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY(document_id) REFERENCES documents(id)
 );
 CREATE TABLE document_archive_batches (
@@ -127,8 +186,10 @@ CREATE INDEX idx_archive_batch_items_batch ON archive_batch_items(batch_id);
 CREATE TABLE schema_instances (
   id             TEXT PRIMARY KEY,
   patient_id     TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
-  schema_id      TEXT NOT NULL,                           -- 关联 ehr_schema 的 schema_id ("patient_ehr-V1")
-  instance_type  TEXT NOT NULL DEFAULT 'patient_ehr',     -- patient_ehr / admission_record ...
+  schema_id      TEXT NOT NULL REFERENCES schemas(id) ON DELETE CASCADE,
+  name           TEXT,
+  instance_type  TEXT NOT NULL DEFAULT 'patient_ehr',
+  status         TEXT NOT NULL DEFAULT 'draft',
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
