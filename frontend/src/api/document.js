@@ -203,8 +203,11 @@ export const createPatientAndArchiveGroup = () => ok({})
 export const moveDocumentToGroup = () => ok({})
 export const uploadAndArchiveToPatient = uploadDocument
 export const uploadAndArchiveAsync = () => ok({ task_id: 'local-task', document_id: 'local-document' })
-export const extractEhrDataAsync = (documentId) =>
-  request(`${API_BASE}/${documentId}/extract-ehr`, { method: 'POST' })
+export const extractEhrDataAsync = (documentId, payload = {}) =>
+  request(`${API_BASE}/${documentId}/extract-ehr`, { 
+    method: 'POST', 
+    body: JSON.stringify(payload) 
+  })
 export const aiMatchPatientAsync = () => ok({ task_id: 'local-task' })
 export const batchAiMatchAsync = () => ok({ task_id: 'local-task', document_count: 0 })
 export const getDocumentTaskProgress = () => ok({ status: 'completed', progress: 100 })

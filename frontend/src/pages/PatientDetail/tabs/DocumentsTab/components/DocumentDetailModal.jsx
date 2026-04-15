@@ -106,6 +106,7 @@ const DocumentDetailModal = forwardRef(({
   const [hasChanges, setHasChanges] = useState(false)
   const [editedFields, setEditedFields] = useState({})
   const [extracting, setExtracting] = useState(false)
+  const [extractProgressMsg, setExtractProgressMsg] = useState('')
   const [extractingMetadata, setExtractingMetadata] = useState(false)
   const [mergeModalVisible, setMergeModalVisible] = useState(false)
   const [extractResult, setExtractResult] = useState(null)
@@ -617,31 +618,76 @@ const DocumentDetailModal = forwardRef(({
       message.warning('文档尚未完成 OCR 解析，请先进行解析')
       return
     }
+
+    const payload = {
+      patient_id: patientId || document.patient_id || document.patientBinding?.patientId,
+      schema_id: 'patient_ehr_v2',
+      instance_type: 'patient_ehr' // 或项目相关的 instance type，按需
+    };
+
+    if (!payload.patient_id) {
+       message.warning('尚未绑定患者，请先关联归档。');
+       return;
+    }
     
     setExtracting(true)
+    setExtractProgressMsg('提交抽取...')
     try {
       console.log('开始异步 AI 抽取，文档ID:', document.id)
-      const response = await extractEhrDataAsync(document.id)
+      const response = await extractEhrDataAsync(document.id, payload)
       console.log('异步 AI 抽取响应:', response)
 
-      if (response.success) {
-        message.success('已启动异步抽取任务，请稍后在抽取记录中查看结果')
-        // 通知父组件刷新，以便后续重新拉取抽取记录
-        onExtractSuccess?.()
-        // 可选：立即刷新一次文档详情，后续由轮询/WS 更新
-        if (document?.id) {
-          fetchDocumentDetail(document.id)
-        }
+      if (response.success && response.data?.job_id) {
+        const jobId = response.data.job_id;
+        
+        // 挂起 SSE 长链
+        const es = new EventSource(`http://localhost:8100/api/extract/${jobId}/progress`);
+        
+        es.onmessage = (event) => {
+          try {
+            const progress = JSON.parse(event.data);
+            if (progress.node === 'start') setExtractProgressMsg('排队中...');
+            if (progress.node === 'load_schema') setExtractProgressMsg('读取表单...');
+            if (progress.node === 'filter_units') setExtractProgressMsg(`准备中 (${progress.completed}/${progress.total})...`);
+            if (progress.node === 'extract_units') setExtractProgressMsg(`AI正抽取 ${progress.completed || 0}/${progress.total || 0}...`);
+            if (progress.node === 'materialize') setExtractProgressMsg('入库中...');
+            
+            if (progress.status === 'completed') {
+              es.close();
+              setExtracting(false);
+              setExtractProgressMsg('');
+              message.success('抽取彻底完成并入库！');
+              onExtractSuccess?.();
+              if (document?.id) fetchDocumentDetail(document.id);
+            } else if (progress.status === 'failed') {
+               es.close();
+               setExtracting(false);
+               setExtractProgressMsg('');
+               message.error('后台流式抽取报告错误: ' + progress.error);
+            }
+          } catch(e) {}
+        };
+        
+        es.onerror = () => {
+           es.close();
+           setExtracting(false);
+           setExtractProgressMsg('');
+           message.warning('进度流连接中断，请手动刷新查看状态');
+        };
+
+        // 不要直接 setExtracting(false)，由 SSE 回调把控结束状态
       } else {
         console.error('AI 抽取任务启动失败:', response.message)
         message.error(response.message || '抽取任务启动失败，请稍后重试')
+        setExtracting(false)
+        setExtractProgressMsg('')
       }
     } catch (error) {
       console.error('AI 抽取异常:', error)
       const errorMsg = error.response?.data?.message || error.message || 'AI 抽取失败'
       message.error(`抽取失败: ${errorMsg}`)
-    } finally {
       setExtracting(false)
+      setExtractProgressMsg('')
     }
   }
 
@@ -1817,7 +1863,7 @@ const DocumentDetailModal = forwardRef(({
                 onClick={handleExtract}
                 loading={extracting}
               >
-                开始抽取
+                {extractProgressMsg || '开始抽取'}
               </Button>
             )}
           </div>
@@ -1834,7 +1880,7 @@ const DocumentDetailModal = forwardRef(({
                   loading={extracting}
                   disabled={!document.isParsed || extracting}
                 >
-                  重新抽取
+                  {extractProgressMsg || '重新抽取'}
                 </Button>
               </Tooltip>
             </div>

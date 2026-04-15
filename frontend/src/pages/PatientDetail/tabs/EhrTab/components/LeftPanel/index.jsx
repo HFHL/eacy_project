@@ -198,7 +198,7 @@ const LeftPanel = ({
                    <FileTextOutlined style={{ fontSize: 14, color: '#1677ff' }} />
                    <div>
                      <Text strong style={{ fontSize: 12 }}>
-                       {doc.document_sub_type || doc.metadata?.documentSubType || doc.metadata?.documentType || doc.category || doc.fileName || doc.name || '未知类型'}
+                       {doc.document_sub_type || doc.metadata?.documentSubtype || doc.metadata?.result?.['文档子类型'] || doc.metadata?.documentType || doc.metadata?.result?.['文档类型'] || doc.category || doc.file_name || doc.fileName || doc.name || '未知类型'}
                      </Text>
                      {doc.status === 'extracted' && <CheckCircleOutlined style={{ color: '#52c41a', marginLeft: 4, fontSize: 10 }} />}
                      {doc.status === 'new' && <Badge count="新" size="small" style={{ marginLeft: 4 }} />}
@@ -207,13 +207,13 @@ const LeftPanel = ({
                </div>
                <div style={{ marginTop: 4 }}>
                  <Text type="secondary" style={{ fontSize: 10 }}>
-                   {doc.document_type || doc.metadata?.documentType || doc.category || ''}
+                   {doc.document_type || doc.metadata?.documentType || doc.metadata?.result?.['文档类型'] || doc.category || ''}
                  </Text>
-                 {(doc.document_type || doc.metadata?.documentType) && (
+                 {(doc.document_type || doc.metadata?.documentType || doc.metadata?.result?.['文档类型']) && (
                    <Text type="secondary" style={{ fontSize: 10 }}> · </Text>
                  )}
                  <Text type="secondary" style={{ fontSize: 10 }}>
-                   {doc.uploadTime?.split(' ')[0] || doc.upload_time?.split('T')[0] || doc.uploadDate || ''}
+                   {doc.uploadTime?.split(' ')[0] || doc.upload_time?.split('T')[0] || doc.uploaded_at?.split('T')[0] || doc.uploadDate || ''}
                  </Text>
                  {doc.extractedFields && doc.extractedFields.length > 0 && (
                    <div style={{ marginTop: 2 }}>

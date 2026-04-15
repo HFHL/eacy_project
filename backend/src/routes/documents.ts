@@ -258,6 +258,17 @@ function buildExtractionRecords(documentId: string): { records: any[], count: nu
   }
 }
 
+/** 触发 Celery 文档流水线 */
+function triggerPipelineProcess(documentId: string, tasks: string[]) {
+  fetch('http://localhost:8100/api/pipeline/process', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document_id: documentId, tasks })
+  }).catch(err => {
+    console.error(`[triggerPipelineProcess] 触发任务失败: document_id=${documentId}, tasks=${tasks}`, err)
+  })
+}
+
 // ─── Prepared statements ──────────────────────────────────────────────────────
 
 const stmtInsert = db.prepare(`
@@ -319,9 +330,13 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
   })
 
   const row = stmtFindById.get(id) as DocumentRecord
+  
+  // 触发后台流水线 (OCR -> Meta)
+  triggerPipelineProcess(id, ['ocr', 'meta'])
+
   return res.status(201).json({
     success: true, code: 0,
-    message: '上传成功，OCR 已排队',
+    message: '上传成功，解析流水线已调度',
     data: serialize(row),
   })
 })
@@ -404,13 +419,16 @@ router.post('/complete', async (req: Request, res: Response) => {
     })
   }
 
-  // 更新为 ocr_pending，pipeline-daemon 会自动发现并触发 OCR
+  // 更新为 ocr_pending
   db.prepare(`
     UPDATE documents SET object_key = ?, status = 'ocr_pending', updated_at = ? WHERE id = ?
   `).run(objectKey, now(), documentId)
 
+  // 触发后台流水线 (OCR -> Meta)
+  triggerPipelineProcess(documentId, ['ocr', 'meta'])
+
   const updated = stmtFindById.get(documentId) as DocumentRecord
-  return res.json({ success: true, code: 0, message: '上传完成，OCR 已排队（daemon 自动调度）', data: serialize(updated) })
+  return res.json({ success: true, code: 0, message: '上传完成，解析流水线已调度', data: serialize(updated) })
 })
 
 /**
@@ -620,10 +638,13 @@ router.post('/:id/extract-metadata', (req: Request, res: Response) => {
     })
   }
 
-  // 重置 meta_status 为 pending，daemon 会自动发现并处理
+  // 重置 meta_status 为 pending
   db.prepare(`
     UPDATE documents SET meta_status = 'pending', meta_error_message = NULL, updated_at = ? WHERE id = ?
   `).run(now(), req.params.id)
+
+  // 仅触发元数据流水线阶段
+  triggerPipelineProcess(req.params.id, ['meta'])
 
   return res.json({
     success: true, code: 0, message: '元数据抽取任务已排队',
@@ -635,7 +656,7 @@ router.post('/:id/extract-metadata', (req: Request, res: Response) => {
  * POST /api/v1/documents/:id/extract-ehr
  * 触发 EHR 结构化抽取（重置 extract_status 让 daemon 自动调度）
  */
-router.post('/:id/extract-ehr', (req: Request, res: Response) => {
+router.post('/:id/extract-ehr', async (req: Request, res: Response) => {
   const row = stmtFindById.get(req.params.id) as DocumentRecord | undefined
 
   if (!row || row.status === 'deleted') {
@@ -649,7 +670,12 @@ router.post('/:id/extract-ehr', (req: Request, res: Response) => {
     })
   }
 
-  const schemaId = getDefaultSchemaId()
+  const patientId = req.body.patient_id || row.patient_id;
+  if (!patientId) {
+    return res.status(400).json({ success: false, code: 400, message: '无可用的 patient_id 绑定', data: null })
+  }
+
+  const schemaId = req.body.schema_id || getDefaultSchemaId();
   if (!schemaId) {
     return res.status(500).json({
       success: false, code: 500,
@@ -657,40 +683,34 @@ router.post('/:id/extract-ehr', (req: Request, res: Response) => {
     })
   }
 
-  // 清除旧的失败 job（如果有），以便重新创建
-  db.prepare(`
-    DELETE FROM ehr_extraction_jobs
-    WHERE document_id = ? AND schema_id = ? AND job_type = 'extract' AND status IN ('failed', 'completed')
-  `).run(req.params.id, schemaId)
-
-  // 插入新的 pending job（部分唯一索引保证幂等）
-  const jobId = `job_${randomUUID().replace(/-/g, '')}`
   try {
-    db.prepare(`
-      INSERT INTO ehr_extraction_jobs
-        (id, document_id, patient_id, schema_id, job_type, status,
-         attempt_count, max_attempts, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'extract', 'pending', 0, 3, ?, ?)
-    `).run(jobId, req.params.id, row.patient_id, schemaId, now(), now())
-  } catch (e: any) {
-    if (e.message?.includes('UNIQUE constraint')) {
-      return res.json({
-        success: true, code: 0, message: 'EHR 抽取任务已在队列中',
-        data: { status: 'pending', document_id: req.params.id }
-      })
+    const payload = {
+      patient_id: patientId,
+      schema_id: schemaId,
+      document_ids: [req.params.id],
+      instance_type: req.body.instance_type || 'patient_ehr'
+    };
+
+    const response = await fetch('http://localhost:8100/api/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).json({ success: false, code: response.status, message: errorText, data: null });
     }
-    throw e
+
+    const responseData = await response.json();
+
+    return res.json({
+      success: true, code: 0, message: 'EHR 抽取任务已排队',
+      data: { status: 'pending', document_id: req.params.id, job_id: responseData.job_id, celery_task_id: responseData.celery_task_id }
+    });
+  } catch (e: any) {
+    return res.status(500).json({ success: false, code: 500, message: e.message, data: null });
   }
-
-  // 同时重置 documents 表的旧字段（兼容）
-  db.prepare(`
-    UPDATE documents SET extract_status = 'pending', extract_error_message = NULL, extract_result_json = NULL, updated_at = ? WHERE id = ?
-  `).run(now(), req.params.id)
-
-  return res.json({
-    success: true, code: 0, message: 'EHR 抽取任务已排队',
-    data: { status: 'pending', document_id: req.params.id, job_id: jobId }
-  })
 })
 
 /**
@@ -704,7 +724,7 @@ router.post('/:id/reparse', (req: Request, res: Response) => {
     return res.status(404).json({ success: false, code: 404, message: '文档不存在', data: null })
   }
 
-  // 重置为 ocr_pending，daemon 会自动发现并重新 OCR
+  // 重置为 ocr_pending
   db.prepare(`
     UPDATE documents SET status = 'ocr_pending', raw_text = NULL, ocr_payload = NULL, 
       meta_status = 'pending', extract_status = 'pending', updated_at = ? WHERE id = ?
@@ -719,8 +739,11 @@ router.post('/:id/reparse', (req: Request, res: Response) => {
     `).run(req.params.id, schemaId)
   }
 
+  // 触发后台流水线 (OCR -> Meta)
+  triggerPipelineProcess(req.params.id, ['ocr', 'meta'])
+
   return res.json({
-    success: true, code: 0, message: '重新解析任务已排队',
+    success: true, code: 0, message: '重新解析任务已调度',
     data: { status: 'ocr_pending', document_id: req.params.id }
   })
 })
@@ -1006,8 +1029,6 @@ router.post('/archive-to-patient', (req: Request, res: Response) => {
   try {
     const archivedIds = archiveTransaction()
 
-    // 归档成功后，daemon 会自动发现已归档文档并通过 ehr_extraction_jobs 创建 materialize job
-
     return res.json({
       success: true,
       code: 0,
@@ -1134,8 +1155,6 @@ router.post('/create-patient-and-archive', (req: Request, res: Response) => {
 
   try {
     const result = tx()
-
-    // 归档成功后，daemon 会自动发现已归档文档并通过 ehr_extraction_jobs 创建 materialize job
 
     return res.json({
       success: true,

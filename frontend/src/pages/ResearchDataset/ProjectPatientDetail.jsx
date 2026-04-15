@@ -101,12 +101,73 @@ const ProjectPatientDetail = () => {
   const [previewTitle, setPreviewTitle] = useState('')
   const [previewAudit, setPreviewAudit] = useState(null)
 
-  // 将 crf_data 的 _task_results 和 groups 转换为 SchemaForm 期望的 _extraction_metadata 格式
+  function normalizePathWithSchema(rootSchema, rawPath) {
+    if (!rootSchema || !Array.isArray(rawPath) || rawPath.length === 0) return rawPath
+
+    const normalized = []
+    let currentSchema = rootSchema
+    let idx = 0
+
+    while (idx < rawPath.length) {
+      const seg = String(rawPath[idx])
+
+      if (
+        currentSchema?.type === 'array' &&
+        currentSchema?.items?.type === 'object' &&
+        currentSchema?.items?.properties &&
+        !/^\d+$/.test(seg)
+      ) {
+        normalized.push('0')
+        currentSchema = currentSchema.items
+        continue
+      }
+
+      if (currentSchema?.properties?.[seg]) {
+        normalized.push(seg)
+        currentSchema = currentSchema.properties[seg]
+        idx += 1
+        continue
+      }
+
+      if (currentSchema?.items?.properties?.[seg]) {
+        normalized.push(seg)
+        currentSchema = currentSchema.items.properties[seg]
+        idx += 1
+        continue
+      }
+
+      normalized.push(seg)
+      currentSchema = null
+      idx += 1
+    }
+
+    return normalized
+  }
+
+  function setNestedValueByPath(target, path, value) {
+    if (!target || !Array.isArray(path) || path.length === 0) return
+    let current = target
+    for (let i = 0; i < path.length - 1; i++) {
+      const seg = path[i]
+      const nextSeg = path[i + 1]
+      const nextIsIndex = /^\d+$/.test(String(nextSeg))
+      if (current[seg] == null) {
+        current[seg] = nextIsIndex ? [] : {}
+      }
+      current = current[seg]
+    }
+    current[path[path.length - 1]] = value
+  }
+
+  // 将 crf_data 的 groups 重建为 SchemaForm 可消费的数据树，并附带抽取元信息
   const schemaData = useMemo(() => {
-    const data = crfData?.data || {}
+    const data = crfData?.data && typeof crfData.data === 'object' ? { ...crfData.data } : {}
     const taskResults = crfData?._task_results || []
     const documents = crfData?._documents || {}
     const groups = crfData?.groups || {}
+    const projectSchema = projectInfo?.schema_json && typeof projectInfo.schema_json === 'object'
+      ? projectInfo.schema_json
+      : null
     
     // 合并所有溯源信息到统一的 _extraction_metadata
     const allFields = {}
@@ -157,27 +218,18 @@ const ProjectPatientDetail = () => {
       }
     }
     
-    // 3. 用 groups 的权威值修补 data 中的标量字段（合并冲突时 groups 保留旧值，data 被覆盖）
-    for (const [, groupData] of Object.entries(groups)) {
+    // 3. 从 groups 的 field_path/value 还原出 SchemaForm 需要的嵌套 patientData
+    for (const [groupId, groupData] of Object.entries(groups)) {
       const fields = groupData?.fields
       if (!fields || typeof fields !== 'object') continue
       for (const [fieldKey, fieldData] of Object.entries(fields)) {
         if (fieldKey.startsWith('_') || !fieldData || typeof fieldData !== 'object') continue
         const val = fieldData.value
-        if (val === undefined || val === null || val === '' || typeof val === 'object') continue
-        const parts = fieldKey.split('/')
-        let node = data
-        let valid = true
-        for (let i = 0; i < parts.length - 1; i++) {
-          if (!node || typeof node !== 'object' || Array.isArray(node) || !(parts[i] in node)) {
-            valid = false
-            break
-          }
-          node = node[parts[i]]
-        }
-        if (valid && node && typeof node === 'object' && !Array.isArray(node)) {
-          node[parts[parts.length - 1]] = val
-        }
+        if (val === undefined || val === null || val === '') continue
+
+        const parts = [groupId, ...String(fieldKey).split('/').filter(Boolean)]
+        const normalizedParts = normalizePathWithSchema(projectSchema, parts)
+        setNestedValueByPath(data, normalizedParts, val)
       }
     }
 
@@ -195,9 +247,14 @@ const ProjectPatientDetail = () => {
       // 将 _change_logs 透传给 SchemaForm，供修改历史面板直接读取（无需额外 API）
       _change_logs: Array.isArray(crfData?._change_logs) ? crfData._change_logs : [],
     }
-  }, [crfData])
+  }, [crfData, projectInfo])
 
   const documentsMap = useMemo(() => crfData?._documents || {}, [crfData])
+  const schemaRenderKey = useMemo(() => {
+    const groupKeys = Object.keys(crfData?.groups || {}).sort().join('|')
+    const extractedAt = crfData?._extracted_at || 'none'
+    return `${projectId || 'project'}:${patientId || 'patient'}:${groupKeys}:${extractedAt}`
+  }, [projectId, patientId, crfData])
 
   const fetchConflicts = useCallback(async () => {
     if (!projectId || !patientInfo?.patientId) return
@@ -521,11 +578,16 @@ const ProjectPatientDetail = () => {
       )
       if (response.success) {
         message.success('专项抽取任务已启动')
-        const taskId = response.data.task_id
+        const taskId = response.data?.active_task?.task_id || response.data?.task_id
+        if (!taskId) {
+          setIsExtracting(false)
+          message.error('启动专项抽取失败：未返回任务标识')
+          return
+        }
         const poll = async () => {
           try {
             const res = await getCrfExtractionProgress(projectId, taskId)
-            const progress = res.data || res
+            const progress = res?.data || res
             if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(progress.status)) {
               setIsExtracting(false)
               if (progress.status === 'completed' || progress.status === 'completed_with_errors') {
@@ -815,15 +877,22 @@ const ProjectPatientDetail = () => {
         documents={documentsMap}
       />
 
-      <ProjectSchemaEhrTab
-        projectId={projectId}
-        projectName={projectName}
-        patientData={schemaData}
-        patientId={patientInfo?.patientId}
-        projectDocuments={documents}
-        onSave={handleProjectSchemaSave}
-        onUploadDocument={handleUploadProjectDocument}
-      />
+      <Card
+        style={{ marginBottom: 16 }}
+        styles={{ body: { padding: 0, overflow: 'hidden' } }}
+      >
+        <ProjectSchemaEhrTab
+          key={schemaRenderKey}
+          projectId={projectId}
+          projectName={projectName}
+          schemaData={projectInfo?.schema_json || null}
+          patientData={schemaData}
+          patientId={patientInfo?.patientId}
+          projectDocuments={documents}
+          onSave={handleProjectSchemaSave}
+          onUploadDocument={handleUploadProjectDocument}
+        />
+      </Card>
 
       {/* 专项抽取配置弹窗 */}
       <Modal
@@ -911,12 +980,7 @@ const ProjectPatientDetail = () => {
             </Checkbox.Group>
           </Form.Item>
           
-          <Form.Item label="抽取模式">
-            <Radio.Group value={extractionModalMode} onChange={e => setExtractionModalMode(e.target.value)}>
-              <Radio value="incremental">增量抽取 - 仅补抽选中组内缺失字段</Radio>
-              <Radio value="full">全量抽取 - 重新抽取选中组内所有字段</Radio>
-            </Radio.Group>
-          </Form.Item>
+
         </Form>
       </Modal>
 

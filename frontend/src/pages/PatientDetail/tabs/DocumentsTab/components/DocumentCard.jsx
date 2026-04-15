@@ -3,7 +3,7 @@
  * 显示文档的核心信息：缩略图、类型、机构、时间等
  */
 import React from 'react'
-import { Card, Typography, Space, Tooltip } from 'antd'
+import { Card, Typography, Space, Tooltip, Tag } from 'antd'
 import { 
   FileTextOutlined, 
   FilePdfOutlined, 
@@ -58,6 +58,53 @@ const DocumentCard = ({
     return type || '未知类型'
   }
 
+  // 渲染 EHR 抽取状态标签
+  const renderEhrExtractStatus = (status) => {
+    switch (status) {
+      case 'completed':
+        return <Tag color="success" style={{ margin: 0 }}>已抽取</Tag>
+      case 'running':
+        return <Tag color="processing" style={{ margin: 0 }}>抽取中</Tag>
+      case 'failed':
+        return <Tag color="error" style={{ margin: 0 }}>抽取失败</Tag>
+      case 'pending':
+      default:
+        return <Tag color="default" style={{ margin: 0 }}>未抽取</Tag>
+    }
+  }
+
+  // 提取各个字段的值，兼容多种后端返回格式(驼峰式、下划线式及嵌套的metadata.result)
+  const fileName = document.fileName || document.file_name || document.name || '未知文件';
+  
+  const docType = document.document_type || 
+                 document.metadata?.documentType || 
+                 document.metadata?.result?.['文档类型'] || 
+                 document.category;
+                 
+  const docSubType = document.document_sub_type || 
+                    document.metadata?.documentSubtype || 
+                    document.metadata?.result?.['文档子类型'];
+
+  const orgName = document.metadata?.organizationName || 
+                  document.metadata?.result?.['机构名称'] || 
+                  '未知机构';
+
+  const effDate = document.effective_at || 
+                  document.metadata?.effectiveDate || 
+                  document.metadata?.result?.['文档生效日期'];
+
+  const upTime = document.upload_time || document.uploadTime || document.uploaded_at;
+
+  const rawFileSize = document.fileSize || document.file_size;
+  const getFileSize = (size) => {
+    if (!size) return '未知大小';
+    if (typeof size === 'string') return size;
+    if (size < 1024) return size + ' B';
+    if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB';
+    return (size / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+  const formattedFileSize = getFileSize(rawFileSize);
+
   return (
     <Card
       className="document-card"
@@ -68,33 +115,30 @@ const DocumentCard = ({
       <div className="document-card-horizontal">
         {/* 左侧：缩略图 */}
         <div className="document-thumbnail">
-          {getDocumentIcon(document.metadata?.documentType, document.metadata?.documentSubtype)}
+          {getDocumentIcon(docType, docSubType)}
         </div>
 
         {/* 中间：主要信息 */}
         <div className="document-main-info">
           <div className="document-title">
             <Title level={5} className="document-type-text">
-              {getTypeDisplay(
-                document.metadata?.documentType, 
-                document.metadata?.documentSubtype
-              )}
+              {getTypeDisplay(docType, docSubType)}
             </Title>
-            <Text className="document-filename" ellipsis={{ tooltip: document.fileName }}>
-              {document.fileName || '未知文件'}
+            <Text className="document-filename" ellipsis={{ tooltip: fileName }}>
+              {fileName}
             </Text>
           </div>
           
           <div className="document-details">
             <Space split={<span style={{ color: '#d9d9d9' }}>|</span>} size="small">
               <Text type="secondary" className="document-detail-item">
-                {document.metadata?.organizationName || '未知机构'}
+                {orgName}
               </Text>
               <Text type="secondary" className="document-detail-item">
-                {formatDate(document.metadata?.effectiveDate)}
+                {formatDate(effDate)}
               </Text>
               <Text type="secondary" className="document-detail-item">
-                {document.fileSize || '未知大小'}
+                {formattedFileSize}
               </Text>
             </Space>
           </div>
@@ -109,10 +153,11 @@ const DocumentCard = ({
                  status={document.status} 
                  extractedFieldsCount={document.extractedFields?.length || 0}
                />
+               {renderEhrExtractStatus(document.extract_status || document.extractStatus)}
              </Space>
            </div>
            <Text type="secondary" style={{ fontSize: '12px', marginTop: '8px' }}>
-             上传：{formatDate(document.uploadTime)}
+             上传：{formatDate(upTime)}
            </Text>
          </div>
       </div>

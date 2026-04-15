@@ -483,24 +483,32 @@ def validate_envelope_against_contract(data: Any) -> dict[str, Any]:
     return normalized_data
 
 
-@retry(
-    stop=stop_after_attempt(10),
-    wait=wait_exponential(multiplier=2, min=5, max=120),
-    reraise=True
-)
 async def extract_with_llm(flattened_ocr_text: str) -> dict[str, Any]:
-    api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_API_BASE_URL")
-    model = os.getenv("OPENAI_MODEL", "MiniMax-M2.7")
-
-    if not api_key:
-        raise RuntimeError("缺少环境配置 OPENAI_API_KEY")
-
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-
+    from llm_router import get_llm_configs
+    configs = get_llm_configs(strategy="fallback")
+    
     system_instruction = build_instruction()
     user_prompt = build_user_prompt(flattened_ocr_text)
+    
+    last_exception = None
+    for config in configs:
+        logging.info(f"[LLM Router] 正在尝试使用配置: {config.get('id')} (Model: {config.get('model')})")
+        client = AsyncOpenAI(api_key=config['api_key'], base_url=config['base_url'])
+        try:
+            return await _do_extract_with_llm(client, config['model'], system_instruction, user_prompt)
+        except Exception as e:
+            last_exception = e
+            logging.warning(f"[LLM Router] 配置 {config.get('id')} 发生错误，降级切换: {e}")
+            continue
 
+    raise RuntimeError(f"所有 LLM 节点均请求失败，最后错误: {last_exception}")
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=20),
+    reraise=True
+)
+async def _do_extract_with_llm(client, model, system_instruction, user_prompt):
     response = await client.chat.completions.create(
         model=model,
         messages=[
@@ -508,6 +516,7 @@ async def extract_with_llm(flattened_ocr_text: str) -> dict[str, Any]:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0,
+        timeout=120.0,
     )
 
     payload = response.choices[0].message.content

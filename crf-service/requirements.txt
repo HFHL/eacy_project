@@ -1,0 +1,23 @@
+# CRF 抽取服务依赖
+# Framework
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.0
+
+# 异步任务队列
+celery[redis]>=5.4
+redis>=5.0
+
+# LangGraph 编排
+langgraph>=0.2.55,<0.4
+
+# LLM（Agent 底层使用 Google ADK + LiteLLM）
+google-adk>=1.0
+google-genai>=1.0
+litellm>=1.0
+openai>=1.0
+
+# 工具
+python-dotenv>=1.0
+tenacity>=8.2
+jsonschema>=4.20

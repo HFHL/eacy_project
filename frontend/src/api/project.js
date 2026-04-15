@@ -152,20 +152,106 @@ export const toggleProjectStatus = () => ok({})
 export const getProjectMembers = () => ok([])
 export const addProjectMember = () => ok({})
 export const removeProjectMember = () => ok({})
-export const getProjectPatientDetail = (projectId, patientId) => ok({ project_id: projectId, patient_id: patientId })
+export const getProjectPatientDetail = async (projectId, patientId) => {
+  if (!projectId || !patientId) return { success: false, code: 400, message: '缺少参数', data: null }
+  try {
+    const response = await fetch(
+      `${API_BASE}/${encodeURIComponent(projectId)}/patients/${encodeURIComponent(patientId)}`
+    )
+    return await parseJsonResponse(response)
+  } catch (e) {
+    console.error('getProjectPatientDetail:', e)
+    return { success: false, code: 500, message: e.message, data: null }
+  }
+}
 export const updateProjectPatientCrfFields = () => ok({})
 export const getProjectPatientCrfConflicts = () => ok([])
 export const resolveProjectPatientCrfConflict = () => ok({})
 export const resolveAllProjectPatientCrfConflicts = () => ok({})
 export const getProjectCrfFieldHistory = () => ok([])
-export const startCrfExtraction = () => ok({ task_id: 'local-task' })
-export const getCrfExtractionProgress = () => ok({ status: 'completed', progress: 100 })
-export const getProjectTemplateDesigner = () => ok({ designer: {} })
+export const startCrfExtraction = async (projectId, patientIds, mode, targetGroups) => {
+  try {
+    const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/crf/extraction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_ids: patientIds, mode, target_groups: targetGroups })
+    })
+    return await parseJsonResponse(response)
+  } catch (e) {
+    console.error('startCrfExtraction:', e)
+    return { success: false, code: 500, message: e.message, data: null }
+  }
+}
+
+export const getCrfExtractionProgress = async (projectId, taskId) => {
+  try {
+    const qs = new URLSearchParams()
+    if (taskId) qs.set('task_id', taskId)
+    const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/crf/extraction/progress${qs.toString() ? `?${qs.toString()}` : ''}`)
+    return await parseJsonResponse(response)
+  } catch (e) {
+    console.error('getCrfExtractionProgress:', e)
+    return { success: false, code: 500, message: e.message, data: null }
+  }
+}
+
+export const getProjectTemplateDesigner = async (projectId) => {
+  if (!projectId) return { success: false, code: 400, message: '缺少项目 id', data: null }
+  try {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(projectId)}`)
+    const json = await parseJsonResponse(response)
+    if (!json.success) return json
+    return {
+      success: true,
+      code: 0,
+      message: 'ok',
+      data: {
+        schema_json: json?.data?.schema_json || null,
+        template_info: json?.data?.template_info || null,
+      },
+    }
+  } catch (e) {
+    console.error('getProjectTemplateDesigner:', e)
+    return { success: false, code: 500, message: e.message, data: null }
+  }
+}
 export const saveProjectTemplateDesigner = () => ok({})
 export const getProjectExtractionTasks = () => ok([])
-export const getActiveExtractionTask = () => ok(null)
-export const cancelCrfExtraction = () => ok({})
-export const resetCrfExtraction = () => ok({})
+
+export const getActiveExtractionTask = async (projectId) => {
+  try {
+    const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/crf/extraction/active`)
+    return await parseJsonResponse(response)
+  } catch (e) {
+    console.error('getActiveExtractionTask:', e)
+    return { success: false, code: 500, message: e.message, data: null }
+  }
+}
+
+export const cancelCrfExtraction = async (projectId) => {
+  try {
+    const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/crf/extraction`, {
+      method: 'DELETE'
+    })
+    return await parseJsonResponse(response)
+  } catch (e) {
+    console.error('cancelCrfExtraction:', e)
+    return { success: false, code: 500, message: e.message, data: null }
+  }
+}
+
+export const resetCrfExtraction = async (projectId) => {
+  try {
+    const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/crf/extraction/reset`, {
+      method: 'POST'
+    })
+    return await parseJsonResponse(response)
+  } catch (e) {
+    console.error('resetCrfExtraction:', e)
+    return { success: false, code: 500, message: e.message, data: null }
+  }
+}
+
 export const applyTemplateVersion = () => ok({})
 export const exportProjectCrfFile = () => ok(new Blob(['local export'], { type: 'text/plain' }))
 

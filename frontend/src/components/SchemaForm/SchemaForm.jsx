@@ -158,18 +158,26 @@ function _sourceLocationToCoordinates(loc) {
 
   const toCoord = (item) => {
     if (!item || typeof item !== 'object') return null
+
+    // 如果传入的是外层的 audit item，自动解包 source_location
+    const locItem = item.source_location || item
+
     // 优先使用 position（8 点），再回退到 bbox（4 点）
-    let bbox = item.bbox
-    if ((!bbox || bbox.length < 4) && Array.isArray(item.position) && item.position.length >= 8) {
+    let bbox = locItem.bbox
+    if ((!bbox || bbox.length < 4) && Array.isArray(locItem.position) && locItem.position.length >= 8) {
       bbox = _positionToBbox(
-        item.position,
-        item.page_width,
-        item.page_height
+        locItem.position,
+        locItem.page_width,
+        locItem.page_height
       )
     }
     if (!Array.isArray(bbox) || bbox.length < 4) return null
-    const [x1, y1, x2, y2] = bbox
-    const page = item.page != null ? Number(item.page) : 1
+    let [x1, y1, x2, y2] = bbox
+    const maxCoord = Math.max(x1, y1, x2, y2)
+    const isAbsolute = maxCoord > 1000
+    
+    // 如果超过 1000，不要硬生生均匀压缩，那会破坏宽高比导致变窄或变长！直接原样返回并打标签
+    const page = locItem.page != null ? Number(locItem.page) : 1
     return {
       x: x1,
       y: y1,
@@ -177,7 +185,8 @@ function _sourceLocationToCoordinates(loc) {
       height: y2 - y1,
       pageWidth: 1000,
       pageHeight: 1000,
-      pageIdx: Math.max(0, page - 1)
+      pageIdx: Math.max(0, page - 1),
+      isAbsolute
     }
   }
 
@@ -523,8 +532,8 @@ const SourceDocumentPreview = ({ documentInfo, sourceDocId = null, activeCoordin
       return null
     }
     // 从 pageCoordinates (0-1000 或实际页面尺寸) 映射到 SVG 尺寸
-    const pw = pageWidth || 1000
-    const ph = pageHeight || 1000
+    const pw = coordsList[0]?.isAbsolute ? imageDimensions.width : (pageWidth || 1000)
+    const ph = coordsList[0]?.isAbsolute ? imageDimensions.height : (pageHeight || 1000)
     const scaleX = w0 / pw
     const scaleY = h0 / ph
     const svgTransform = applyTransform ? `scale(${scale / 100}) rotate(${rotation}deg)` : undefined
@@ -1238,13 +1247,7 @@ const SourcePanel = ({
                   )}
                 </div>
               )}
-                {isArrayRowClick && displaySource ? (
-                  <div style={{ marginTop: 4 }}>
-                    <Text type="secondary" style={{ fontSize: 11, color: '#faad14' }}>
-                      ⚠ 此为数组行记录，坐标溯源定位到整个字段范围，非单行精确位置
-                    </Text>
-                  </div>
-                ) : null}
+
               </div>
             </div>
             <ModificationHistory

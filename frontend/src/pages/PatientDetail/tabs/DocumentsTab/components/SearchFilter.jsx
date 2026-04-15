@@ -44,7 +44,8 @@ const SearchFilter = ({
       documentType: '',
       organization: '',
       dateRange: [],
-      status: ''
+      status: '',
+      extractStatus: ''
     }
     setFilters(emptyFilters)
     onClear?.(emptyFilters)
@@ -56,7 +57,8 @@ const SearchFilter = ({
            filters.documentType || 
            filters.organization || 
            filters.dateRange?.length > 0 || 
-           filters.status
+           filters.status ||
+           filters.extractStatus
   }
 
   return (
@@ -146,7 +148,22 @@ const SearchFilter = ({
           </Select>
         </Col>
 
-        <Col xs={12} sm={12} md={6} lg={6}>
+        <Col xs={12} sm={8} md={6} lg={4}>
+          <Select
+            placeholder="抽取状态"
+            allowClear
+            style={{ width: '100%' }}
+            value={filters.extractStatus || undefined}
+            onChange={(value) => handleFilterChange('extractStatus', value)}
+          >
+            <Select.Option value="pending">待抽取</Select.Option>
+            <Select.Option value="running">抽取中</Select.Option>
+            <Select.Option value="completed">已抽取</Select.Option>
+            <Select.Option value="failed">抽取失败</Select.Option>
+          </Select>
+        </Col>
+
+        <Col xs={12} sm={12} md={6} lg={5}>
           <RangePicker
             placeholder={['开始日期', '结束日期']}
             style={{ width: '100%' }}

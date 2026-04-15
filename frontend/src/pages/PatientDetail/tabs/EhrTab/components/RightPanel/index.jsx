@@ -231,10 +231,12 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   const pixelBoxes = locations.map(loc => {
     const [bboxX1, bboxY1, bboxX2, bboxY2] = loc.bbox
-    const pixelX1 = (bboxX1 / 1000) * imgW
-    const pixelY1 = (bboxY1 / 1000) * imgH
-    const pixelX2 = (bboxX2 / 1000) * imgW
-    const pixelY2 = (bboxY2 / 1000) * imgH
+    const isNormalized = Math.max(bboxX1, bboxY1, bboxX2, bboxY2) <= 1000
+    
+    const pixelX1 = isNormalized ? (bboxX1 / 1000) * imgW : bboxX1
+    const pixelY1 = isNormalized ? (bboxY1 / 1000) * imgH : bboxY1
+    const pixelX2 = isNormalized ? (bboxX2 / 1000) * imgW : bboxX2
+    const pixelY2 = isNormalized ? (bboxY2 / 1000) * imgH : bboxY2
     
     minX = Math.min(minX, pixelX1)
     minY = Math.min(minY, pixelY1)

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Pipeline Daemon — 后台轮询守护进程
+[DEPRECATED]
+Pipeline Daemon — 后台轮询守护进程 (已废弃)
+
+注意：此脚本已被废弃。现在 OCR 和 Metadata 抽取任务
+由前端/Nodejs主动调用 crf-service 触发，并放入 Celery 执行。
+请勿使用此脚本进行轮询！
 
 仅负责：
   1. OCR：status = ocr_pending 且有 object_key
@@ -307,6 +312,9 @@ class PipelineDaemon:
 # ═════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    logger.warning("！！！警告：Pipeline Daemon 已废弃。文档解析流程现已迁入 Celery (crf-service)。此脚本将直接退出。")
+    sys.exit(0)
+    
     daemon = PipelineDaemon()
     try:
         daemon.run_forever()

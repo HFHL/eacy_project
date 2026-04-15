@@ -412,16 +412,14 @@
             }
           },
           "unevaluatedProperties": false,
-          "required": [
-            "入院日期"
-          ],
           "x-field-uid": "f_43c7b378",
           "x-display": "group",
           "x-row-constraint": "single_row",
           "x-merge-binding": "anchor=入院日期",
           "x-sources": {
             "primary": [
-              "病案首页"
+              "病案首页",
+              "综合病历"
             ],
             "secondary": [
               "出院小结/记录",
@@ -1062,7 +1060,8 @@
           "x-merge-binding": "anchor=入院日期",
           "x-sources": {
             "primary": [
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ],
             "secondary": [
               "出院小结/记录",
@@ -1189,11 +1188,7 @@
                 "x-field-uid": "f_4381fc33"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "入院日期",
-              "出院日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_28487aae",
           "x-display": "group",
@@ -1202,7 +1197,8 @@
           "x-sources": {
             "primary": [
               "出院小结/记录",
-              "病案首页"
+              "病案首页",
+              "综合病历"
             ],
             "secondary": [
               "医疗证明",
@@ -1358,13 +1354,7 @@
                 "x-field-uid": "f_e0cf23fb"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "药物类型",
-              "药物名称",
-              "开始日期",
-              "结束日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_1f8a463a",
           "x-display": "group",
@@ -1374,10 +1364,10 @@
             "primary": [
               "处方单",
               "医嘱单",
-              "出院带药记录"
+              "出院小结/记录",
+              "综合病历"
             ],
             "secondary": [
-              "出院小结/记录",
               "24小时出入院记录",
               "入院记录",
               "病程记录",
@@ -1441,11 +1431,7 @@
                 "x-field-uid": "f_e94b2682"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "手术日期",
-              "手术名称"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_1688126c",
           "x-display": "group",
@@ -1453,7 +1439,8 @@
           "x-merge-binding": "anchor=手术日期;group_key=手术名称",
           "x-sources": {
             "primary": [
-              "手术记录"
+              "手术记录",
+              "综合病历"
             ],
             "secondary": [
               "出院小结/记录",
@@ -1586,12 +1573,7 @@
                 "x-field-uid": "f_0d248245"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "开始日期",
-              "结束日期",
-              "放疗部位"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_28c8f8e9",
           "x-display": "group",
@@ -1599,7 +1581,8 @@
           "x-merge-binding": "interval=开始日期|结束日期;group_key=放疗部位+放疗方式+射线类型",
           "x-sources": {
             "primary": [
-              "放疗记录"
+              "放疗记录",
+              "综合病历"
             ],
             "secondary": [
               "出院小结/记录",
@@ -1673,12 +1656,7 @@
                 "x-field-uid": "f_3cb4e56e"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "治疗日期",
-              "植入粒子性质",
-              "位置"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_8850842b",
           "x-display": "group",
@@ -1686,7 +1664,8 @@
           "x-merge-binding": "anchor=治疗日期;group_key=植入粒子性质+位置",
           "x-sources": {
             "primary": [
-              "放疗记录"
+              "放疗记录",
+              "综合病历"
             ],
             "secondary": [
               "出院小结/记录",
@@ -1748,11 +1727,7 @@
                 "x-field-uid": "f_708a9e89"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "置管类型",
-              "开始日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_475e9323",
           "x-display": "group",
@@ -1760,10 +1735,10 @@
           "x-merge-binding": "interval=开始日期|结束日期;group_key=置管类型+置管位置",
           "x-sources": {
             "primary": [
-              "出院小结/记录"
+              "出院小结/记录",
+              "综合病历"
             ],
             "secondary": [
-              "出院小结/记录",
               "24小时出入院记录",
               "入院记录",
               "病程记录"
@@ -1822,11 +1797,7 @@
                 "x-field-uid": "f_35565716"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "其他治疗方案",
-              "开始日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_e9a465e0",
           "x-display": "group",
@@ -1834,7 +1805,8 @@
           "x-merge-binding": "interval=开始日期|结束日期;group_key=其他治疗方案+治疗部位",
           "x-sources": {
             "primary": [
-              "出院小结/记录"
+              "出院小结/记录",
+              "综合病历"
             ],
             "secondary": [
               "手术记录",
@@ -1961,11 +1933,7 @@
                 "x-field-uid": "f_86a0a550"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "病理诊断报告日期",
-              "病理诊断结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_cca50072",
           "x-display": "group",
@@ -1978,7 +1946,8 @@
             ],
             "secondary": [
               "出院小结/记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -2093,12 +2062,7 @@
                 "x-field-uid": "f_c73e5a38"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "病理诊断报告日期",
-              "病理送检日期",
-              "病理诊断结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_6370eb8d",
           "x-display": "group",
@@ -2113,7 +2077,8 @@
               "病理会诊",
               "出院小结/记录",
               "24小时出入院记录",
-              "出院带药记录"
+              "出院带药记录",
+              "综合病历"
             ]
           }
         },
@@ -2228,12 +2193,7 @@
                 "x-field-uid": "f_3b411bfe"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "病理诊断报告日期",
-              "病理送检日期",
-              "病理诊断"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_4bea6bce",
           "x-display": "group",
@@ -2246,7 +2206,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -2361,12 +2322,7 @@
                 "x-field-uid": "f_46bbc788"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "病理诊断报告日期",
-              "病理送检日期",
-              "病理诊断结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_54cb7ca1",
           "x-display": "group",
@@ -2380,7 +2336,8 @@
               "病理会诊",
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -2470,12 +2427,7 @@
                 "x-field-uid": "f_2f81a3b9"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "报告日期",
-              "送检日期",
-              "病理诊断结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_0e3b46e4",
           "x-display": "group",
@@ -2488,7 +2440,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         }
@@ -3036,12 +2989,7 @@
                 "x-field-uid": "f_962589a4"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "送检日期",
-              "报告日期",
-              "检测项目名称"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_4b95fc14",
           "x-display": "group",
@@ -3066,7 +3014,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -3154,11 +3103,7 @@
                 "x-field-uid": "f_f548e353"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "报告日期",
-              "检测结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_9170375f",
           "x-display": "group",
@@ -3171,7 +3116,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -3231,11 +3177,7 @@
                 "x-field-uid": "f_0b24fa76"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "报告日期",
-              "检测结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_7ded35af",
           "x-display": "group",
@@ -3248,7 +3190,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -3340,11 +3283,7 @@
                 "x-field-uid": "f_43339631"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "报告日期",
-              "定性结果"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_00d306bf",
           "x-display": "group",
@@ -3358,7 +3297,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         }
@@ -3472,12 +3412,7 @@
                 "x-field-uid": "f_4744097e"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "诊断印象或结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_1026e063",
           "x-display": "group",
@@ -3492,7 +3427,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -3600,12 +3536,7 @@
                 "x-field-uid": "f_6a9ceb2b"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "诊断印象或结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_80a6c16f",
           "x-display": "group",
@@ -3618,7 +3549,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -3726,12 +3658,7 @@
                 "x-field-uid": "f_1ec6b217"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "诊断印象或结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_12080008",
           "x-display": "group",
@@ -3744,7 +3671,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -3852,12 +3780,7 @@
                 "x-field-uid": "f_cddf0cc5"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "诊断印象或结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_95367c54",
           "x-display": "group",
@@ -3871,7 +3794,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -3979,12 +3903,7 @@
                 "x-field-uid": "f_2955097d"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "诊断印象或结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_8975f077",
           "x-display": "group",
@@ -3997,7 +3916,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -4118,7 +4038,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         }
@@ -4238,12 +4159,7 @@
                 "x-field-uid": "f_06f5c470"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "诊断印象或结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_0146f76d",
           "x-display": "group",
@@ -4256,7 +4172,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -4370,12 +4287,7 @@
                 "x-field-uid": "f_53898c02"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "诊断印象或结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_5fbed380",
           "x-display": "group",
@@ -4388,7 +4300,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -4502,12 +4415,7 @@
                 "x-field-uid": "f_cdfff28b"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "诊断印象或结论"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_91c716ed",
           "x-display": "group",
@@ -4520,7 +4428,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         }
@@ -4610,12 +4519,7 @@
                 "x-field-uid": "f_65a8988a"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "检查日期",
-              "报告日期",
-              "检查结果描述"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_ce041c5d",
           "x-display": "group",
@@ -4639,7 +4543,8 @@
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         }
@@ -4741,12 +4646,7 @@
                       "x-field-uid": "f_2bca7c58"
                     }
                   },
-                  "unevaluatedProperties": false,
-                  "required": [
-                    "指标名称(中文)",
-                    "检测值",
-                    "单位"
-                  ]
+                  "unevaluatedProperties": false
                 },
                 "x-field-uid": "f_6fb97942",
                 "x-display": "table",
@@ -4816,10 +4716,7 @@
                 "x-field-uid": "f_d7b3d59f"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "报告日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_a03f76aa",
           "x-display": "group",
@@ -4827,12 +4724,14 @@
           "x-merge-binding": "anchor=采样日期;group_key=报告编号;fallback=报告日期",
           "x-sources": {
             "primary": [
-              "血常规"
+              "血常规",
+              "综合检验报告"
             ],
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -4928,12 +4827,7 @@
                       "x-field-uid": "f_3f838870"
                     }
                   },
-                  "unevaluatedProperties": false,
-                  "required": [
-                    "指标名称(中文)",
-                    "检测值",
-                    "单位"
-                  ]
+                  "unevaluatedProperties": false
                 },
                 "x-field-uid": "f_1e0f7807",
                 "x-display": "table",
@@ -4994,10 +4888,7 @@
                 "x-field-uid": "f_377275a7"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "报告日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_e6344338",
           "x-display": "group",
@@ -5005,12 +4896,14 @@
           "x-merge-binding": "anchor=采样日期;group_key=报告编号;fallback=报告日期",
           "x-sources": {
             "primary": [
-              "生化检查"
+              "生化检查",
+              "综合检验报告"
             ],
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -5106,12 +4999,7 @@
                       "x-field-uid": "f_e5ec1947"
                     }
                   },
-                  "unevaluatedProperties": false,
-                  "required": [
-                    "指标名称(中文)",
-                    "检测值",
-                    "单位"
-                  ]
+                  "unevaluatedProperties": false
                 },
                 "x-field-uid": "f_1504f693",
                 "x-display": "table",
@@ -5172,10 +5060,7 @@
                 "x-field-uid": "f_7cee4fc8"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "报告日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_46a8196b",
           "x-display": "group",
@@ -5183,12 +5068,14 @@
           "x-merge-binding": "anchor=采样日期;group_key=报告编号;fallback=报告日期",
           "x-sources": {
             "primary": [
-              "血气分析"
+              "血气分析",
+              "综合检验报告"
             ],
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -5284,12 +5171,7 @@
                       "x-field-uid": "f_f3cb5182"
                     }
                   },
-                  "unevaluatedProperties": false,
-                  "required": [
-                    "指标名称(中文)",
-                    "检测值",
-                    "单位"
-                  ]
+                  "unevaluatedProperties": false
                 },
                 "x-field-uid": "f_0e06bbef",
                 "x-display": "table",
@@ -5350,11 +5232,7 @@
                 "x-field-uid": "f_c1f9e3e3"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "采样日期",
-              "报告日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_caae3021",
           "x-display": "group",
@@ -5362,12 +5240,14 @@
           "x-merge-binding": "anchor=采样日期;group_key=报告编号;fallback=报告日期",
           "x-sources": {
             "primary": [
-              "传染学检测"
+              "传染学检测",
+              "综合检验报告"
             ],
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -5463,12 +5343,7 @@
                       "x-field-uid": "f_1e7fae7e"
                     }
                   },
-                  "unevaluatedProperties": false,
-                  "required": [
-                    "指标名称(中文)",
-                    "检测值",
-                    "单位"
-                  ]
+                  "unevaluatedProperties": false
                 },
                 "x-field-uid": "f_b0672ae9",
                 "x-display": "table",
@@ -5529,11 +5404,7 @@
                 "x-field-uid": "f_b59f8845"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "采样日期",
-              "报告日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_01a1ddb5",
           "x-display": "group",
@@ -5541,12 +5412,14 @@
           "x-merge-binding": "anchor=采样日期;group_key=报告编号;fallback=报告日期",
           "x-sources": {
             "primary": [
-              "免疫细胞亚群检测"
+              "免疫细胞亚群检测",
+              "综合检验报告"
             ],
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -5642,12 +5515,7 @@
                       "x-field-uid": "f_150e4af1"
                     }
                   },
-                  "unevaluatedProperties": false,
-                  "required": [
-                    "指标名称(中文)",
-                    "检测值",
-                    "单位"
-                  ]
+                  "unevaluatedProperties": false
                 },
                 "x-field-uid": "f_15e83ad0",
                 "x-display": "table",
@@ -5708,11 +5576,7 @@
                 "x-field-uid": "f_86338004"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "采样日期",
-              "报告日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_a62f8988",
           "x-display": "group",
@@ -5720,12 +5584,14 @@
           "x-merge-binding": "anchor=采样日期;group_key=报告编号;fallback=报告日期",
           "x-sources": {
             "primary": [
-              "肿瘤标志物"
+              "肿瘤标志物",
+              "综合检验报告"
             ],
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -5821,12 +5687,7 @@
                       "x-field-uid": "f_38525d5e"
                     }
                   },
-                  "unevaluatedProperties": false,
-                  "required": [
-                    "指标名称(中文)",
-                    "检测值",
-                    "单位"
-                  ]
+                  "unevaluatedProperties": false
                 },
                 "x-field-uid": "f_27233697",
                 "x-display": "table",
@@ -5887,11 +5748,7 @@
                 "x-field-uid": "f_e23e33bb"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "采样日期",
-              "报告日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_666a79f1",
           "x-display": "group",
@@ -5899,12 +5756,14 @@
           "x-merge-binding": "anchor=采样日期;group_key=报告编号;fallback=报告日期",
           "x-sources": {
             "primary": [
-              "感染性指标"
+              "感染性指标",
+              "综合检验报告"
             ],
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -5984,22 +5843,19 @@
             }
           },
           "unevaluatedProperties": false,
-          "required": [
-            "采样日期",
-            "报告日期",
-            "ABO血型"
-          ],
           "x-field-uid": "f_b3dd020f",
           "x-display": "group",
           "x-row-constraint": "single_row",
           "x-merge-binding": "anchor=采样日期;group_key=报告编号;fallback=报告日期",
           "x-sources": {
             "primary": [
-              "血型检测"
+              "血型检测",
+              "综合检验报告"
             ],
             "secondary": [
               "病案首页",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         },
@@ -6095,11 +5951,7 @@
                       "x-field-uid": "f_ed1fe9a1"
                     }
                   },
-                  "unevaluatedProperties": false,
-                  "required": [
-                    "指标名称(中文)",
-                    "检测值"
-                  ]
+                  "unevaluatedProperties": false
                 },
                 "x-field-uid": "f_e8af58ac",
                 "x-display": "table",
@@ -6178,11 +6030,7 @@
                 "x-field-uid": "f_e249ac0c"
               }
             },
-            "unevaluatedProperties": false,
-            "required": [
-              "采样日期",
-              "报告日期"
-            ]
+            "unevaluatedProperties": false
           },
           "x-field-uid": "f_fbee49a0",
           "x-display": "group",
@@ -6202,12 +6050,14 @@
               "微生物培养与药敏",
               "骨代谢指标",
               "炎症/免疫细胞因子检测",
-              "外泌体检测"
+              "外泌体检测",
+              "综合检验报告"
             ],
             "secondary": [
               "出院小结/记录",
               "24小时出入院记录",
-              "入院记录"
+              "入院记录",
+              "综合病历"
             ]
           }
         }

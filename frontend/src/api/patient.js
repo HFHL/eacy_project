@@ -68,7 +68,15 @@ export const updatePatientEhrSchemaData = async (patientId, data) => {
   }
 }
 export const updatePatientEhr = () => ok({})
-export const getPatientDocuments = () => ok([])
+export const getPatientDocuments = async (patientId) => {
+  try {
+    const response = await fetch(`/api/v1/documents?patientId=${patientId}`);
+    return await response.json();
+  } catch (error) {
+    console.error('获取患者文档失败:', error);
+    return { success: false, code: 500, message: error.message, data: [] };
+  }
+}
 export const mergeEhrData = async (patientId, body) => {
   try {
     const response = await fetch(`/api/v1/patients/${patientId}/merge-ehr`, {
@@ -79,6 +87,18 @@ export const mergeEhrData = async (patientId, body) => {
     return await response.json()
   } catch (error) {
     console.error('合并EHR数据失败:', error)
+    return { success: false, code: 500, message: error.message }
+  }
+}
+export const updatePatientEhrFolder = async (patientId) => {
+  try {
+    const response = await fetch(`/api/v1/patients/${patientId}/ehr-folder/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    })
+    return await response.json()
+  } catch (error) {
+    console.error('更新病历夹失败:', error)
     return { success: false, code: 500, message: error.message }
   }
 }
@@ -125,6 +145,7 @@ export default {
   updatePatientEhr,
   getPatientDocuments,
   mergeEhrData,
+  updatePatientEhrFolder,
   getConflictsByExtractionId,
   resolveConflict,
   startPatientExtraction,

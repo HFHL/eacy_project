@@ -113,7 +113,7 @@ const ProjectSchemaEhrTab = ({
   
   // 配置选项
   autoSaveInterval = 30000,
-  siderWidth = 260,
+  siderWidth = 220,
   sourcePanelWidth,
   collapsible = true,
   showSourcePanel = true

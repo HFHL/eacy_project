@@ -65,7 +65,8 @@ const useDocumentFilter = (documents = []) => {
     documentType: '',
     organization: '',
     dateRange: [],
-    status: ''
+    status: '',
+    extractStatus: ''
   })
 
   const [sortConfig, setSortConfig] = useState({
@@ -113,9 +114,14 @@ const useDocumentFilter = (documents = []) => {
       )
     }
 
-    // 处理状态筛选
+    // 处理状态筛选 (通用状态)
     if (filters.status) {
       result = result.filter(doc => doc.status === filters.status)
+    }
+
+    // EHR 抽取状态筛选
+    if (filters.extractStatus) {
+      result = result.filter(doc => doc.extract_status === filters.extractStatus)
     }
 
     // 日期范围筛选
@@ -187,7 +193,8 @@ const useDocumentFilter = (documents = []) => {
       documentType: '',
       organization: '',
       dateRange: [],
-      status: ''
+      status: '',
+      extractStatus: ''
     })
   }
 

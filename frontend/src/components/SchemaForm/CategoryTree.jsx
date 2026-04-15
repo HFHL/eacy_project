@@ -8,7 +8,7 @@
  * - 项目模式：支持文档列表渲染
  * - 可重复表单：支持添加新实例
  */
-import React, { useMemo, useCallback, useState } from 'react'
+import React, { useMemo, useCallback, useState, useEffect } from 'react'
 import { Tree, Typography, Tooltip, Button, Badge, List, Empty, Tabs, Tag, Space, Divider, Popover, message, Dropdown, Modal } from 'antd'
 import {
   FolderOutlined,
@@ -814,6 +814,10 @@ const CategoryTree = ({
   // 展开状态 - 默认全部展开
   const [expandedKeys, setExpandedKeys] = useState(allExpandableKeys)
 
+  useEffect(() => {
+    setExpandedKeys(allExpandableKeys)
+  }, [allExpandableKeys])
+
   // 是否全部展开状态
   const isAllExpanded = expandedKeys.length === allExpandableKeys.length && allExpandableKeys.length > 0
 
@@ -842,6 +846,19 @@ const CategoryTree = ({
       onSelect(path, node || { key: path })
     }
   }, [actions, onBeforeSelect, onSelect])
+
+  useEffect(() => {
+    if (!treeData.length || selectedTreeKey) return
+
+    const firstNodeWithData = treeData.flatMap((folder) => folder.children || []).find((node) => {
+      if (!node?.isForm) return false
+      return node.hasData || (node.progress && node.progress.filled > 0)
+    })
+
+    if (firstNodeWithData?.path) {
+      actions.setSelectedPath(firstNodeWithData.path)
+    }
+  }, [treeData, selectedTreeKey, actions])
 
   const createRepeatableInstance = useCallback((path, title, schemaNode) => {
     // 创建空模板（使用 items 的 schema）

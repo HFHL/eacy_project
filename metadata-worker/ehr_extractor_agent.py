@@ -184,22 +184,8 @@ for _noisy in ("LiteLLM", "litellm", "google.adk", "google.genai", "httpx"):
 # 模型配置
 # ═══════════════════════════════════════════════════════════════════════════════
 
-litellm.num_retries = 5
-litellm.request_timeout = 300
-
-_BASE_URL = os.getenv("OPENAI_API_BASE_URL", "https://api.openai.com/v1")
-_API_KEY = os.getenv("OPENAI_API_KEY", "")
-_MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
-
-
-def _get_llm_model() -> LiteLlm:
-    if not _MODEL_NAME:
-        raise RuntimeError("缺少 OPENAI_MODEL / settings.OPENAI_MODEL")
-    return LiteLlm(
-        model=f"openai/{_MODEL_NAME}",
-        api_base=_BASE_URL,
-        api_key=_API_KEY or "sk-placeholder",
-    )
+litellm.num_retries = 2
+litellm.request_timeout = 120
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -548,11 +534,6 @@ def _count_fields(obj: Any, depth: int = 0) -> tuple[int, int]:
 # 单 task：Google ADK 抽取
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@retry(
-    stop=stop_after_attempt(10),
-    wait=wait_exponential(multiplier=2, min=5, max=120),
-    reraise=True
-)
 async def _extract_single_task_adk(
     *,
     root_schema: Dict[str, Any],
@@ -563,9 +544,55 @@ async def _extract_single_task_adk(
     task_schema: Dict[str, Any],
     max_loop_iterations: int = 3,
 ) -> Dict[str, Any]:
+    from llm_router import get_llm_configs
+    configs = get_llm_configs(strategy="fallback")
+
+    last_exception = None
+
+    for config in configs:
+        logger.info(f"[EHR Agent] 尝试配置: {config.get('id')} (Model: {config.get('model')})")
+        model_instance = LiteLlm(
+            model=f"openai/{config['model']}",
+            api_base=config['base_url'],
+            api_key=config['api_key'] or "sk-placeholder",
+        )
+        
+        try:
+            return await _do_extract_single_task_adk(
+                model_instance=model_instance,
+                root_schema=root_schema,
+                task_name=task_name,
+                instruction=instruction,
+                user_message=user_message,
+                task_path=task_path,
+                task_schema=task_schema,
+                max_loop_iterations=max_loop_iterations
+            )
+        except Exception as e:
+            last_exception = e
+            logger.warning(f"[EHR Agent] 配置 {config.get('id')} 发生错误，降级切换: {e}")
+            continue
+            
+    raise RuntimeError(f"所有 LLM 节点均请求失败，最后错误: {last_exception}")
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=5, max=30),
+    reraise=True
+)
+async def _do_extract_single_task_adk(
+    model_instance: LiteLlm,
+    root_schema: Dict[str, Any],
+    task_name: str,
+    instruction: str,
+    user_message: str,
+    task_path: List[str],
+    task_schema: Dict[str, Any],
+    max_loop_iterations: int = 3,
+) -> Dict[str, Any]:
     extract_agent = LlmAgent(
         name="extract_task",
-        model=_get_llm_model(),
+        model=model_instance,
         instruction=instruction,
         output_key="extracted",
     )

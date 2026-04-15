@@ -4,11 +4,383 @@ import db from '../db.js'
 
 const router = Router()
 
+const CRF_SERVICE_URL = (process.env.CRF_SERVICE_URL || 'http://localhost:8100').replace(/\/+$/, '')
+
 function nowIso() {
   return new Date().toISOString()
 }
 
 const ALLOWED_STATUS = new Set(['draft', 'active', 'paused', 'completed'])
+
+function parseJsonObject(raw: unknown): Record<string, any> {
+  if (!raw) return {}
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, any>
+  if (typeof raw !== 'string') return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function parseJsonArray(raw: unknown): any[] {
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw
+  if (typeof raw !== 'string') return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function normalizeStringList(values: unknown): string[] {
+  if (!Array.isArray(values)) return []
+  return [...new Set(values.map((item) => String(item ?? '').trim()).filter(Boolean))]
+}
+
+function normalizeSourceList(value: unknown): string[] {
+  if (value == null) return []
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean)
+}
+
+function deriveFieldGroupsFromSchema(schema: Record<string, any>) {
+  const rootProps = schema?.properties
+  if (!rootProps || typeof rootProps !== 'object' || Array.isArray(rootProps)) {
+    return { fieldGroups: [], fieldMap: {} as Record<string, string> }
+  }
+
+  const fieldGroups: any[] = []
+  const fieldMap: Record<string, string> = {}
+
+  const collectLeafFields = (
+    target: Record<string, any> | null | undefined,
+    path: string[],
+    labels: string[]
+  ) => {
+    if (!target || typeof target !== 'object') return
+    const targetType = target.type
+    if (targetType === 'array' && target.items && typeof target.items === 'object' && !Array.isArray(target.items)) {
+      collectLeafFields(target.items as Record<string, any>, path, labels)
+      return
+    }
+    const props = target.properties
+    if (!props || typeof props !== 'object' || Array.isArray(props)) {
+      if (path.length > 0) {
+        const fieldPath = path.join('/')
+        const label = labels[labels.length - 1] || path[path.length - 1]
+        fieldMap[fieldPath] = label
+      }
+      return
+    }
+    for (const [childKey, childSchema] of Object.entries(props)) {
+      if (!childSchema || typeof childSchema !== 'object' || Array.isArray(childSchema)) continue
+      const childObj = childSchema as Record<string, any>
+      const childTitle = String(childObj.title || childKey)
+      collectLeafFields(childObj, [...path, childKey], [...labels, childTitle])
+    }
+  }
+
+  let groupIndex = 0
+  for (const [groupKey, groupSchema] of Object.entries(rootProps)) {
+    if (!groupSchema || typeof groupSchema !== 'object' || Array.isArray(groupSchema)) continue
+    const groupObj = groupSchema as Record<string, any>
+    const groupTitle = String(groupObj.title || groupKey)
+    const target = groupObj.type === 'array' && groupObj.items && typeof groupObj.items === 'object' && !Array.isArray(groupObj.items)
+      ? (groupObj.items as Record<string, any>)
+      : groupObj
+    const groupFieldsBefore = Object.keys(fieldMap).length
+    collectLeafFields(target, [groupKey], [groupTitle])
+    const dbFields = Object.keys(fieldMap).slice(groupFieldsBefore)
+    const sources = groupObj['x-sources'] && typeof groupObj['x-sources'] === 'object' && !Array.isArray(groupObj['x-sources'])
+      ? {
+          primary: normalizeSourceList((groupObj['x-sources'] as Record<string, any>).primary),
+          secondary: normalizeSourceList((groupObj['x-sources'] as Record<string, any>).secondary),
+        }
+      : { primary: [], secondary: [] }
+
+    fieldGroups.push({
+      group_id: groupKey,
+      group_name: groupTitle,
+      order: groupIndex++,
+      is_repeatable: groupObj.type === 'array',
+      db_fields: dbFields,
+      field_count: dbFields.length,
+      sources,
+    })
+  }
+
+  return { fieldGroups, fieldMap }
+}
+
+function getProjectTemplateMeta(schemaId: string | null | undefined) {
+  if (!schemaId) {
+    return {
+      schemaRow: null,
+      schemaJson: null,
+      fieldGroups: [],
+      fieldMap: {},
+    }
+  }
+  const schemaRow = db
+    .prepare(`SELECT id, name, code, version, content_json FROM schemas WHERE id = ?`)
+    .get(schemaId) as { id: string; name: string; code: string; version: string; content_json: string } | undefined
+  if (!schemaRow) {
+    return {
+      schemaRow: null,
+      schemaJson: null,
+      fieldGroups: [],
+      fieldMap: {},
+    }
+  }
+  const schemaJson = parseJsonObject(schemaRow.content_json)
+  const { fieldGroups, fieldMap } = deriveFieldGroupsFromSchema(schemaJson)
+  return { schemaRow, schemaJson, fieldGroups, fieldMap }
+}
+
+function decodeSelectedValue(raw: unknown) {
+  if (typeof raw !== 'string') return raw
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
+function normalizeBbox(raw: unknown) {
+  if (!raw) return null
+  let parsed: any = raw
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed)
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed)
+      }
+    } catch {
+      return null
+    }
+  }
+  return parsed
+}
+
+function buildProjectCrfData(patientId: string, schemaId: string | null | undefined, fieldMap: Record<string, string> = {}) {
+  const empty = { groups: {}, _extracted_at: null, _extraction_mode: null, _change_logs: [], _task_results: [], _documents: {} }
+  if (!schemaId) {
+    return { crfData: empty, crfCompleteness: '0', instanceId: null }
+  }
+
+  const instance = db.prepare(`
+    SELECT si.id
+    FROM schema_instances si
+    WHERE si.patient_id = ? AND si.schema_id = ? AND si.instance_type = 'project_crf'
+    ORDER BY si.updated_at DESC
+    LIMIT 1
+  `).get(patientId, schemaId) as { id: string } | undefined
+
+  if (!instance?.id) {
+    return { crfData: empty, crfCompleteness: '0', instanceId: null }
+  }
+
+  const rows = db.prepare(`
+    SELECT
+      fvs.field_path,
+      fvs.selected_value_json,
+      fvc.id AS candidate_id,
+      fvc.source_document_id,
+      fvc.source_page,
+      fvc.source_bbox_json,
+      fvc.source_text,
+      fvc.confidence,
+      d.file_name AS source_document_name,
+      d.document_sub_type AS source_document_type
+    FROM field_value_selected fvs
+    LEFT JOIN field_value_candidates fvc ON fvc.id = fvs.selected_candidate_id
+    LEFT JOIN documents d ON d.id = fvc.source_document_id
+    WHERE fvs.instance_id = ?
+    ORDER BY fvs.field_path
+  `).all(instance.id) as any[]
+
+  const groups: Record<string, any> = {}
+  let totalFields = 0
+  let filledFields = 0
+
+  for (const row of rows) {
+    const rawPath = String(row.field_path || '')
+    const parts = rawPath.split('/').filter(Boolean)
+    if (parts.length === 0) continue
+    const groupId = parts[0]
+    const fieldId = parts.slice(1).join('/')
+    if (!groups[groupId]) {
+      groups[groupId] = {
+        group_name: fieldMap[groupId] || groupId,
+        fields: {},
+      }
+    }
+    const value = decodeSelectedValue(row.selected_value_json)
+    const leafKey = parts[parts.length - 1]
+    groups[groupId].fields[fieldId] = {
+      value,
+      field_name: fieldMap[rawPath] || fieldMap[fieldId] || leafKey,
+      source: row.source_document_id ? 'AI抽取' : null,
+      confidence: row.confidence,
+      document_id: row.source_document_id,
+      document_name: row.source_document_name,
+      document_type: row.source_document_type,
+      raw: row.source_text,
+      bbox: normalizeBbox(row.source_bbox_json),
+      page_idx: row.source_page,
+      source_id: row.candidate_id,
+    }
+    totalFields += 1
+    if (value !== null && value !== undefined && value !== '') {
+      filledFields += 1
+    }
+  }
+
+  const lastRun = db.prepare(`
+    SELECT finished_at
+    FROM extraction_runs
+    WHERE instance_id = ? AND status = 'succeeded'
+    ORDER BY finished_at DESC
+    LIMIT 1
+  `).get(instance.id) as { finished_at: string } | undefined
+
+  return {
+    crfData: {
+      groups,
+      _extracted_at: lastRun?.finished_at || null,
+      _extraction_mode: 'full',
+      _change_logs: [],
+      _task_results: [],
+      _documents: {},
+    },
+    crfCompleteness: totalFields > 0 ? String(Math.round((filledFields / totalFields) * 100)) : '0',
+    instanceId: instance.id,
+  }
+}
+
+function getLatestProjectExtractionTask(projectId: string) {
+  return db.prepare(`
+    SELECT *
+    FROM project_extraction_tasks
+    WHERE project_id = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(projectId) as any
+}
+
+function summarizeProjectTask(taskRow: any) {
+  if (!taskRow) return null
+  const jobIds = normalizeStringList(parseJsonArray(taskRow.job_ids_json))
+  const patientIds = normalizeStringList(parseJsonArray(taskRow.patient_ids_json))
+  const documentIds = normalizeStringList(parseJsonArray(taskRow.document_ids_json))
+  const targetGroups = normalizeStringList(parseJsonArray(taskRow.target_groups_json))
+  const summary = parseJsonObject(taskRow.summary_json)
+
+  const jobStatusRows = jobIds.length > 0
+    ? (db.prepare(`
+        SELECT id, patient_id, document_id, status, last_error, started_at, completed_at, updated_at
+        FROM ehr_extraction_jobs
+        WHERE id IN (${jobIds.map(() => '?').join(',')})
+      `).all(...jobIds) as any[])
+    : []
+
+  let pending = 0
+  let running = 0
+  let completed = 0
+  let failed = 0
+  const errors: any[] = []
+
+  for (const job of jobStatusRows) {
+    if (job.status === 'pending') pending += 1
+    else if (job.status === 'running') running += 1
+    else if (job.status === 'completed') completed += 1
+    else if (job.status === 'failed') {
+      failed += 1
+      errors.push({
+        job_id: job.id,
+        patient_id: job.patient_id,
+        document_id: job.document_id,
+        message: job.last_error || '抽取失败',
+      })
+    }
+  }
+
+  const total = jobIds.length
+  let status = String(taskRow.status || 'pending')
+  if (status !== 'cancelled' && total > 0) {
+    if (failed === total) {
+      status = 'failed'
+    } else if (completed + failed === total) {
+      status = failed > 0 ? 'completed_with_errors' : 'completed'
+    } else if (running > 0) {
+      status = 'running'
+    } else if (pending > 0) {
+      status = 'pending'
+    }
+  } else if (status !== 'cancelled' && total === 0) {
+    status = summary.submitted_job_count > 0 ? 'running' : 'idle'
+  }
+
+  const progress = total > 0 ? Math.round(((completed + failed) / total) * 100) : 0
+
+  return {
+    task_id: taskRow.id,
+    project_id: taskRow.project_id,
+    schema_id: taskRow.schema_id,
+    status,
+    mode: taskRow.mode || 'incremental',
+    target_groups: targetGroups,
+    patient_ids: patientIds,
+    document_ids: documentIds,
+    job_ids: jobIds,
+    total,
+    completed,
+    failed,
+    running,
+    pending,
+    success_count: total > 0 ? Math.max(0, patientIds.length - errors.length) : 0,
+    error_count: failed,
+    progress,
+    started_at: taskRow.started_at || taskRow.created_at,
+    finished_at: taskRow.finished_at || null,
+    summary: {
+      ...summary,
+      submitted_job_count: total,
+      submitted_patient_count: patientIds.length,
+      submitted_document_count: documentIds.length,
+    },
+    errors,
+  }
+}
+
+function persistProjectTaskSummary(task: any) {
+  if (!task?.task_id) return task
+  db.prepare(`
+    UPDATE project_extraction_tasks
+    SET
+      status = ?,
+      summary_json = ?,
+      finished_at = CASE
+        WHEN ? IN ('completed', 'completed_with_errors', 'failed', 'cancelled') THEN COALESCE(finished_at, ?)
+        ELSE finished_at
+      END,
+      updated_at = ?
+    WHERE id = ?
+  `).run(
+    task.status,
+    JSON.stringify(task.summary || {}),
+    task.status,
+    nowIso(),
+    nowIso(),
+    task.task_id
+  )
+  return task
+}
 
 /**
  * GET /api/v1/projects
@@ -305,6 +677,10 @@ router.get('/:projectId/patients', (req: Request, res: Response) => {
       .prepare(`SELECT COUNT(*) AS c FROM project_patients WHERE project_id = ?`)
       .get(projectId) as { c: number }
 
+    const projectRow = db.prepare(`SELECT schema_id FROM projects WHERE id = ?`).get(projectId) as { schema_id: string } | undefined
+    const projectSchemaId = projectRow?.schema_id || null
+    const { fieldMap } = getProjectTemplateMeta(projectSchemaId)
+
     const data = rows.map((r) => {
       let meta: any = {}
       try {
@@ -313,6 +689,9 @@ router.get('/:projectId/patients', (req: Request, res: Response) => {
         meta = {}
       }
       const subject_id = r.subject_label || (typeof r.patient_id === 'string' ? r.patient_id.substring(0, 8) : '')
+
+      const { crfData, crfCompleteness } = buildProjectCrfData(r.patient_id, projectSchemaId, fieldMap)
+
       return {
         id: r.enrollment_id,
         patient_id: r.patient_id,
@@ -324,8 +703,8 @@ router.get('/:projectId/patients', (req: Request, res: Response) => {
         group_name: null,
         status: 'enrolled',
         enrollment_date: r.enrolled_at,
-        crf_data: { groups: {} },
-        crf_completeness: '0',
+        crf_data: crfData,
+        crf_completeness: crfCompleteness,
       }
     })
 
@@ -471,6 +850,101 @@ router.delete('/:projectId/patients/:patientId', (req: Request, res: Response) =
 })
 
 /**
+ * GET /api/v1/projects/:projectId/patients/:patientId
+ */
+router.get('/:projectId/patients/:patientId', (req: Request, res: Response) => {
+  try {
+    const projectId = paramId(req.params.projectId)
+    const patientId = paramId(req.params.patientId)
+    if (!projectId || !patientId) {
+      return res.status(400).json({ success: false, code: 400, message: '缺少参数', data: null })
+    }
+
+    const project = db.prepare(`
+      SELECT p.id, p.project_name, p.schema_id, s.name AS schema_name
+      FROM projects p
+      LEFT JOIN schemas s ON s.id = p.schema_id
+      WHERE p.id = ?
+    `).get(projectId) as any
+    if (!project) {
+      return res.status(404).json({ success: false, code: 404, message: '项目不存在', data: null })
+    }
+
+    const row = db.prepare(`
+      SELECT
+        pp.id AS enrollment_id,
+        pp.project_id,
+        pp.patient_id,
+        pp.enrolled_at,
+        pp.subject_label,
+        p.name AS patient_name,
+        p.metadata AS patient_metadata
+      FROM project_patients pp
+      JOIN patients p ON p.id = pp.patient_id
+      WHERE pp.project_id = ? AND pp.patient_id = ?
+      LIMIT 1
+    `).get(projectId, patientId) as any
+
+    if (!row) {
+      return res.status(404).json({ success: false, code: 404, message: '项目中未找到该患者', data: null })
+    }
+
+    const meta = parseJsonObject(row.patient_metadata)
+    const { fieldMap } = getProjectTemplateMeta(project.schema_id)
+    const { crfData, crfCompleteness, instanceId } = buildProjectCrfData(patientId, project.schema_id, fieldMap)
+
+    const documents = db.prepare(`
+      SELECT
+        d.id,
+        d.file_name,
+        d.document_sub_type,
+        d.status,
+        d.created_at,
+        d.updated_at,
+        d.extract_status
+      FROM documents d
+      WHERE d.patient_id = ? AND d.status != 'deleted'
+      ORDER BY d.created_at DESC
+    `).all(patientId) as any[]
+
+    return res.json({
+      success: true,
+      code: 0,
+      message: 'ok',
+      data: {
+        id: row.enrollment_id,
+        project_id: projectId,
+        patient_id: patientId,
+        patient_name: row.patient_name || '未知患者',
+        patient_gender: meta['患者性别'] || null,
+        patient_age: meta['患者年龄'] || null,
+        patient_birth_date: meta['出生日期'] || null,
+        patient_phone: meta['联系电话'] || null,
+        patient_code: typeof patientId === 'string' ? patientId.slice(0, 8) : patientId,
+        patient_diagnosis: Array.isArray(meta['诊断']) ? meta['诊断'] : [],
+        subject_id: row.subject_label || (typeof patientId === 'string' ? patientId.slice(0, 8) : ''),
+        group_name: null,
+        status: 'enrolled',
+        enrollment_date: row.enrolled_at,
+        document_count: documents.length,
+        schema_instance_id: instanceId,
+        crf_data: crfData,
+        crf_completeness: Number(crfCompleteness) || 0,
+        documents,
+      },
+    })
+  } catch (err: any) {
+    console.error('[GET /projects/:projectId/patients/:patientId]', err)
+    return res.status(500).json({
+      success: false,
+      code: 500,
+      message: err?.message || '服务器错误',
+      data: null,
+    })
+  }
+})
+
+/**
  * GET /api/v1/projects/:projectId
  */
 router.get('/:projectId', (req: Request, res: Response) => {
@@ -494,6 +968,8 @@ router.get('/:projectId', (req: Request, res: Response) => {
       return res.status(404).json({ success: false, code: 404, message: '项目不存在', data: null })
     }
 
+    const { schemaRow, schemaJson, fieldGroups, fieldMap } = getProjectTemplateMeta(row.schema_id)
+
     return res.json({
       success: true,
       code: 0,
@@ -513,11 +989,18 @@ router.get('/:projectId', (req: Request, res: Response) => {
         template_scope_config: {
           template_id: row.schema_id,
           template_name: row.schema_name || 'CRF 模板',
+          schema_version: schemaRow?.version || null,
         },
         template_info: {
-          field_groups: [],
-          db_field_mapping: {},
+          template_id: row.schema_id,
+          template_name: row.schema_name || 'CRF 模板',
+          field_groups: fieldGroups,
+          db_field_mapping: {
+            enabled: true,
+            field_map: fieldMap,
+          },
         },
+        schema_json: schemaJson,
       },
     })
   } catch (err: any) {
@@ -528,6 +1011,316 @@ router.get('/:projectId', (req: Request, res: Response) => {
       message: err?.message || '服务器错误',
       data: null,
     })
+  }
+})
+
+/**
+ * POST /api/v1/projects/:projectId/crf/extraction
+ * 启动项目的 CRF 抽取任务
+ */
+router.post('/:projectId/crf/extraction', async (req: Request, res: Response) => {
+  try {
+    const projectId = paramId(req.params.projectId)
+    if (!projectId) {
+      return res.status(400).json({ success: false, code: 400, message: '缺少 projectId', data: null })
+    }
+
+    const proj = db.prepare(`SELECT id, schema_id FROM projects WHERE id = ?`).get(projectId) as { id: string, schema_id: string } | undefined
+    if (!proj) {
+      return res.status(404).json({ success: false, code: 404, message: '项目不存在', data: null })
+    }
+    if (!proj.schema_id) {
+      return res.status(400).json({ success: false, code: 400, message: '项目未绑定 CRF 模板/schema', data: null })
+    }
+
+    const existingTask = persistProjectTaskSummary(summarizeProjectTask(getLatestProjectExtractionTask(projectId)))
+    if (existingTask && ['pending', 'running'].includes(existingTask.status)) {
+      return res.status(409).json({
+        success: false,
+        code: 40901,
+        message: '该项目已有正在进行的抽取任务',
+        data: {
+          has_active_task: true,
+          active_task: existingTask,
+        },
+      })
+    }
+
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, any>
+    const mode = String(body.mode || 'incremental').trim() || 'incremental'
+    const targetGroups = normalizeStringList(Array.isArray(body.target_groups) ? body.target_groups : [])
+    let targetPatients: string[] = []
+
+    if (Array.isArray(body.patient_ids) && body.patient_ids.length > 0) {
+      targetPatients = normalizeStringList(body.patient_ids)
+    } else {
+      const rows = db.prepare(`SELECT patient_id FROM project_patients WHERE project_id = ?`).all(projectId) as any[]
+      targetPatients = normalizeStringList(rows.map((r) => r.patient_id))
+    }
+
+    if (targetPatients.length === 0) {
+      return res.status(400).json({ success: false, code: 400, message: '该项目下无可用的患者进行抽取', data: null })
+    }
+
+    const stmtDocs = db.prepare(`
+      SELECT id
+      FROM documents
+      WHERE patient_id = ? AND status != 'deleted' AND status IN ('ocr_succeeded', 'archived')
+      ORDER BY created_at ASC
+    `)
+    const taskId = randomUUID()
+    const startedAt = nowIso()
+    const submittedJobIds: string[] = []
+    const submittedDocumentIds: string[] = []
+    const submittedPatientIds: string[] = []
+    const skippedPatients: any[] = []
+
+    for (const patientId of targetPatients) {
+      const docRows = stmtDocs.all(patientId) as any[]
+      const docIds = normalizeStringList(docRows.map((r) => r.id))
+
+      if (docIds.length === 0) {
+        skippedPatients.push({ patient_id: patientId, reason: 'no_documents' })
+        continue
+      }
+
+      const response = await fetch(`${CRF_SERVICE_URL}/api/extract/batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            patient_id: patientId,
+            schema_id: proj.schema_id,
+            document_ids: docIds,
+            instance_type: 'project_crf',
+          })
+        })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        return res.status(response.status).json({
+          success: false,
+          code: response.status,
+          message: errorText || '提交科研抽取任务失败',
+          data: null,
+        })
+      }
+
+      const result = await response.json()
+      const jobs = Array.isArray(result?.jobs) ? result.jobs : []
+      const jobIds = normalizeStringList(jobs.map((job: any) => job?.job_id))
+      if (jobIds.length === 0) {
+        skippedPatients.push({ patient_id: patientId, reason: 'no_new_jobs' })
+        continue
+      }
+
+      submittedPatientIds.push(patientId)
+      submittedJobIds.push(...jobIds)
+      submittedDocumentIds.push(...docIds)
+    }
+
+    db.prepare(`
+      INSERT INTO project_extraction_tasks (
+        id, project_id, schema_id, status, mode, target_groups_json, patient_ids_json,
+        job_ids_json, document_ids_json, summary_json, started_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      taskId,
+      projectId,
+      proj.schema_id,
+      submittedJobIds.length > 0 ? 'running' : 'completed',
+      mode,
+      JSON.stringify(targetGroups),
+      JSON.stringify(submittedPatientIds),
+      JSON.stringify(submittedJobIds),
+      JSON.stringify(submittedDocumentIds),
+      JSON.stringify({
+        requested_patient_count: targetPatients.length,
+        submitted_patient_count: submittedPatientIds.length,
+        submitted_document_count: submittedDocumentIds.length,
+        skipped_patients: skippedPatients,
+      }),
+      startedAt,
+      startedAt,
+      startedAt
+    )
+
+    const task = persistProjectTaskSummary(summarizeProjectTask(getLatestProjectExtractionTask(projectId)))
+
+    return res.json({
+      success: true,
+      code: 0,
+      message: submittedJobIds.length > 0
+        ? `已为 ${submittedPatientIds.length} 位患者提交抽取任务`
+        : '没有找到可提交的新抽取任务',
+      data: {
+        task_id: task?.task_id || taskId,
+        has_active_task: !!task && ['pending', 'running'].includes(task.status),
+        submitted_patient_count: submittedPatientIds.length,
+        submitted_document_count: submittedDocumentIds.length,
+        skipped_patients: skippedPatients,
+        active_task: task,
+      },
+    })
+  } catch (err: any) {
+    console.error('[POST /projects/:projectId/crf/extraction]', err)
+    return res.status(500).json({ success: false, code: 500, message: err?.message || '服务器错误', data: null })
+  }
+})
+
+/**
+ * GET /api/v1/projects/:projectId/crf/extraction/progress
+ * 动态计算整个项目的抽取进度（基于当前 projects 关联的患者及其文档的 ehr_extraction_jobs）
+ */
+router.get('/:projectId/crf/extraction/progress', (req: Request, res: Response) => {
+  try {
+    const projectId = paramId(req.params.projectId)
+    const proj = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId) as { id: string } | undefined
+    if (!proj) {
+      return res.status(404).json({ success: false, code: 404, message: '项目不存在', data: null })
+    }
+    const taskId = String(req.query.task_id || '').trim()
+    const taskRow = taskId
+      ? (db.prepare(`SELECT * FROM project_extraction_tasks WHERE id = ? AND project_id = ?`).get(taskId, projectId) as any)
+      : getLatestProjectExtractionTask(projectId)
+    if (!taskRow) {
+      return res.json({
+        success: true,
+        code: 0,
+        data: {
+          task_id: null,
+          status: 'idle',
+          total: 0,
+          completed: 0,
+          failed: 0,
+          running: 0,
+          pending: 0,
+          progress: 0,
+          success_count: 0,
+          error_count: 0,
+          errors: [],
+        },
+      })
+    }
+
+    return res.json({
+      success: true,
+      code: 0,
+      data: persistProjectTaskSummary(summarizeProjectTask(taskRow)),
+    })
+  } catch (err: any) {
+     console.error('[GET /projects/:projectId/crf/extraction/progress]', err)
+     return res.status(500).json({ success: false, code: 500, message: err?.message, data: null })
+  }
+})
+
+/**
+ * GET /api/v1/projects/:projectId/crf/extraction/active
+ * 查询是否有正在进行的活跃抽取
+ */
+router.get('/:projectId/crf/extraction/active', (req: Request, res: Response) => {
+  try {
+    const projectId = paramId(req.params.projectId)
+    const proj = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId) as { id: string } | undefined
+    if (!proj) {
+      return res.status(404).json({ success: false, code: 404, message: '项目不存在', data: null })
+    }
+    const task = persistProjectTaskSummary(summarizeProjectTask(getLatestProjectExtractionTask(projectId)))
+    return res.json({
+      success: true,
+      code: 0,
+      data: {
+        has_active_task: !!task && ['pending', 'running'].includes(task.status),
+        task_id: task?.task_id || null,
+        status: task?.status || 'idle',
+        active_task: task,
+      },
+    })
+  } catch (err: any) {
+     console.error('[GET /projects/:projectId/crf/extraction/active]', err)
+     return res.status(500).json({ success: false, code: 500, message: err?.message, data: null })
+  }
+})
+
+router.delete('/:projectId/crf/extraction', (req: Request, res: Response) => {
+  try {
+    const projectId = paramId(req.params.projectId)
+    if (!projectId) {
+      return res.status(400).json({ success: false, code: 400, message: '缺少 projectId', data: null })
+    }
+    const task = persistProjectTaskSummary(summarizeProjectTask(getLatestProjectExtractionTask(projectId)))
+    if (!task || !['pending', 'running'].includes(task.status)) {
+      return res.json({ success: true, code: 0, message: '当前无进行中的抽取任务', data: null })
+    }
+
+    const cancelledAt = nowIso()
+    if (task.job_ids.length > 0) {
+      db.prepare(`
+        UPDATE ehr_extraction_jobs
+        SET status = 'failed', last_error = ?, completed_at = ?, updated_at = ?
+        WHERE id IN (${task.job_ids.map(() => '?').join(',')})
+          AND status IN ('pending', 'running')
+      `).run('任务被用户取消', cancelledAt, cancelledAt, ...task.job_ids)
+    }
+    db.prepare(`
+      UPDATE project_extraction_tasks
+      SET status = 'cancelled', cancelled_at = ?, finished_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(cancelledAt, cancelledAt, cancelledAt, task.task_id)
+
+    return res.json({
+      success: true,
+      code: 0,
+      message: '抽取任务已取消',
+      data: {
+        task_id: task.task_id,
+        status: 'cancelled',
+      },
+    })
+  } catch (err: any) {
+    console.error('[DELETE /projects/:projectId/crf/extraction]', err)
+    return res.status(500).json({ success: false, code: 500, message: err?.message || '服务器错误', data: null })
+  }
+})
+
+router.post('/:projectId/crf/extraction/reset', (req: Request, res: Response) => {
+  try {
+    const projectId = paramId(req.params.projectId)
+    if (!projectId) {
+      return res.status(400).json({ success: false, code: 400, message: '缺少 projectId', data: null })
+    }
+    const latest = getLatestProjectExtractionTask(projectId)
+    if (!latest) {
+      return res.json({ success: true, code: 0, message: '当前无抽取任务可重置', data: null })
+    }
+
+    const task = persistProjectTaskSummary(summarizeProjectTask(latest))
+    const resetAt = nowIso()
+    if (task?.job_ids?.length > 0) {
+      db.prepare(`
+        UPDATE ehr_extraction_jobs
+        SET status = 'failed', last_error = ?, completed_at = ?, updated_at = ?
+        WHERE id IN (${task.job_ids.map(() => '?').join(',')})
+          AND status IN ('pending', 'running')
+      `).run('任务已被重置', resetAt, resetAt, ...task.job_ids)
+    }
+    db.prepare(`
+      UPDATE project_extraction_tasks
+      SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, ?), finished_at = COALESCE(finished_at, ?), updated_at = ?
+      WHERE id = ?
+    `).run(resetAt, resetAt, resetAt, latest.id)
+
+    return res.json({
+      success: true,
+      code: 0,
+      message: '项目抽取状态已重置',
+      data: {
+        task_id: latest.id,
+        status: 'cancelled',
+      },
+    })
+  } catch (err: any) {
+    console.error('[POST /projects/:projectId/crf/extraction/reset]', err)
+    return res.status(500).json({ success: false, code: 500, message: err?.message || '服务器错误', data: null })
   }
 })
 

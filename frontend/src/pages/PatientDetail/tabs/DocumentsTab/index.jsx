@@ -6,7 +6,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Row, Col, Button, Space, Empty, Spin, Typography, Modal, List, Avatar, Progress, Alert, Descriptions, Divider, Tag, Input, message, Card } from 'antd'
 import { UploadOutlined, PlayCircleOutlined, FileTextOutlined, TeamOutlined, EyeOutlined, CheckOutlined, UserAddOutlined, LoadingOutlined } from '@ant-design/icons'
 import { getDocumentAiMatchInfo, changeArchivePatient, archiveDocument } from '../../../../api/document'
-import { getPatientList } from '../../../../api/patient'
+import { getPatientList, updatePatientEhrFolder } from '../../../../api/patient'
 
 // 导入新组件
 import DocumentCard from './components/DocumentCard'
@@ -27,7 +27,6 @@ const DocumentsTab = ({
   handleReExtract,
   handleDeleteDocument,
   setUploadVisible,
-  setExtractionVisible,
   onRefresh
 }) => {
   const [selectedDocuments, setSelectedDocuments] = useState([])
@@ -45,6 +44,7 @@ const DocumentsTab = ({
   const [selectedMatchPatient, setSelectedMatchPatient] = useState(null)
   const [archivingLoading, setArchivingLoading] = useState(false)
   const [matchInfoLoading, setMatchInfoLoading] = useState(false)
+  const [updatingEhrFolder, setUpdatingEhrFolder] = useState(false)
   /** 患者匹配弹窗模式：archive=未绑定文档选择患者归档，change=已归档文档更换患者 */
   const [matchModalMode, setMatchModalMode] = useState('change')
   
@@ -224,6 +224,30 @@ const DocumentsTab = ({
     console.log('查看 OCR:', documentId)
     // 跳转到 OCR Viewer 页面
     window.open(`/document/ocr-viewer/${documentId}`, '_blank')
+  }
+
+  const handleUpdateEhrFolder = async () => {
+    if (!patientId) {
+      message.warning('缺少患者信息，无法更新病历夹')
+      return
+    }
+
+    setUpdatingEhrFolder(true)
+    try {
+      const response = await updatePatientEhrFolder(patientId)
+      if (response.success) {
+        const count = response.data?.unextracted_document_count || 0
+        const submittedCount = response.data?.submitted_document_count || 0
+        message.success(`已提交抽取：未抽取文档 ${count} 份，本次下发 ${submittedCount} 份`)
+      } else {
+        message.error(response.message || '更新病历夹失败')
+      }
+    } catch (error) {
+      console.error('更新病历夹失败:', error)
+      message.error(error.response?.data?.message || error.message || '更新病历夹失败')
+    } finally {
+      setUpdatingEhrFolder(false)
+    }
   }
 
   // 搜索患者（带防抖和版本控制）
@@ -450,9 +474,10 @@ const DocumentsTab = ({
               </Button>
               <Button 
                 icon={<PlayCircleOutlined />}
-                onClick={() => setExtractionVisible?.(true)}
+                onClick={handleUpdateEhrFolder}
+                loading={updatingEhrFolder}
               >
-                批量抽取
+                更新病历夹
               </Button>
             </Space>
           </Col>
@@ -481,9 +506,10 @@ const DocumentsTab = ({
               </Button>
               <Button 
                 icon={<PlayCircleOutlined />}
-                onClick={() => setExtractionVisible?.(true)}
+                onClick={handleUpdateEhrFolder}
+                loading={updatingEhrFolder}
               >
-                批量抽取
+                更新病历夹
               </Button>
             </Space>
           </Col>

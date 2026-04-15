@@ -8,6 +8,31 @@ import db from '../db.js'
 
 const router = Router()
 
+function parseStoredValue(raw: string) {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
+function ensureObjectPath(target: any, parts: string[]) {
+  let current = target
+  for (const part of parts) {
+    if (current[part] === undefined || current[part] === null || typeof current[part] !== 'object' || Array.isArray(current[part])) {
+      current[part] = {}
+    }
+    current = current[part]
+  }
+  return current
+}
+
+function setObjectValue(target: any, parts: string[], value: any) {
+  if (parts.length === 0) return
+  const parent = ensureObjectPath(target, parts.slice(0, -1))
+  parent[parts[parts.length - 1]] = value
+}
+
 /**
  * GET /api/v1/patients/:patientId/ehr-schema-data
  *
@@ -29,8 +54,14 @@ router.get('/:patientId/ehr-schema-data', (req: Request, res: Response) => {
     `).get(patientId) as any
 
     if (!instance) {
-      // 延迟初始化：查询是否有基准 schema
-      const defaultSchema = db.prepare(`SELECT * FROM schemas ORDER BY created_at DESC LIMIT 1`).get() as any
+      // 延迟初始化：查询基准 schema（与 documents.ts getDefaultSchemaId 保持一致）
+      let defaultSchema = db.prepare(
+        `SELECT * FROM schemas WHERE code = 'patient_ehr_v2' AND is_active = 1 ORDER BY version DESC LIMIT 1`
+      ).get() as any
+      if (!defaultSchema) {
+        // 找不到 patient_ehr_v2 时回退到最新 schema
+        defaultSchema = db.prepare(`SELECT * FROM schemas WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1`).get() as any
+      }
       if (!defaultSchema) {
         return res.json({
           success: false,
@@ -73,10 +104,26 @@ router.get('/:patientId/ehr-schema-data', (req: Request, res: Response) => {
 
     // 3. 读取所有 field_value_selected，组装为嵌套 JSON
     const selectedRows = db.prepare(`
-      SELECT field_path, selected_value_json
-      FROM field_value_selected
-      WHERE instance_id = ?
-      ORDER BY field_path
+      SELECT
+        fvs.field_path,
+        fvs.selected_value_json,
+        fvs.section_instance_id,
+        fvs.row_instance_id,
+        si.section_path,
+        si.repeat_index AS section_repeat_index,
+        si.is_repeatable AS section_is_repeatable,
+        ri.group_path,
+        ri.repeat_index AS row_repeat_index
+      FROM field_value_selected fvs
+      LEFT JOIN section_instances si ON si.id = fvs.section_instance_id
+      LEFT JOIN row_instances ri ON ri.id = fvs.row_instance_id
+      WHERE fvs.instance_id = ?
+      ORDER BY
+        COALESCE(si.section_path, ''),
+        COALESCE(si.repeat_index, 0),
+        COALESCE(ri.group_path, ''),
+        COALESCE(ri.repeat_index, 0),
+        fvs.field_path
     `).all(instance.instance_id) as any[]
 
     const draftData: any = {}
@@ -87,30 +134,65 @@ router.get('/:patientId/ehr-schema-data', (req: Request, res: Response) => {
 
       if (parts.length === 0) continue
 
-      // Parse the stored JSON value
-      let value: any
-      try {
-        value = JSON.parse(row.selected_value_json)
-      } catch {
-        value = row.selected_value_json
+      const value = parseStoredValue(row.selected_value_json)
+
+      const hasRepeatableSection =
+        !!row.section_instance_id &&
+        typeof row.section_path === 'string' &&
+        !!row.section_path &&
+        Number(row.section_is_repeatable || 0) === 1
+      const hasRepeatableRow = !!row.row_instance_id && typeof row.group_path === 'string' && row.group_path
+
+      if (hasRepeatableSection) {
+        const sectionParts = String(row.section_path).split('/').filter((p: string) => p !== '')
+        const sectionParent = ensureObjectPath(draftData, sectionParts.slice(0, -1))
+        const sectionKey = sectionParts[sectionParts.length - 1]
+        if (!Array.isArray(sectionParent[sectionKey])) {
+          sectionParent[sectionKey] = []
+        }
+
+        const sectionArray = sectionParent[sectionKey]
+        const sectionIndex = Number(row.section_repeat_index || 0)
+        while (sectionArray.length <= sectionIndex) {
+          sectionArray.push({})
+        }
+        if (!sectionArray[sectionIndex] || typeof sectionArray[sectionIndex] !== 'object' || Array.isArray(sectionArray[sectionIndex])) {
+          sectionArray[sectionIndex] = {}
+        }
+
+        const sectionRecord = sectionArray[sectionIndex]
+        const relativeToSection = parts.slice(sectionParts.length)
+
+        if (hasRepeatableRow) {
+          const groupParts = String(row.group_path).split('/').filter((p: string) => p !== '')
+          const relativeGroupParts = groupParts.slice(sectionParts.length)
+          const rowContainer = ensureObjectPath(sectionRecord, relativeGroupParts.slice(0, -1))
+          const rowKey = relativeGroupParts[relativeGroupParts.length - 1]
+          if (!Array.isArray(rowContainer[rowKey])) {
+            rowContainer[rowKey] = []
+          }
+
+          const rowArray = rowContainer[rowKey]
+          const rowIndex = Number(row.row_repeat_index || 0)
+          while (rowArray.length <= rowIndex) {
+            rowArray.push({})
+          }
+          if (!rowArray[rowIndex] || typeof rowArray[rowIndex] !== 'object' || Array.isArray(rowArray[rowIndex])) {
+            rowArray[rowIndex] = {}
+          }
+
+          const relativeToRow = parts.slice(groupParts.length)
+          if (relativeToRow.length === 0) continue
+          setObjectValue(rowArray[rowIndex], relativeToRow, value)
+          continue
+        }
+
+        if (relativeToSection.length === 0) continue
+        setObjectValue(sectionRecord, relativeToSection, value)
+        continue
       }
 
-      // Build nested structure
-      let current = draftData
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (current[parts[i]] === undefined) {
-          current[parts[i]] = {}
-        }
-        // If current node was set as a leaf value but we need to go deeper,
-        // wrap it (shouldn't normally happen with correct data)
-        if (typeof current[parts[i]] !== 'object' || current[parts[i]] === null) {
-          current[parts[i]] = {}
-        }
-        current = current[parts[i]]
-      }
-
-      const lastKey = parts[parts.length - 1]
-      current[lastKey] = value
+      setObjectValue(draftData, parts, value)
     }
 
     // 4. Return assembled response
@@ -306,12 +388,24 @@ router.get('/:patientId/ehr-field-history', (req: Request, res: Response) => {
       fieldPath = '/' + fieldPath.replace(/\./g, '/')
     }
 
+    const normalizeIndexedFieldPath = (path: string) =>
+      path
+        .split('/')
+        .filter(Boolean)
+        .filter((seg) => !/^\d+$/.test(seg))
+        .join('/')
+
     // Build list of candidate paths to query:
     // 1. Exact path (for scalar fields)
     // 2. Strip trailing /N/subField (for table cell clicks → query parent array)
     // 3. Strip trailing /N (for table row clicks → query parent array)
+    // 4. Remove all numeric path segments (for repeatable section row fields stored without index)
     // This handles clicks on table rows/cells whose candidates are stored at the array level.
     const pathsToTry: string[] = [fieldPath]
+    const normalizedIndexedPath = '/' + normalizeIndexedFieldPath(fieldPath)
+    if (normalizedIndexedPath !== fieldPath) {
+      pathsToTry.push(normalizedIndexedPath)
+    }
     // Strip /N/subField: e.g. /foo/bar/0/name → /foo/bar
     const cellMatch = fieldPath.match(/^(.+)\/\d+\/.+$/)
     if (cellMatch) {
@@ -391,7 +485,26 @@ router.get('/:patientId/ehr-field-history', (req: Request, res: Response) => {
         source_text: c.source_text,
         confidence: c.confidence,
         source_location: c.source_bbox_json ? (() => {
-          try { return JSON.parse(c.source_bbox_json) } catch { return null }
+          try { 
+            let parsed = JSON.parse(c.source_bbox_json)
+            // 处理 Python 端多次 json.dumps 导致的双重转义（解析出来还是字符串）
+            if (typeof parsed === 'string') {
+              try {
+                parsed = JSON.parse(parsed)
+              } catch {
+                // 如果内部不是合法 JSON，就可能是真的普通字符串
+              }
+            }
+            // 兼容数组直接作为 bbox 的情况
+            if (Array.isArray(parsed) && parsed.length >= 4) {
+              return {
+                bbox: parsed,
+                page: c.source_page !== null ? c.source_page : 1,
+                position: { x: parsed[0], y: parsed[1] }
+              }
+            }
+            return parsed
+          } catch { return null }
         })() : null,
         remark: c.source_text || null,
         created_at: c.created_at

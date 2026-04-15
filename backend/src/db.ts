@@ -99,6 +99,25 @@ const projectBootstrap = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_project_patients_project ON project_patients(project_id)`,
   `CREATE INDEX IF NOT EXISTS idx_project_patients_patient ON project_patients(patient_id)`,
+  `CREATE TABLE IF NOT EXISTS project_extraction_tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    schema_id TEXT NOT NULL REFERENCES schemas(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    mode TEXT,
+    target_groups_json TEXT NOT NULL DEFAULT '[]',
+    patient_ids_json TEXT NOT NULL DEFAULT '[]',
+    job_ids_json TEXT NOT NULL DEFAULT '[]',
+    document_ids_json TEXT NOT NULL DEFAULT '[]',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT,
+    finished_at TEXT,
+    cancelled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_project_extract_tasks_project ON project_extraction_tasks(project_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_project_extract_tasks_status ON project_extraction_tasks(project_id, status, created_at DESC)`,
 ]
 for (const stmt of projectBootstrap) {
   try {

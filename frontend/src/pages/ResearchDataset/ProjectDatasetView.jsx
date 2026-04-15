@@ -417,13 +417,13 @@ const ProjectDatasetView = () => {
   const checkActiveTask = useCallback(async () => {
     try {
       const response = await getActiveExtractionTask(projectId)
-      
-      if (response.success && response.data.has_active_task) {
+
+      if (response.success && response.data?.has_active_task && response.data?.active_task) {
         const activeTask = response.data.active_task
         setExtractionTaskId(activeTask.task_id)
         setExtractionProgress(activeTask)
         setIsExtracting(true)
-        
+
         // 恢复轮询
         pollExtractionProgress(activeTask.task_id)
         message.info('检测到正在进行的抽取任务，已恢复进度显示')
@@ -448,12 +448,21 @@ const ProjectDatasetView = () => {
     try {
       setIsExtracting(true)
       const response = await startCrfExtraction(projectId, patientIds, mode, targetGroups)
-      
+
       if (response.success) {
-        const taskId = response.data.task_id
+        const activeTask = response.data?.active_task || null
+        const taskId = activeTask?.task_id || response.data?.task_id
+        if (!taskId) {
+          message.error(response.message || '启动抽取任务失败：未返回任务标识')
+          setIsExtracting(false)
+          return
+        }
         setExtractionTaskId(taskId)
+        if (activeTask) {
+          setExtractionProgress(activeTask)
+        }
         message.success('抽取任务已启动')
-        
+
         // 开始轮询进度
         pollExtractionProgress(taskId)
       } else {
@@ -462,8 +471,9 @@ const ProjectDatasetView = () => {
           const activeTask = response.data.active_task
           setExtractionTaskId(activeTask.task_id)
           setExtractionProgress(activeTask)
+          setIsExtracting(true)
           message.warning('该项目已有正在进行的抽取任务')
-          
+
           // 恢复轮询
           pollExtractionProgress(activeTask.task_id)
         } else {
@@ -488,21 +498,21 @@ const ProjectDatasetView = () => {
       
       try {
         const response = await getCrfExtractionProgress(projectId, taskId)
-        
-        if (response.success) {
+
+        if (response.success && response.data) {
           const progress = response.data
           setExtractionProgress(progress)
-          
+
           // 检查任务是否完成或取消
           if (progress.status === 'completed' || progress.status === 'completed_with_errors' || progress.status === 'failed' || progress.status === 'cancelled') {
             setIsExtracting(false)
             setExtractionTaskId(null)
             pollingRef.current = false
-            
+
             if (progress.status === 'completed') {
-              message.success(`抽取完成！成功处理 ${progress.success_count} 位患者`)
+              message.success(`抽取完成！成功处理 ${progress.success_count || 0} 位患者`)
             } else if (progress.status === 'completed_with_errors') {
-              message.warning(`抽取完成，但有 ${progress.error_count} 个错误`)
+              message.warning(`抽取完成，但有 ${progress.error_count || 0} 个错误`)
             } else if (progress.status === 'cancelled') {
               message.info('抽取任务已取消')
             } else {
@@ -511,9 +521,10 @@ const ProjectDatasetView = () => {
             
             // 刷新患者数据
             fetchProjectPatients()
+            fetchProjectDetail()
             return
           }
-          
+
           // 继续轮询
           if (pollingRef.current) {
             setTimeout(() => poll(), 2000)
@@ -529,7 +540,7 @@ const ProjectDatasetView = () => {
     }
     
     poll()
-  }, [projectId, fetchProjectPatients])
+  }, [projectId, fetchProjectPatients, fetchProjectDetail])
   
   // 获取历史抽取任务
   const fetchExtractionTasks = useCallback(async () => {
@@ -2484,54 +2495,23 @@ const ProjectDatasetView = () => {
               添加患者
             </Button>
             {!isExtracting ? (
-              <Dropdown
-                menu={{
-                  items: [
-                    {
-                      key: 'incremental',
-                      label: (
-                        <div>
-                          <div style={{ fontWeight: 500 }}>增量抽取</div>
-                          <div style={{ fontSize: 12, color: '#999' }}>仅补抽新增/缺失字段，保留历史数据</div>
-                        </div>
-                      ),
-                      icon: <PlayCircleOutlined />,
-                      onClick: () => handleStartExtraction(null, 'incremental'),
-                    },
-                    {
-                      key: 'full',
-                      label: (
-                        <div>
-                          <div style={{ fontWeight: 500 }}>全量抽取</div>
-                          <div style={{ fontSize: 12, color: '#999' }}>重新抽取所有字段，会覆盖历史数据</div>
-                        </div>
-                      ),
-                      icon: <ReloadOutlined />,
-                      danger: true,
-                      onClick: () => {
-                        Modal.confirm({
-                          title: '确认全量抽取？',
-                          content: '将重新抽取所有字段，已有数据将被覆盖。此操作不可撤销。',
-                          okText: '确认抽取',
-                          okButtonProps: { danger: true },
-                          cancelText: '取消',
-                          onOk: () => handleStartExtraction(null, 'full'),
-                        })
-                      },
-                    },
-                  ],
+              <Button
+                size="small"
+                type="primary"
+                icon={<PlayCircleOutlined />}
+                style={{ backgroundColor: '#6366f1', borderColor: '#6366f1' }}
+                onClick={() => {
+                  Modal.confirm({
+                    title: '确认抽取？',
+                    content: '将开始对选中组内字段进行抽取。',
+                    okText: '确认',
+                    cancelText: '取消',
+                    onOk: () => handleStartExtraction(null, 'full'),
+                  })
                 }}
-                trigger={['click']}
               >
-                <Button
-                  size="small"
-                  type="primary"
-                  icon={<PlayCircleOutlined />}
-                  style={{ backgroundColor: '#6366f1', borderColor: '#6366f1' }}
-                >
-                  开始抽取 <DownOutlined style={{ fontSize: 10 }} />
-                </Button>
-              </Dropdown>
+                开始抽取
+              </Button>
             ) : (
               <Button 
                 size="small" 
@@ -2543,53 +2523,22 @@ const ProjectDatasetView = () => {
               </Button>
             )}
             {extractionProgress && (extractionProgress.status === 'cancelled' || extractionProgress.status === 'failed') && (
-              <Dropdown
-                menu={{
-                  items: [
-                    {
-                      key: 'incremental',
-                      label: (
-                        <div>
-                          <div style={{ fontWeight: 500 }}>增量续抽</div>
-                          <div style={{ fontSize: 12, color: '#999' }}>继续抽取尚未处理的患者</div>
-                        </div>
-                      ),
-                      icon: <PlayCircleOutlined />,
-                      onClick: () => handleReextract('incremental'),
-                    },
-                    {
-                      key: 'full',
-                      label: (
-                        <div>
-                          <div style={{ fontWeight: 500 }}>全量抽取</div>
-                          <div style={{ fontSize: 12, color: '#999' }}>对所有患者重新抽取，覆盖历史数据</div>
-                        </div>
-                      ),
-                      icon: <ReloadOutlined />,
-                      danger: true,
-                      onClick: () => {
-                        Modal.confirm({
-                          title: '确认全量抽取？',
-                          content: '将重新抽取所有患者的全部字段，已有数据将被覆盖。',
-                          okText: '确认抽取',
-                          okButtonProps: { danger: true },
-                          cancelText: '取消',
-                          onOk: () => handleReextract('full'),
-                        })
-                      },
-                    },
-                  ],
+              <Button
+                size="small"
+                type="primary"
+                icon={<ReloadOutlined />}
+                onClick={() => {
+                  Modal.confirm({
+                    title: '确认重新抽取？',
+                    content: '将继续对患者进行抽取。',
+                    okText: '确认',
+                    cancelText: '取消',
+                    onOk: () => handleReextract('full'),
+                  })
                 }}
-                trigger={['click']}
               >
-                <Button
-                  size="small"
-                  type="primary"
-                  icon={<ReloadOutlined />}
-                >
-                  重新抽取 <DownOutlined style={{ fontSize: 10 }} />
-                </Button>
-              </Dropdown>
+                重新抽取
+              </Button>
             )}
             <Button size="small" icon={<CheckCircleOutlined />} onClick={handleQualityCheck}>
               质量检查
@@ -2784,12 +2733,7 @@ const ProjectDatasetView = () => {
             </Checkbox.Group>
           </Form.Item>
           
-          <Form.Item label="抽取模式">
-            <Radio.Group value={extractionModalMode} onChange={e => setExtractionModalMode(e.target.value)}>
-              <Radio value="incremental">增量抽取 - 仅补抽选中组内缺失字段</Radio>
-              <Radio value="full">全量抽取 - 重新抽取选中组内所有字段</Radio>
-            </Radio.Group>
-          </Form.Item>
+
         </Form>
       </Modal>
 
@@ -3297,27 +3241,17 @@ const ProjectDatasetView = () => {
             icon={<PlayCircleOutlined />}
             style={{ backgroundColor: '#6366f1', borderColor: '#6366f1' }}
             disabled={isExtracting}
-            onClick={() => handleStartExtraction(selectedPatients, 'incremental')}
-          >
-            增量抽取
-          </Button>
-          <Button
-            size="small"
-            danger
-            icon={<ReloadOutlined />}
-            disabled={isExtracting}
             onClick={() => {
               Modal.confirm({
-                title: `确认对 ${selectedPatients.length} 位患者全量抽取？`,
-                content: '已有数据将被覆盖，此操作不可撤销。',
-                okText: '确认抽取',
-                okButtonProps: { danger: true },
+                title: `确认对 ${selectedPatients.length} 位患者进行抽取？`,
+                content: '将开始抽取所选患者的数据。',
+                okText: '确认',
                 cancelText: '取消',
                 onOk: () => handleStartExtraction(selectedPatients, 'full'),
               })
             }}
           >
-            全量抽取
+            开始抽取
           </Button>
           <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.2)' }} />
           <Button

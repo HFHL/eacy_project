@@ -76,3 +76,4 @@ share/python-wheels/
 .pytest_cache/
 .coverage
 htmlcov/
+llms_config.json

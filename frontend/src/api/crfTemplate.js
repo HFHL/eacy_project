@@ -73,7 +73,38 @@ export const updateCrfTemplateMeta = () => ok({})
 export const getCRFCategories = () => ok([])
 export const getCrfDocTypes = () => ok([])
 export const assignTemplateToProject = () => ok({})
-export const getProjectTemplate = () => ok(null)
+export const getProjectTemplate = async (projectId) => {
+  if (!projectId) {
+    return { success: false, code: 400, message: '缺少项目 id', data: null }
+  }
+  try {
+    const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}`)
+    const json = await parseJsonResponse(response)
+    if (!response.ok || !json.success) {
+      return {
+        success: false,
+        code: json.code || response.status || 500,
+        message: json.message || '项目模板获取失败',
+        data: null,
+      }
+    }
+    return {
+      success: true,
+      code: 0,
+      message: 'ok',
+      data: {
+        template_id: json?.data?.schema_id || json?.data?.template_info?.template_id || null,
+        template_name: json?.data?.template_info?.template_name || json?.data?.template_scope_config?.template_name || null,
+        schema_json: json?.data?.schema_json || null,
+        template_info: json?.data?.template_info || null,
+        layout_config: null,
+      },
+    }
+  } catch (e) {
+    console.error('getProjectTemplate:', e)
+    return { success: false, code: 500, message: e.message, data: null }
+  }
+}
 export const convertTemplate = () => ok({})
 export const importCrfTemplateFromCsv = () => ok({})
 export const publishCrfTemplate = () => ok({})
