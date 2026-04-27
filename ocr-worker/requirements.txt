@@ -1,3 +1,0 @@
-python-dotenv>=1.0
-oss2>=2.18
-requests>=2.31

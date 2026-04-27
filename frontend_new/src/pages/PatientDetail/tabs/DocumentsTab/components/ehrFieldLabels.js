@@ -1,6 +1,6 @@
 /**
  * 电子病历字段中文名称映射字典
- * 对应 backend/eacy sql/02_cdm_patient_data.sql 中的 patient_ehr 表字段
+ * 对应患者 EHR 字段标签。
  */
 
 export const EHR_FIELD_LABELS = {

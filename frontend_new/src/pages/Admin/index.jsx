@@ -380,7 +380,7 @@ const ExtractionProgressStream = ({ events, status, terminal, error }) => {
           type="info"
           showIcon
           message="正在等待进度事件"
-          description="crf-service 每完成一个图节点会推送一条事件；若长时间未收到，可能 worker 还没领到任务、或 Celery broker 不可达。"
+          description="抽取服务每完成一个节点会推送一条事件；若长时间未收到，可能任务尚未开始或进度通道不可达。"
         />
       ) : (
         <div

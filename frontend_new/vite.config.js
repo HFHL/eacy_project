@@ -38,23 +38,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    open: false,  // Docker 环境禁用自动打开浏览器
+    open: false,
     host: true,
     strictPort: true,
     allowedHosts: ['.ngrok-free.app', '.ngrok.io', 'localhost', '127.0.0.1', 'eacy.cinocore.com'],
     watch: {
-      usePolling: true,  // Docker 环境下需要使用轮询模式监听文件变化
+      usePolling: true,
       interval: 1000
-    },
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true
-      },
-      '/uploads': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true
-      }
     }
   },
   build: {

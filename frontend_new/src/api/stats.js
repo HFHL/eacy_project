@@ -1,26 +1,13 @@
-/**
- * 统计相关API
- */
-import request from './request'
+import { emptySuccess } from './_empty'
 
-/**
- * 获取仪表盘数据（聚合统计）
- * @returns {Promise} { success, data: { overview, documents, patients } }
- */
-export const getDashboardStats = () => {
-  return request.get('/stats/dashboard')
-}
+export const getDashboardStats = async () => emptySuccess({
+  overview: {},
+  documents: { task_status_counts: {} },
+  patients: {},
+  projects: { extraction_progress: [] },
+  tasks: { active_tasks: [], recent_activities: [], project_extraction_summary: {} },
+})
 
-/**
- * 获取所有活跃的异步任务（从 Redis 扫描）
- * @returns {Promise} { success, data: { tasks, total, active_count } }
- */
-export const getActiveTasks = () => {
-  return request.get('/stats/active-tasks')
-}
+export const getActiveTasks = async () => emptySuccess([])
 
-export default {
-  getDashboardStats,
-  getActiveTasks
-}
-
+export default { getDashboardStats, getActiveTasks }

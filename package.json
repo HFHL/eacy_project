@@ -1,20 +1,14 @@
 {
-  "name": "first-project",
+  "name": "eacy-frontend-ui",
   "private": true,
   "version": "0.1.0",
   "workspaces": [
-    "frontend",
-    "frontend_new",
-    "backend"
+    "frontend_new"
   ],
   "scripts": {
-    "dev": "concurrently -n frontend,backend -c cyan,green \"npm run dev -w xidong-crf-prototype-new\" \"npm run dev -w backend\"",
-    "dev:frontend": "npm run dev -w xidong-crf-prototype-new",
-    "dev:frontend-legacy": "npm run dev -w xidong-crf-prototype",
-    "dev:backend": "npm run dev -w backend",
-    "build": "npm run build -w xidong-crf-prototype-new && npm run build -w backend"
-  },
-  "devDependencies": {
-    "concurrently": "^9.2.1"
+    "dev": "npm run dev -w xidong-crf-prototype-new",
+    "build": "npm run build -w xidong-crf-prototype-new",
+    "preview": "npm run preview -w xidong-crf-prototype-new",
+    "serve": "npm run serve -w xidong-crf-prototype-new"
   }
 }
