@@ -6,6 +6,7 @@
     "frontend_new"
   ],
   "scripts": {
+    "start:all": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\start-all.ps1",
     "dev": "npm run dev -w xidong-crf-prototype-new",
     "build": "npm run build -w xidong-crf-prototype-new",
     "preview": "npm run preview -w xidong-crf-prototype-new",

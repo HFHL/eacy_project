@@ -22,11 +22,6 @@ const SystemSettings = lazy(() => import('../pages/UserSystem/SystemSettings'))
 const Login = lazy(() => import('../pages/UserSystem/Login'))
 
 // 临时测试组件
-const RightPanelTest = lazy(() => import('../pages/PatientDetail/tabs/EhrTab/test'))
-const LayoutTest = lazy(() => import('../pages/PatientDetail/tabs/EhrTab/layoutTest'))
-const LeftPanelTest = lazy(() => import('../pages/PatientDetail/tabs/EhrTab/leftPanelTest'))
-const EhrTabIntegrationTest = lazy(() => import('../pages/PatientDetail/tabs/EhrTab/integrationTest'))
-const MiddlePanelTest = lazy(() => import('../pages/PatientDetail/tabs/EhrTab/middlePanelTest'))
 const ExtractionDashboard = lazy(() => import('../pages/ExtractionDashboard'))
 const ExtractionHistory = lazy(() => import('../pages/ExtractionDashboard/HistoryPage'))
 const OcrViewer = lazy(() => import('../pages/OcrViewer'))
@@ -161,46 +156,6 @@ const router = createBrowserRouter([
             handle: {
               crumb: () => '患者详情',
               title: '患者详情管理'
-            }
-          },
-          {
-            path: 'test/right-panel',
-            element: <RightPanelTest />,
-            handle: {
-              crumb: () => 'RightPanel测试',
-              title: 'RightPanel组件测试'
-            }
-          },
-          {
-            path: 'test/layout',
-            element: <LayoutTest />,
-            handle: {
-              crumb: () => '布局Hook测试',
-              title: '布局Hook功能测试'
-            }
-          },
-          {
-            path: 'test/left-panel',
-            element: <LeftPanelTest />,
-            handle: {
-              crumb: () => 'LeftPanel测试',
-              title: 'LeftPanel组件测试'
-            }
-          },
-          {
-            path: 'test/integration',
-            element: <EhrTabIntegrationTest />,
-            handle: {
-              crumb: () => 'EhrTab集成测试',
-              title: 'EhrTab组件集成测试'
-            }
-          },
-          {
-            path: 'test/middle-panel',
-            element: <MiddlePanelTest />,
-            handle: {
-              crumb: () => 'MiddlePanel测试',
-              title: 'MiddlePanel组件测试'
             }
           }
         ]

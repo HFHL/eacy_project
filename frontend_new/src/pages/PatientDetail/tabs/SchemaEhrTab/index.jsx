@@ -13,7 +13,6 @@ import {
 } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import SchemaForm from '../../../../components/SchemaForm'
-import mockPatientData from '../../../../data/mockPatientData.json'
 import { getPatientEhrSchemaData, updatePatientEhrSchemaData } from '../../../../api/patient'
 import {
   parseSchemaDefsToEnums,
@@ -62,6 +61,7 @@ const SchemaEhrTab = ({
   const [error, setError] = useState(null)
   const [localPatientData, setLocalPatientData] = useState(patientData)
   const latestRequestIdRef = useRef(0)
+  const savedPatientDataRef = useRef(patientData || {})
   
   /**
    * 判断当前异步请求是否仍为最新请求。
@@ -100,11 +100,12 @@ const SchemaEhrTab = ({
         
         if (response?.success && hasSchema) {
           loadedSchema = schemaCandidate
-          loadedData = response.data.data
+          loadedData = response.data.data || {}
         } else {
           const schemaModule = await import('../../../../data/patient_ehr-V2.schema.json')
           loadedSchema = schemaModule.default
           message.warning(response?.message || '后端 Schema 获取失败，已使用本地Schema')
+          loadedData = {}
         }
       } else {
         const schemaModule = await import('../../../../data/patient_ehr-V2.schema.json')
@@ -120,16 +121,16 @@ const SchemaEhrTab = ({
       setEnums(parsedEnums)
       
       // 如果没有传入 patientData，按页面模式设置初始数据：
-      // - 患者详情页（有 patientId）：必须绑定真实患者数据，缺失时使用空对象，不回退 mock
-      // - 独立演示页（无 patientId）：允许回退 mock 数据
       if (!patientData) {
         if (loadedData && typeof loadedData === 'object') {
           setLocalPatientData(loadedData)
-        } else if (patientId) {
-          setLocalPatientData({})
+          savedPatientDataRef.current = loadedData
         } else {
-          setLocalPatientData(mockPatientData)
+          setLocalPatientData({})
+          savedPatientDataRef.current = {}
         }
+      } else {
+        savedPatientDataRef.current = patientData
       }
       
       console.log('✅ Schema加载成功:', loadedSchema.$id)
@@ -146,11 +147,10 @@ const SchemaEhrTab = ({
         setSchema(fallbackSchema)
         setEnums(parsedEnums)
         if (!patientData) {
-          if (patientId) {
-            setLocalPatientData({})
-          } else {
-            setLocalPatientData(mockPatientData)
-          }
+          setLocalPatientData({})
+          savedPatientDataRef.current = {}
+        } else {
+          savedPatientDataRef.current = patientData
         }
         message.warning('Schema请求失败，已回退到本地Schema')
       } catch (fallbackError) {
@@ -173,6 +173,7 @@ const SchemaEhrTab = ({
   useEffect(() => {
     if (patientData) {
       setLocalPatientData(patientData)
+      savedPatientDataRef.current = patientData
     }
   }, [patientData])
   
@@ -180,7 +181,9 @@ const SchemaEhrTab = ({
   const handleSave = useCallback(async (data, type) => {
     if (patientId) {
       try {
-        await updatePatientEhrSchemaData(patientId, data)
+        await updatePatientEhrSchemaData(patientId, data, {
+          previousData: savedPatientDataRef.current || {},
+        })
       } catch (err) {
         throw err
       }
@@ -191,6 +194,7 @@ const SchemaEhrTab = ({
     }
 
     setLocalPatientData(data)
+    savedPatientDataRef.current = data
 
     if (onDataChange) {
       onDataChange(data)

@@ -1,4 +1,5 @@
 import { emptySuccess } from './_empty'
+import request from './request'
 
 const emptyUser = {
   id: 'local-ui-user',
@@ -16,7 +17,13 @@ export const getWechatQrCode = async () => emptySuccess({ ticket: '', qr_code_ur
 export const checkWechatScanStatus = async () => emptySuccess({ status: 'idle' })
 export const refreshToken = async () => emptySuccess({ access_token: '', refresh_token: '' })
 export const logout = async () => emptySuccess(null)
-export const getCurrentUser = async () => emptySuccess(emptyUser)
+export const getCurrentUser = async () => {
+  const user = await request.get('/auth/me')
+  return emptySuccess({
+    ...user,
+    name: user.name || user.username || user.id,
+  })
+}
 export const updateUserInfo = async (data = {}) => emptySuccess({ ...emptyUser, ...data })
 export const softLogin = async () => emptySuccess(null)
 export const getUserSettings = async () => emptySuccess(null)

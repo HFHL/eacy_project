@@ -104,7 +104,6 @@ const ProjectSchemaEhrTab = ({
     
     try {
       let loadedSchema = null
-      let mockData = null
       
       if (projectId) {
         const response = await getProjectTemplate(projectId)
@@ -146,10 +145,6 @@ const ProjectSchemaEhrTab = ({
         loadedSchema = schemaModule.default
       }
       
-      if (!patientData) {
-        const mockDataModule = await import('../../../../data/mockPatientData.json')
-        mockData = mockDataModule.default
-      }
       
       // 解析enums
       const parsedEnums = parseSchemaDefsToEnums(loadedSchema)
@@ -157,9 +152,8 @@ const ProjectSchemaEhrTab = ({
       setSchema(loadedSchema)
       setEnums(parsedEnums)
       
-      // 如果没有传入patientData，使用mock数据
-      if (!patientData && mockData) {
-        setLocalPatientData(mockData)
+      if (!patientData) {
+        setLocalPatientData({})
       }
       
       console.log('✅ 项目Schema加载成功:', loadedSchema.$id)

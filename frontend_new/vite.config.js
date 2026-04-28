@@ -32,7 +32,6 @@ export default defineConfig({
       '@pages': path.resolve(__dirname, './src/pages'),
       '@utils': path.resolve(__dirname, './src/utils'),
       '@store': path.resolve(__dirname, './src/store'),
-      '@mock': path.resolve(__dirname, './src/mock'),
       '@styles': path.resolve(__dirname, './src/styles')
     }
   },
@@ -42,6 +41,12 @@ export default defineConfig({
     host: true,
     strictPort: true,
     allowedHosts: ['.ngrok-free.app', '.ngrok.io', 'localhost', '127.0.0.1', 'eacy.cinocore.com'],
+    proxy: {
+      '/api/v1': {
+        target: process.env.VITE_DEV_API_PROXY_TARGET || 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
     watch: {
       usePolling: true,
       interval: 1000

@@ -76,8 +76,8 @@ const Login = () => {
     // 模拟二维码生成延迟
     // TODO: 后续接入真实的微信二维码接口
     setTimeout(() => {
-      const mockQrData = `https://eacy.ai/login/wechat?state=${Date.now()}`
-      const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(mockQrData)}`
+      const qrData = `https://eacy.ai/login/wechat?state=${Date.now()}`
+      const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrData)}`
       setQrUrl(qrApiUrl)
       setQrLoading(false)
       

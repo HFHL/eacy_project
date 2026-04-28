@@ -7,7 +7,6 @@
       "@pages/*": ["src/pages/*"],
       "@utils/*": ["src/utils/*"],
       "@store/*": ["src/store/*"],
-      "@mock/*": ["src/mock/*"],
       "@styles/*": ["src/styles/*"]
     },
     "jsx": "react-jsx",

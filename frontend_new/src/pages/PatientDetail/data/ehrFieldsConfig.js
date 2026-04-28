@@ -682,7 +682,6 @@ export const ehrFieldsData = {
    }
 }
 
-// 字段组结构配置（用于构建病历夹树形结构，不包含 mock 数据值）
 export const ehrFieldGroupsConfig = [
   {
     key: 'basicInfo',
