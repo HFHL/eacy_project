@@ -21,12 +21,7 @@ DEV_ADMIN_USER = CurrentUser(
 )
 
 
-async def get_current_user(request: Request) -> CurrentUser:
-    if not config.ENABLE_AUTH:
-        request.state.current_user = DEV_ADMIN_USER
-        return DEV_ADMIN_USER
-
-    payload = decode_authorization_header(request)
+def current_user_from_payload(payload: dict) -> CurrentUser:
     user_id = payload.get("user_id") or payload.get("sub")
     if user_id is None:
         raise HTTPException(
@@ -34,12 +29,27 @@ async def get_current_user(request: Request) -> CurrentUser:
             detail="Authorization token missing user identity",
         )
 
-    current_user = CurrentUser(
+    return CurrentUser(
         id=str(user_id),
         username=str(payload.get("username") or payload.get("name") or user_id),
         role=str(payload.get("role") or "user"),
         permissions=list(payload.get("permissions") or []),
     )
+
+
+async def get_current_user(request: Request) -> CurrentUser:
+    authorization = request.headers.get("Authorization")
+    if authorization:
+        current_user = current_user_from_payload(decode_authorization_header(request))
+        request.state.current_user = current_user
+        return current_user
+
+    if not config.ENABLE_AUTH:
+        request.state.current_user = DEV_ADMIN_USER
+        return DEV_ADMIN_USER
+
+    payload = decode_authorization_header(request)
+    current_user = current_user_from_payload(payload)
     request.state.current_user = current_user
     return current_user
 

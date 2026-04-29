@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.auth import CurrentUser, get_current_user, is_admin_user, uuid_user_id_or_none
+from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
 from app.services.extraction_service import ExtractionConflictError, ExtractionNotFoundError, ExtractionService
 from app.services.research_project_service import (
     ResearchProjectConflictError,
@@ -273,8 +273,6 @@ def get_research_project_service() -> ResearchProjectService:
 
 
 def user_scope_id(current_user: CurrentUser) -> str | None:
-    if is_admin_user(current_user):
-        return None
     return uuid_user_id_or_none(current_user)
 
 

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException, UploadFile, status
 
 from app.integrations.textin_ocr import TextInOcrClient
-from app.core.auth import CurrentUser, is_admin_user, uuid_user_id_or_none
+from app.core.auth import CurrentUser, uuid_user_id_or_none
 from app.models import Document
 from app.repositories import DocumentRepository, ExtractionJobRepository, PatientRepository
 from app.services.ocr_payload_normalizer import normalize_textin_ocr_payload
@@ -21,7 +21,7 @@ from core.db import Transactional, session
 
 
 def document_user_scope(current_user: CurrentUser | None) -> str | None:
-    if current_user is None or is_admin_user(current_user):
+    if current_user is None:
         return None
     return uuid_user_id_or_none(current_user)
 

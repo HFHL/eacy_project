@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.core.auth import CurrentUser, get_current_user, is_admin_user, uuid_user_id_or_none
+from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
 from app.services.dashboard_service import DashboardService
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -11,8 +11,6 @@ def get_dashboard_service() -> DashboardService:
 
 
 def user_scope_id(current_user: CurrentUser) -> str | None:
-    if is_admin_user(current_user):
-        return None
     return uuid_user_id_or_none(current_user)
 
 
