@@ -3,14 +3,7 @@
  * 三栏布局：左侧字段组树 + 中间字段详情 + 右侧文档溯源侧边栏（默认收起）
  */
 import React, { useState, useCallback, useRef, useEffect } from 'react'
-import { Space, Button, Tooltip, message } from 'antd'
-import { 
-  UserOutlined, 
-  ShrinkOutlined, 
-  ExpandOutlined,
-  EyeOutlined,
-  CloseOutlined
-} from '@ant-design/icons'
+import { Space, Button, message, Modal, Select, Upload } from 'antd'
 
 // 导入子组件
 import LeftPanel from './components/LeftPanel'
@@ -21,8 +14,8 @@ import { useEhrLayout } from './hooks/useEhrLayout'
 import { useEhrFieldGroups } from './hooks/useEhrFieldGroups'
 import { useEhrFieldEdit } from './hooks/useEhrFieldEdit'
 // 导入API
-import { extractEhrData, getDocumentPdfStreamUrl, getDocumentTempUrl } from '@/api/document'
-import { getEhrFieldHistory } from '@/api/patient'
+import { extractEhrData, extractEhrDataTargeted, getFreshDocumentPdfStreamUrl, getDocumentTempUrl, uploadDocument } from '@/api/document'
+import { getEhrFieldEvidence, getEhrFieldHistory, getPatientEhr } from '@/api/patient'
 import { appThemeToken } from '@/styles/themeTokens'
 
 const EhrTab = ({
@@ -43,7 +36,6 @@ const EhrTab = ({
   getEhrConfidenceColor,
   
   // 事件处理函数
-  handleEhrGroupExtract,
   handleEhrViewSource,
   
   // 刷新病历数据的回调
@@ -118,6 +110,10 @@ const EhrTab = ({
 
   // 重新抽取状态
   const [extracting, setExtracting] = useState(false)
+  const [targetModalOpen, setTargetModalOpen] = useState(false)
+  const [targetDocumentId, setTargetDocumentId] = useState(null)
+  const [targetFileList, setTargetFileList] = useState([])
+  const [targetContext, setTargetContext] = useState(null)
 
   // 文档溯源相关状态
   const [selectedField, setSelectedField] = useState(null)
@@ -233,27 +229,52 @@ const EhrTab = ({
     setFallbackDocument(null)
 
     try {
-      // 1. 获取字段溯源历史
-      const historyRes = await getEhrFieldHistory(patientId, fieldId)
+      // 1. 获取字段溯源历史和 TextIn 原始坐标证据
+      const [historyRes, evidenceRes] = await Promise.all([
+        getEhrFieldHistory(patientId, fieldId),
+        getEhrFieldEvidence(patientId, fieldId),
+      ])
       console.log('溯源历史响应:', historyRes)
+      console.log('溯源证据响应:', evidenceRes)
 
       if (historyRes.success && historyRes.data) {
-        const history = historyRes.data.history || []
+        const history = Array.isArray(historyRes.data) ? historyRes.data : (historyRes.data.history || [])
+        const evidences = evidenceRes.success && Array.isArray(evidenceRes.data) ? evidenceRes.data : []
+        const evidenceLocations = evidences
+          .map(item => item.source_location)
+          .filter(loc => loc && Array.isArray(loc.polygon) && loc.polygon.length >= 8)
         setFieldHistory(history)
 
-        // 2. 查找有 source_document_id 的最新记录
-        const traceableHistory = history.find(h => h.source_document_id)
+        // 2. 优先使用 evidence 的 TextIn polygon；历史事件仅用于定位来源文档和变更信息
+        if (evidenceLocations.length > 0) {
+          setSourceLocation(evidenceLocations)
+        }
 
-        if (traceableHistory) {
-          setSourceLocation(traceableHistory.source_location)
+        const traceableEvidence = evidences.find(item => item.document_id)
+
+        // 3. 查找有 source_document_id 的最新记录
+        const traceableHistory = history.find(h => h.source_document_id)
+        const traceDocumentId = traceableEvidence?.document_id || traceableHistory?.source_document_id
+
+        if (traceDocumentId) {
+          if (evidenceLocations.length === 0 && traceableHistory?.source_location) {
+            setSourceLocation(traceableHistory.source_location)
+          }
           setImageLoading(true)
           try {
-            const urlRes = await getDocumentTempUrl(traceableHistory.source_document_id)
+            const urlRes = await getDocumentTempUrl(traceDocumentId)
             console.log('文档URL响应:', urlRes)
             if (urlRes.success && urlRes.data?.temp_url) {
-              const fileType = String(urlRes.data.file_type || '').toLowerCase()
+              const fileType = String(urlRes.data.file_type || urlRes.data.file_name || urlRes.data.mime_type || '').toLowerCase()
+              if (evidenceLocations.length > 0) {
+                setSourceLocation(evidenceLocations.map(location => ({
+                  ...location,
+                  file_name: urlRes.data.file_name,
+                  mime_type: urlRes.data.mime_type,
+                })))
+              }
               setDocumentImageUrl(fileType === 'pdf'
-                ? getDocumentPdfStreamUrl(traceableHistory.source_document_id)
+                ? await getFreshDocumentPdfStreamUrl(traceDocumentId)
                 : urlRes.data.temp_url)
             }
           } catch (urlError) {
@@ -270,9 +291,9 @@ const EhrTab = ({
             try {
               const urlRes = await getDocumentTempUrl(matched.id)
               if (urlRes.success && urlRes.data?.temp_url) {
-                const fileType = String(urlRes.data.file_type || '').toLowerCase()
+                const fileType = String(urlRes.data.file_type || urlRes.data.file_name || urlRes.data.mime_type || '').toLowerCase()
                 setDocumentImageUrl(fileType === 'pdf'
-                  ? getDocumentPdfStreamUrl(matched.id)
+                  ? await getFreshDocumentPdfStreamUrl(matched.id)
                   : urlRes.data.temp_url)
               }
             } catch (urlError) {
@@ -332,6 +353,64 @@ const EhrTab = ({
       console.error('重新抽取异常:', error)
       const errorMsg = error.response?.data?.message || error.message || '重新抽取失败'
       message.error(`重新抽取失败: ${errorMsg}`)
+    } finally {
+      setExtracting(false)
+    }
+  }
+
+  const openTargetExtraction = async () => {
+    if (!selectedEhrGroup) {
+      message.warning('请先选择一个表单')
+      return
+    }
+    setTargetDocumentId(selectedEhrDocument?.id || ehrDocuments?.[0]?.id || null)
+    setTargetFileList([])
+    setTargetModalOpen(true)
+    if (!targetContext && patientId) {
+      try {
+        const response = await getPatientEhr(patientId)
+        setTargetContext(response.data?.context || null)
+      } catch (error) {
+        console.error('获取病历上下文失败:', error)
+      }
+    }
+  }
+
+  const submitTargetExtraction = async () => {
+    if (!patientId || !selectedEhrGroup) return
+    setExtracting(true)
+    try {
+      let documentId = targetDocumentId
+      let waitForDocumentReady = false
+      const file = targetFileList[0]?.originFileObj
+      if (file) {
+        const uploadResponse = await uploadDocument(file, patientId)
+        documentId = uploadResponse.data?.id || uploadResponse.data?.document_id
+        waitForDocumentReady = true
+      }
+      if (!documentId) {
+        message.warning('请选择或上传一个文档')
+        return
+      }
+      const response = await extractEhrDataTargeted({
+        documentId,
+        patientId,
+        contextId: targetContext?.id,
+        schemaVersionId: targetContext?.schema_version_id,
+        targetFormKey: selectedEhrGroup,
+        waitForDocumentReady,
+      })
+      if (response.success) {
+        message.success(waitForDocumentReady ? '文档已上传，OCR 完成后将自动专项抽取' : '专项抽取已完成')
+        setTargetModalOpen(false)
+        onEhrRefresh?.()
+      } else {
+        message.error(response.message || '专项抽取失败')
+      }
+    } catch (error) {
+      console.error('专项抽取失败:', error)
+      const detail = error.response?.data?.detail || error.response?.data?.message || error.message || '专项抽取失败'
+      message.error(detail)
     } finally {
       setExtracting(false)
     }
@@ -464,7 +543,7 @@ const EhrTab = ({
             handleEhrFieldEdit={handleEhrFieldEdit}
             handleEhrSaveEdit={handleEhrSaveEdit}
             handleEhrCancelEdit={handleEhrCancelEdit}
-            handleEhrGroupExtract={handleEhrGroupExtract}
+            handleEhrGroupExtract={openTargetExtraction}
             handleEhrViewSource={handleFieldViewSource}
             handleEhrEditRecord={(recordId) => console.log('编辑记录:', recordId)}
             handleEhrDeleteRecord={(recordId) => console.log('删除记录:', recordId)}
@@ -527,6 +606,43 @@ const EhrTab = ({
           </>
         )}
       </div>
+
+      <Modal
+        title="表单专项抽取"
+        open={targetModalOpen}
+        onCancel={() => setTargetModalOpen(false)}
+        onOk={submitTargetExtraction}
+        okText="开始抽取"
+        confirmLoading={extracting}
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>当前表单：{getCurrentGroupData().name || selectedEhrGroup}</div>
+          <Select
+            allowClear
+            style={{ width: '100%' }}
+            placeholder="选择已有患者文档"
+            value={targetDocumentId}
+            onChange={setTargetDocumentId}
+            disabled={targetFileList.length > 0}
+            options={(ehrDocuments || []).map((doc) => ({
+              value: doc.id,
+              label: doc.name || doc.file_name || doc.original_filename || doc.id,
+            }))}
+          />
+          <Upload
+            beforeUpload={() => false}
+            maxCount={1}
+            fileList={targetFileList}
+            onChange={({ fileList }) => {
+              setTargetFileList(fileList.slice(-1))
+              if (fileList.length > 0) setTargetDocumentId(null)
+            }}
+          >
+            <Button>上传新文档并抽取</Button>
+          </Upload>
+        </Space>
+      </Modal>
     </>
   )
 }

@@ -289,8 +289,9 @@ export function PdfPageWithHighlight({
         }}
       />
       {showSpinner && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: appThemeToken.colorFillTertiary, borderRadius: 4 }}>
-          <Spin tip="加载 PDF 页..." />
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, background: appThemeToken.colorFillTertiary, borderRadius: 4 }}>
+          <Spin />
+          <span style={{ fontSize: 12, color: appThemeToken.colorTextSecondary }}>加载 PDF 页...</span>
         </div>
       )}
       {!showSpinner && viewportSize.width > 0 && list.length > 0 && (

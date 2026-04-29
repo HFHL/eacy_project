@@ -179,7 +179,7 @@ const SchemaEhrTab = ({
   
   // 处理保存：有 patientId 时调用后端更新接口，再同步本地与回调
   const handleSave = useCallback(async (data, type) => {
-    if (patientId) {
+    if (patientId && type !== 'candidate') {
       try {
         await updatePatientEhrSchemaData(patientId, data, {
           previousData: savedPatientDataRef.current || {},

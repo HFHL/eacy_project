@@ -21,8 +21,12 @@ class SchemaTemplateRepository(BaseRepo[SchemaTemplate]):
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        created_by: str | None = None,
     ) -> list[SchemaTemplate]:
-        query = select(SchemaTemplate).order_by(SchemaTemplate.created_at.desc())
+        query = select(SchemaTemplate)
+        if created_by is not None:
+            query = query.where(SchemaTemplate.created_by == created_by)
+        query = query.order_by(SchemaTemplate.created_at.desc())
         if template_type is not None:
             query = query.where(SchemaTemplate.template_type == template_type)
         if status is not None:
@@ -35,8 +39,11 @@ class SchemaTemplateRepository(BaseRepo[SchemaTemplate]):
         *,
         template_type: str | None = None,
         status: str | None = None,
+        created_by: str | None = None,
     ) -> int:
         query = select(func.count()).select_from(SchemaTemplate)
+        if created_by is not None:
+            query = query.where(SchemaTemplate.created_by == created_by)
         if template_type is not None:
             query = query.where(SchemaTemplate.template_type == template_type)
         if status is not None:

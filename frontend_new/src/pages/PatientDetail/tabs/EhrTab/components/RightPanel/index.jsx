@@ -58,8 +58,8 @@ const CHANGE_TYPE_MAP = {
  *   maxVal  > 1100  → 视为像素坐标，直接使用
  *
  * sourceLocation 支持两种格式：
- * - 单个 bbox: { bbox: [x1, y1, x2, y2], page: 1 }
- * - 多个 bbox: [{ bbox: [x1, y1, x2, y2], page: 1 }, ...]
+ * - TextIn 原始 polygon: { polygon: [x1,y1,x2,y2,x3,y3,x4,y4], page_width, page_height, page: 1 }
+ * - 兼容旧 bbox: { bbox: [x1, y1, x2, y2], page: 1 }
  */
 const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 })
@@ -123,10 +123,14 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
   // 标准化 sourceLocation：统一为数组格式
   const normalizeSourceLocation = (loc) => {
     if (!loc) return []
+    const isValid = (item) => item && (
+      (Array.isArray(item.polygon) && item.polygon.length >= 8) ||
+      (Array.isArray(item.bbox) && item.bbox.length >= 4)
+    )
     if (Array.isArray(loc)) {
-      return loc.filter(item => item && item.bbox && Array.isArray(item.bbox) && item.bbox.length >= 4)
+      return loc.filter(isValid)
     }
-    if (loc.bbox && Array.isArray(loc.bbox) && loc.bbox.length >= 4) {
+    if (isValid(loc)) {
       return [loc]
     }
     return []
@@ -231,43 +235,58 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
 
   const { width: imgW, height: imgH } = imageSize
 
-  /**
-   * 将 bbox 统一转成当前图像的像素坐标。
-   * - 若 bbox 的最大值 <= 1100，视为 0-1000 归一化坐标
-   * - 否则视为原图像素坐标，直接返回
-   * @param {Array<number>} b [x1, y1, x2, y2]
-   * @returns {Array<number>} [x1, y1, x2, y2]（当前图像像素坐标系）
-   */
-  const toPixelBbox = (loc) => {
-    const b = loc?.bbox
-    if (!Array.isArray(b) || b.length < 4) return b
-    const [x1, y1, x2, y2] = b.slice(0, 4).map(Number)
+  const scalePointToImage = (x, y, loc) => {
     const pageW = Number(loc?.page_width || 0)
     const pageH = Number(loc?.page_height || 0)
     if (pageW > 0 && pageH > 0) {
-      return [
-        (x1 / pageW) * imgW,
-        (y1 / pageH) * imgH,
-        (x2 / pageW) * imgW,
-        (y2 / pageH) * imgH,
-      ]
+      return { x: (x / pageW) * imgW, y: (y / pageH) * imgH }
     }
-    const maxV = Math.max(Math.abs(x1), Math.abs(y1), Math.abs(x2), Math.abs(y2))
+    const rawCoords = Array.isArray(loc?.polygon) && loc.polygon.length >= 8
+      ? loc.polygon
+      : Array.isArray(loc?.bbox)
+        ? loc.bbox
+        : [x, y]
+    const maxV = Math.max(...rawCoords.map(value => Math.abs(Number(value) || 0)))
     if (maxV <= 1100) {
-      return [
-        (x1 / 1000) * imgW,
-        (y1 / 1000) * imgH,
-        (x2 / 1000) * imgW,
-        (y2 / 1000) * imgH,
-      ]
+      return { x: (x / 1000) * imgW, y: (y / 1000) * imgH }
     }
-    return [x1, y1, x2, y2]
+    return { x, y }
   }
 
-  // 计算所有 bbox 的合并区域（用于裁剪显示）
+  const toPixelPolygon = (loc) => {
+    if (Array.isArray(loc?.polygon) && loc.polygon.length >= 8) {
+      const raw = loc.polygon.map(Number)
+      return [
+        scalePointToImage(raw[0], raw[1], loc),
+        scalePointToImage(raw[2], raw[3], loc),
+        scalePointToImage(raw[4], raw[5], loc),
+        scalePointToImage(raw[6], raw[7], loc),
+      ]
+    }
+    if (Array.isArray(loc?.bbox) && loc.bbox.length >= 4) {
+      const [rawX1, rawY1, rawX2, rawY2] = loc.bbox.slice(0, 4).map(Number)
+      const p1 = scalePointToImage(rawX1, rawY1, loc)
+      const p2 = scalePointToImage(rawX2, rawY2, loc)
+      return [
+        { x: p1.x, y: p1.y },
+        { x: p2.x, y: p1.y },
+        { x: p2.x, y: p2.y },
+        { x: p1.x, y: p2.y },
+      ]
+    }
+    return []
+  }
+
+  // 计算所有 polygon 的合并外接区域（仅用于裁剪显示，高亮仍使用原始 polygon）
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   const pixelBoxes = locations.map(loc => {
-    const [pixelX1, pixelY1, pixelX2, pixelY2] = toPixelBbox(loc)
+    const points = toPixelPolygon(loc)
+    const xs = points.map(point => point.x)
+    const ys = points.map(point => point.y)
+    const pixelX1 = Math.min(...xs)
+    const pixelY1 = Math.min(...ys)
+    const pixelX2 = Math.max(...xs)
+    const pixelY2 = Math.max(...ys)
 
     minX = Math.min(minX, pixelX1)
     minY = Math.min(minY, pixelY1)
@@ -279,7 +298,8 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
       y1: pixelY1,
       x2: pixelX2,
       y2: pixelY2,
-      page: loc.page || 1
+      points,
+      page: loc.page || loc.page_no || 1
     }
   })
 
@@ -328,7 +348,7 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
       })
     }
 
-    // 计算全屏时的 bbox 位置（基于实际显示尺寸）
+    // 计算全屏时的位置（基于实际显示尺寸）
     const fullScreenBoxes = fullImageLoaded && fullImageSize.width > 0 ? pixelBoxes.map(box => {
       const viewportWidth = window.innerWidth * 0.9
       const viewportHeight = window.innerHeight * 0.9
@@ -341,7 +361,8 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
         scaledX1: box.x1 * fullScale,
         scaledY1: box.y1 * fullScale,
         scaledWidth: (box.x2 - box.x1) * fullScale,
-        scaledHeight: (box.y2 - box.y1) * fullScale
+        scaledHeight: (box.y2 - box.y1) * fullScale,
+        scaledPoints: box.points.map(point => ({ x: point.x * fullScale, y: point.y * fullScale }))
       }
     }) : []
 
@@ -402,19 +423,41 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
             height: '100%'
           }}
         >
-          <img
-            ref={fullImageRef}
-            src={imageUrl}
-            alt="溯源图片全屏"
-            onLoad={handleFullImageLoad}
-            style={{
-              maxWidth: '90vw',
-              maxHeight: '90vh',
-              objectFit: 'contain',
-              display: 'block',
-              imageOrientation: 'none'
-            }}
-          />
+          <div style={{ position: 'relative', width: displaySize.width || 'auto', height: displaySize.height || 'auto' }}>
+            <img
+              ref={fullImageRef}
+              src={imageUrl}
+              alt="溯源图片全屏"
+              onLoad={handleFullImageLoad}
+              style={{
+                width: displaySize.width || undefined,
+                height: displaySize.height || undefined,
+                maxWidth: '90vw',
+                maxHeight: '90vh',
+                objectFit: 'contain',
+                display: 'block',
+                imageOrientation: 'none'
+              }}
+            />
+            {fullImageLoaded && displaySize.width > 0 && displaySize.height > 0 && (
+              <svg
+                viewBox={`0 0 ${displaySize.width} ${displaySize.height}`}
+                preserveAspectRatio="none"
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+              >
+                {fullScreenBoxes.map((box, index) => (
+                  <polygon
+                    key={index}
+                    points={box.scaledPoints.map(point => `${point.x},${point.y}`).join(' ')}
+                    fill="rgba(255, 77, 79, 0.12)"
+                    stroke={appThemeToken.colorError}
+                    strokeWidth="2"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+              </svg>
+            )}
+          </div>
 
           {fullImageLoaded && fullImageSize.width > 0 && (
             <>
@@ -479,6 +522,25 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
           imageOrientation: 'none'
         }}
       />
+
+      {imageLoaded && imgW > 0 && (
+        <svg
+          viewBox={`0 0 ${finalCropWidth} ${finalCropHeight}`}
+          preserveAspectRatio="none"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 1 }}
+        >
+          {pixelBoxes.map((box, index) => (
+            <polygon
+              key={index}
+              points={box.points.map(point => `${point.x - finalX1},${point.y - finalY1}`).join(' ')}
+              fill="rgba(255, 77, 79, 0.12)"
+              stroke={appThemeToken.colorError}
+              strokeWidth="2"
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        </svg>
+      )}
 
       {imageLoaded && imgW > 0 && (
         <>
@@ -560,6 +622,12 @@ const RightPanel = ({
 
   const getFileExt = (nameOrUrl) => {
     if (!nameOrUrl) return ''
+    const value = String(nameOrUrl).toLowerCase()
+    if (value.includes('image/jpeg') || value.includes('image/jpg')) return 'jpg'
+    if (value.includes('image/png')) return 'png'
+    if (value.includes('image/webp')) return 'webp'
+    if (value.includes('image/gif')) return 'gif'
+    if (value.includes('application/pdf')) return 'pdf'
     const raw = String(nameOrUrl).split('?')[0].split('#')[0]
     const idx = raw.lastIndexOf('.')
     if (idx === -1) return ''
@@ -571,10 +639,17 @@ const RightPanel = ({
   const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(previewExt)
 
   // 溯源模式下，用同样的逻辑判断文档类型（documentImageUrl 通常是 temp_url）
-  const traceExt = getFileExt(documentImageUrl) || getFileExt(latestHistory?.source_document_name) || getFileExt(fallbackDocument?.name)
+  const sourceName = Array.isArray(sourceLocation)
+    ? sourceLocation.find(item => item?.file_name || item?.source_document_name)?.file_name || sourceLocation.find(item => item?.file_name || item?.source_document_name)?.source_document_name
+    : sourceLocation?.file_name || sourceLocation?.source_document_name
+  const sourceMime = Array.isArray(sourceLocation)
+    ? sourceLocation.find(item => item?.mime_type)?.mime_type
+    : sourceLocation?.mime_type
+  const traceExt = getFileExt(documentImageUrl) || getFileExt(sourceName) || getFileExt(sourceMime) || getFileExt(latestHistory?.source_document_name) || getFileExt(fallbackDocument?.name)
   const traceIsPdf = traceExt === 'pdf'
   const traceIsImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(traceExt)
   const traceDocId =
+    (Array.isArray(sourceLocation) ? sourceLocation.find(item => item?.document_id)?.document_id : sourceLocation?.document_id) ||
     latestHistory?.source_document_id ||
     selectedField?.document_id ||
     selectedField?.documentId ||
@@ -635,11 +710,14 @@ const RightPanel = ({
           ) : documentPreviewUrl ? (
             <div style={{ border: `1px solid ${appThemeToken.colorBorder}`, borderRadius: 6, overflow: 'hidden' }}>
               {isPdf ? (
-                <iframe
-                  title="document-preview"
-                  src={documentPreviewUrl}
-                  style={{ width: '100%', height: '70vh', border: 0 }}
-                />
+                <div style={{ maxHeight: '70vh', overflow: 'auto', padding: 8, display: 'flex', justifyContent: 'center' }}>
+                  <PdfPageWithHighlight
+                    pdfUrl={documentPreviewUrl}
+                    pageNumber={1}
+                    maxWidth="100%"
+                    loading={false}
+                  />
+                </div>
               ) : isImage ? (
                 <img
                   src={documentPreviewUrl}

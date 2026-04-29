@@ -9,25 +9,43 @@ class DocumentRepository(BaseRepo[Document]):
     def __init__(self):
         super().__init__(Document)
 
-    async def list_by_patient(self, patient_id: str, *, limit: int = 100) -> list[Document]:
+    async def list_by_patient(self, patient_id: str, *, limit: int = 100, uploaded_by: str | None = None) -> list[Document]:
         query = (
             select(Document)
             .where(Document.patient_id == patient_id)
             .where(Document.status != "deleted")
+        )
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
+        query = (
+            query
             .order_by(Document.created_at.desc())
             .limit(limit)
         )
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def list_unarchived(self, *, limit: int = 100) -> list[Document]:
+    async def list_unarchived(self, *, limit: int = 100, uploaded_by: str | None = None) -> list[Document]:
         query = (
             select(Document)
             .where(Document.patient_id.is_(None))
             .where(Document.status != "deleted")
+        )
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
+        query = (
+            query
             .order_by(Document.created_at.desc())
             .limit(limit)
         )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_visible_documents(self, *, uploaded_by: str | None = None) -> list[Document]:
+        query = select(Document).where(Document.status != "deleted")
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
+        query = query.order_by(Document.created_at.desc())
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -38,8 +56,11 @@ class DocumentRepository(BaseRepo[Document]):
         limit: int = 20,
         patient_id: str | None = None,
         status: str | None = None,
+        uploaded_by: str | None = None,
     ) -> list[Document]:
         query = select(Document)
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
         if patient_id is not None:
             query = query.where(Document.patient_id == patient_id)
         if status is not None:
@@ -56,8 +77,11 @@ class DocumentRepository(BaseRepo[Document]):
         *,
         patient_id: str | None = None,
         status: str | None = None,
+        uploaded_by: str | None = None,
     ) -> int:
         query = select(func.count()).select_from(Document)
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
         if patient_id is not None:
             query = query.where(Document.patient_id == patient_id)
         if status is not None:
@@ -68,8 +92,10 @@ class DocumentRepository(BaseRepo[Document]):
         result = await session.execute(query)
         return int(result.scalar_one())
 
-    async def get_visible_by_id(self, document_id: str) -> Document | None:
+    async def get_visible_by_id(self, document_id: str, *, uploaded_by: str | None = None) -> Document | None:
         query = select(Document).where(Document.id == document_id).where(Document.status != "deleted")
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
         result = await session.execute(query)
         return result.scalars().first()
 

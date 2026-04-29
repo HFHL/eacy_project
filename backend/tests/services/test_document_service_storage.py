@@ -156,6 +156,9 @@ async def test_process_document_ocr_backfills_text_and_payload(monkeypatch):
                 "file_name": "report.pdf",
             }
 
+        def _enqueue_metadata_task(self, document_id):
+            return None
+
     async def fake_parse_document_url(self, document_url, *, filename=None, mime_type=None):
         assert document_url == "https://example.com/report.pdf"
         assert filename == "report.pdf"

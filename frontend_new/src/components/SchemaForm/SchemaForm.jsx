@@ -49,10 +49,10 @@ import {
 import { SchemaFormProvider, useSchemaForm } from './SchemaFormContext'
 import CategoryTree from './CategoryTree'
 import FormPanel from './FormPanel'
-import { getDocumentDetail, getDocumentTempUrl, getDocumentPdfStreamUrl, extractEhrDataTargeted, uploadAndArchiveAsync } from '../../api/document'
+import { getDocumentDetail, getDocumentTempUrl, getDocumentPdfStreamUrl, getFreshDocumentPdfStreamUrl, extractEhrDataTargeted, uploadAndArchiveAsync } from '../../api/document'
 import { getEhrFieldHistoryV3, getEhrFieldCandidatesV3, selectEhrFieldCandidateV3 } from '../../api/patient'
 import PdfPageWithHighlight from '../PdfPageWithHighlight'
-import { getProjectCrfFieldHistory, getProjectCrfFieldCandidates, selectProjectCrfFieldCandidate } from '../../api/project'
+import { getProjectCrfFieldHistory, getProjectCrfFieldCandidates, selectProjectCrfFieldCandidate, startCrfExtraction } from '../../api/project'
 import { maskSensitiveField } from '../../utils/sensitiveUtils'
 import {
   toAuditPath as _toAuditPath,
@@ -178,9 +178,14 @@ function _sourceLocationToCoordinates(loc) {
     const hasTextinPageSize = rawPageWidth > 0 && rawPageHeight > 0
     // 优先使用 position（8 点），再回退到 bbox（4 点）
     let bbox = item.bbox
-    if ((!bbox || bbox.length < 4) && Array.isArray(item.position) && item.position.length >= 8) {
+    const rawPosition = Array.isArray(item.position) && item.position.length >= 8
+      ? item.position
+      : Array.isArray(item.polygon) && item.polygon.length >= 8
+        ? item.polygon
+        : null
+    if ((!bbox || bbox.length < 4) && rawPosition) {
       bbox = _positionToBbox(
-        item.position,
+        rawPosition,
         rawPageWidth,
         rawPageHeight
       )
@@ -203,6 +208,8 @@ function _sourceLocationToCoordinates(loc) {
     // 避免在 PDF 上产生"红框跑出文档外"的视觉错位。
     const polygon = Array.isArray(item.polygon) && item.polygon.length >= 8
       ? item.polygon.map(Number)
+      : Array.isArray(rawPosition) && rawPosition.length >= 8
+        ? rawPosition.map(Number)
       : null
     return {
       x: x1,
@@ -998,6 +1005,7 @@ const SourcePanel = ({
   const isPinned = true
   const [previewUrl, setPreviewUrl] = useState(null)
   const [previewFileType, setPreviewFileType] = useState(null)
+  const [previewPdfUrl, setPreviewPdfUrl] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [docModalOpen, setDocModalOpen] = useState(false)
   const [docModalDoc, setDocModalDoc] = useState(null)
@@ -1313,6 +1321,7 @@ const SourcePanel = ({
     async function load() {
       setPreviewUrl(null)
       setPreviewFileType(null)
+      setPreviewPdfUrl(null)
       if (!sourceDocId) return
       setPreviewLoading(true)
       try {
@@ -1328,6 +1337,7 @@ const SourcePanel = ({
         setPreviewFileType(ft || null)
         if (ft === 'pdf') {
           setPreviewUrl(null)
+          setPreviewPdfUrl(await getFreshDocumentPdfStreamUrl(sourceDocId))
         } else {
           const res = await getDocumentTempUrl(sourceDocId, 3600)
           if (cancelled) return
@@ -1410,7 +1420,7 @@ const SourcePanel = ({
       displaySource?.document_type ?? displaySource?.source_document_name ??
       (sourceDocId ? `文档 ${String(sourceDocId).slice(0, 8)}` : '文档预览'),
     fileType: previewFileType || 'image',
-    fileUrl: usePdfStream ? getDocumentPdfStreamUrl(sourceDocId) : (previewFileUrl || null)
+    fileUrl: usePdfStream ? (previewPdfUrl || getDocumentPdfStreamUrl(sourceDocId)) : (previewFileUrl || null)
   }
   const sourceDocumentName =
     displaySource?.source_document_name ||
@@ -1735,8 +1745,14 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
   }, [rightPanelWidth])
-  const { documents: projectDocuments = [], selectedDocument = null, onDocumentSelect, onUploadDocument, onAddRepeatableInstance, repeatableNamingPattern = '{formName}_{index}' } = projectConfig || {}
-  // CRF 服务 _parse_form_path 用 " / " 分隔路径（如 "治疗情况 / 手术治疗"）
+  const { documents: projectDocuments = [], selectedDocument = null, onDocumentSelect, onUploadDocument, onAddRepeatableInstance, repeatableNamingPattern = '{formName}_{index}', sourcePatientId = null } = projectConfig || {}
+  const targetFormKey = useMemo(() => {
+    if (!state?.selectedPath) return null
+    const parts = state.selectedPath.split('.').filter(Boolean)
+    return parts.slice(0, Math.min(parts.length, 2)).join('.')
+  }, [state?.selectedPath])
+
+  // UI 展示用表单路径（如 "治疗情况 / 手术治疗"）
   const targetSection = useMemo(() => {
     if (!state?.selectedPath) return null
     const parts = state.selectedPath.split('.')
@@ -1772,12 +1788,19 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     }
     setExtractConfirming(true)
     try {
-      const response = await extractEhrDataTargeted(
-        String(selectedExtractDocument.id),
-        patientId,
-        targetSection,
-        projectId ? { projectId, instanceType: 'project_crf' } : {}
-      )
+      const response = projectId
+        ? await startCrfExtraction({
+            projectId,
+            projectPatientId: patientId,
+            patientId: sourcePatientId || selectedExtractDocument.patient_id || selectedExtractDocument.patientId || '',
+            documentId: String(selectedExtractDocument.id),
+            targetFormKey,
+          })
+        : await extractEhrDataTargeted(
+            String(selectedExtractDocument.id),
+            patientId,
+            targetFormKey
+          )
       if (response.success) {
         message.success('文档抽取任务已提交，请稍候...')
         setUploadExtractModalOpen(false)
@@ -1790,7 +1813,7 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     } finally {
       setExtractConfirming(false)
     }
-  }, [patientId, projectId, targetSection, selectedExtractDocument])
+  }, [patientId, projectId, sourcePatientId, targetFormKey, targetSection, selectedExtractDocument])
   const handleUploadExtractFile = useCallback(async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -1815,7 +1838,12 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     }
 
     message.loading({ content: '正在上传文件并触发 OCR 流水线...', key: 'uploadExtract' })
-      const uploadResult = await uploadAndArchiveAsync(file, patientId, {
+      const uploadPatientId = projectId ? sourcePatientId : patientId
+      if (!uploadPatientId) {
+        message.error({ content: '缺少原始患者信息，无法上传', key: 'uploadExtract' })
+        return
+      }
+      const uploadResult = await uploadAndArchiveAsync(file, uploadPatientId, {
         targetSection,
         projectId,
         autoMergeEhr: true,
@@ -1830,42 +1858,30 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
         message.error({ content: '上传响应中缺少文档 ID', key: 'uploadExtract' })
         return
       }
-      // 轮询 OCR 完成状态（最多 60s），再触发 EHR 抽取
-      message.loading({ content: '等待 OCR 解析完成...', key: 'uploadExtract' })
-      let ocrDone = false
-      for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 2000))
-        try {
-          const detail = await getDocumentDetail(docId)
-          const doc = detail?.data
-          if (
-            doc &&
-            (doc.status === 'ocr_succeeded' || doc.status === 'archived' || doc.raw_text || doc.ocr_payload)
-          ) {
-            ocrDone = true
-            break
-          }
-        } catch (_) { /* 继续轮询 */ }
-      }
-      if (!ocrDone) {
-        message.error({ content: 'OCR 解析超时，请稍后重试', key: 'uploadExtract' })
-        return
-      }
       message.loading({ content: '上传成功，正在提交抽取任务...', key: 'uploadExtract' })
-      const extractResult = await extractEhrDataTargeted(
-        String(docId),
-        patientId,
-        targetSection,
-        projectId ? { projectId, instanceType: 'project_crf' } : {}
-      )
+      const extractResult = projectId
+        ? await startCrfExtraction({
+            projectId,
+            projectPatientId: patientId,
+            patientId: uploadPatientId,
+            documentId: String(docId),
+            targetFormKey,
+            waitForDocumentReady: true,
+          })
+        : await extractEhrDataTargeted(
+            String(docId),
+            patientId,
+            targetFormKey,
+            { waitForDocumentReady: true }
+          )
       if (extractResult.success) {
-        message.success({ content: '文件上传成功，抽取任务已提交，请稍候...', key: 'uploadExtract' })
+        message.success({ content: '文件上传成功，OCR 完成后将自动专项抽取', key: 'uploadExtract' })
         setUploadExtractModalOpen(false)
         onDataChange && onDataChange(draftData)
       } else {
         message.error({ content: extractResult.message || '抽取任务提交失败', key: 'uploadExtract' })
       }
-  }, [patientId, projectId, targetSection])
+  }, [patientId, projectId, sourcePatientId, targetFormKey, targetSection])
   const handleSave = useCallback(async (type = 'manual') => {
     if (!isDirty && type === 'manual') { message.info('没有需要保存的修改'); return }
     setSaving(true)
@@ -2041,13 +2057,18 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
       }
     }
     actions.setPatientData(nextData)
+    if (typeof onSave === 'function') {
+      Promise.resolve(onSave(nextData, 'candidate')).catch((error) => {
+        console.error('[SchemaForm] persist candidate failed:', error)
+      })
+    }
     setHistoryRefreshKey((tick) => tick + 1)
     if (projectMode && typeof onFieldCandidateSolidified === 'function') {
       Promise.resolve(onFieldCandidateSolidified({ fieldPath, value, nextData })).catch((error) => {
         console.error('[SchemaForm] onFieldCandidateSolidified failed:', error)
       })
     }
-  }, [actions, draftData, onFieldCandidateSolidified, projectMode])
+  }, [actions, draftData, onFieldCandidateSolidified, onSave, projectMode])
   const leftColumnWidth = leftCollapsed ? 52 : leftPanelWidth
   const leftDividerOffset = leftColumnWidth + (leftCollapsed ? 0 : COLUMN_RESIZE_BAR_STYLE.width)
   const rightDividerOffset = rightCollapsed ? 32 : rightPanelWidth

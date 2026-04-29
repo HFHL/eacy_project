@@ -1,4 +1,5 @@
 from typing import Any
+from urllib.parse import quote
 
 import asyncio
 
@@ -34,7 +35,12 @@ class TextInOcrClient:
             "Content-Type": "application/octet-stream",
         }
         if filename:
-            headers["x-ti-filename"] = filename
+            try:
+                filename.encode("ascii")
+                headers["x-ti-filename"] = filename
+            except UnicodeEncodeError:
+                headers["x-ti-filename"] = quote(filename, safe="")
+                headers["x-ti-filename-encoding"] = "url"
         return headers
 
     async def _post_document_bytes(

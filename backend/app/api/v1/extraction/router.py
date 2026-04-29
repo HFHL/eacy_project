@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.auth import CurrentUser, get_current_user
+from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
 from app.services.extraction_service import ExtractionConflictError, ExtractionNotFoundError, ExtractionService
 
 router = APIRouter(prefix="/extraction-jobs", tags=["extraction-jobs"])
@@ -21,6 +21,10 @@ class ExtractionJobCreate(BaseModel):
     schema_version_id: str | None = None
     target_form_key: str | None = Field(default=None, max_length=100)
     input_json: dict[str, Any] | None = None
+
+
+class ExtractionPlanCreate(ExtractionJobCreate):
+    process: bool = True
 
 
 class ExtractionJobResponse(BaseModel):
@@ -45,6 +49,10 @@ class ExtractionJobResponse(BaseModel):
     finished_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class ExtractionPlanResponse(BaseModel):
+    jobs: list[ExtractionJobResponse]
 
 
 class ExtractionRunResponse(BaseModel):
@@ -84,12 +92,28 @@ async def create_extraction_job(
 ) -> ExtractionJobResponse:
     try:
         job = await service.create_and_process_job(
-            requested_by=current_user.id,
+            requested_by=uuid_user_id_or_none(current_user),
             **payload.model_dump(exclude_none=True),
         )
     except (ExtractionNotFoundError, ExtractionConflictError) as error:
         _raise_extraction_error(error)
     return ExtractionJobResponse.model_validate(job)
+
+
+@router.post("/plan", response_model=ExtractionPlanResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_planned_extraction_jobs(
+    payload: ExtractionPlanCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: ExtractionService = Depends(get_extraction_service),
+) -> ExtractionPlanResponse:
+    try:
+        jobs = await service.create_planned_jobs(
+            requested_by=uuid_user_id_or_none(current_user),
+            **payload.model_dump(exclude_none=True, exclude={"process"}),
+        )
+    except (ExtractionNotFoundError, ExtractionConflictError) as error:
+        _raise_extraction_error(error)
+    return ExtractionPlanResponse(jobs=[ExtractionJobResponse.model_validate(job) for job in jobs])
 
 
 @router.get("/{job_id}", response_model=ExtractionJobResponse)

@@ -28,6 +28,15 @@ def _add_missing(table_name: str, column: sa.Column) -> None:
         op.add_column(table_name, column)
 
 
+def _copy_if_columns_exist(table_name: str, target: str, source: str) -> None:
+    columns = _columns(table_name)
+    if target in columns and source in columns:
+        op.execute(
+            f"update {table_name} set {target} = {source} "
+            f"where {target} is null and {source} is not null"
+        )
+
+
 def upgrade():
     _add_missing("patients", sa.Column("department", sa.String(length=100), nullable=True))
     _add_missing("patients", sa.Column("main_diagnosis", sa.String(length=500), nullable=True))
@@ -76,19 +85,19 @@ def upgrade():
     _add_missing("project_patients", sa.Column("extra_json", sa.JSON(), nullable=True))
     _add_missing("project_patients", sa.Column("updated_at", sa.DateTime(), nullable=True))
 
-    op.execute("update patients set department = department_name where department is null and department_name is not null")
-    op.execute("update patients set main_diagnosis = diagnosis where main_diagnosis is null and diagnosis is not null")
-    op.execute("update patients set doctor_name = attending_doctor_name where doctor_name is null and attending_doctor_name is not null")
-    op.execute("update documents set original_filename = file_name where original_filename is null and file_name is not null")
-    op.execute("update documents set file_ext = file_type where file_ext is null and file_type is not null")
-    op.execute("update documents set storage_path = file_path where storage_path is null and file_path is not null")
-    op.execute("update documents set doc_type = document_type where doc_type is null and document_type is not null")
-    op.execute("update documents set doc_subtype = document_sub_type where doc_subtype is null and document_sub_type is not null")
-    op.execute("update documents set effective_at = document_effective_date where effective_at is null and document_effective_date is not null")
-    op.execute("update documents set ocr_text = parsed_content where ocr_text is null and parsed_content is not null")
-    op.execute("update documents set metadata_json = parsed_data where metadata_json is null and parsed_data is not null")
-    op.execute("update project_patients set enroll_no = subject_id where enroll_no is null and subject_id is not null")
-    op.execute("update project_patients set enrolled_at = enrollment_date where enrolled_at is null and enrollment_date is not null")
+    _copy_if_columns_exist("patients", "department", "department_name")
+    _copy_if_columns_exist("patients", "main_diagnosis", "diagnosis")
+    _copy_if_columns_exist("patients", "doctor_name", "attending_doctor_name")
+    _copy_if_columns_exist("documents", "original_filename", "file_name")
+    _copy_if_columns_exist("documents", "file_ext", "file_type")
+    _copy_if_columns_exist("documents", "storage_path", "file_path")
+    _copy_if_columns_exist("documents", "doc_type", "document_type")
+    _copy_if_columns_exist("documents", "doc_subtype", "document_sub_type")
+    _copy_if_columns_exist("documents", "effective_at", "document_effective_date")
+    _copy_if_columns_exist("documents", "ocr_text", "parsed_content")
+    _copy_if_columns_exist("documents", "metadata_json", "parsed_data")
+    _copy_if_columns_exist("project_patients", "enroll_no", "subject_id")
+    _copy_if_columns_exist("project_patients", "enrolled_at", "enrollment_date")
 
 
 def downgrade():

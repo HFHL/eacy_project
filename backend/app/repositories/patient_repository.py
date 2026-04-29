@@ -11,13 +11,23 @@ class PatientRepository(BaseRepo[Patient]):
     def __init__(self):
         super().__init__(Patient)
 
-    async def search_by_name(self, name: str, *, limit: int = 20) -> list[Patient]:
+    async def search_by_name(self, name: str, *, limit: int = 20, owner_id: str | None = None) -> list[Patient]:
         query = (
             select(Patient)
             .where(Patient.deleted_at.is_(None))
             .where(Patient.name.ilike(f"%{name}%"))
-            .limit(limit)
         )
+        if owner_id is not None:
+            query = query.where(Patient.owner_id == owner_id)
+        query = query.limit(limit)
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_all_active(self, *, owner_id: str | None = None) -> list[Patient]:
+        query = select(Patient).where(Patient.deleted_at.is_(None))
+        if owner_id is not None:
+            query = query.where(Patient.owner_id == owner_id)
+        query = query.order_by(Patient.created_at.desc())
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -28,8 +38,11 @@ class PatientRepository(BaseRepo[Patient]):
         limit: int = 20,
         keyword: str | None = None,
         department: str | None = None,
+        owner_id: str | None = None,
     ) -> list[Patient]:
         query = select(Patient).where(Patient.deleted_at.is_(None))
+        if owner_id is not None:
+            query = query.where(Patient.owner_id == owner_id)
         if keyword:
             like_keyword = f"%{keyword}%"
             query = query.where(
@@ -49,8 +62,11 @@ class PatientRepository(BaseRepo[Patient]):
         *,
         keyword: str | None = None,
         department: str | None = None,
+        owner_id: str | None = None,
     ) -> int:
         query = select(func.count()).select_from(Patient).where(Patient.deleted_at.is_(None))
+        if owner_id is not None:
+            query = query.where(Patient.owner_id == owner_id)
         if keyword:
             like_keyword = f"%{keyword}%"
             query = query.where(
@@ -64,8 +80,10 @@ class PatientRepository(BaseRepo[Patient]):
         result = await session.execute(query)
         return int(result.scalar_one())
 
-    async def get_active_by_id(self, patient_id: str) -> Patient | None:
+    async def get_active_by_id(self, patient_id: str, *, owner_id: str | None = None) -> Patient | None:
         query = select(Patient).where(Patient.id == patient_id).where(Patient.deleted_at.is_(None))
+        if owner_id is not None:
+            query = query.where(Patient.owner_id == owner_id)
         result = await session.execute(query)
         return result.scalars().first()
 

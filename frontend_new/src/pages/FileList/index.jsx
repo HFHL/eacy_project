@@ -11,17 +11,16 @@ import {
   getDocumentAiMatchInfo,
   changeArchivePatient,
   archiveDocument,
+  batchArchiveDocuments,
   unarchiveDocument,
   deleteDocument,
   deleteDocuments,
   getFileListV2Tree,
   getFileListV2GroupDocuments,
   matchGroup,
-  confirmGroupArchive,
-  createPatientAndArchiveGroup,
-  confirmCreatePatientAndArchive
+  confirmGroupArchive
 } from '../../api/document'
-import { getPatientList } from '../../api/patient'
+import { createPatient, getPatientList } from '../../api/patient'
 import { maskName } from '../../utils/sensitiveUtils'
 import { useSelector } from 'react-redux'
 import { useUploadManager, UploadStatus } from '../../hooks/useUploadManager'
@@ -83,6 +82,7 @@ import {
 } from '@ant-design/icons'
 import DocumentDetailModal from '../PatientDetail/tabs/DocumentsTab/components/DocumentDetailModal'
 import CreatePatientDrawer from '../../components/Patient/CreatePatientDrawer'
+import { mergePatientPrefills } from '../../components/Patient/patientPrefill'
 import { DOC_TYPE_CATEGORIES } from '../../components/FormDesigner/core/docTypes'
 import { appThemeToken, modalBodyPreset, modalWidthPreset } from '../../styles/themeTokens'
 
@@ -398,13 +398,14 @@ const formatTime = (time) =>
  * @returns {string} 摘要字符串
  */
 const formatPatientSummary = (summary) => {
-  const rawName = summary?.name ? String(summary.name).trim() : ''
-  const rawGender = summary?.gender ? String(summary.gender).trim() : ''
-  const rawAge = summary?.age == null ? '' : String(summary.age).trim()
+  const rawName = summary?.name || summary?.patient_name ? String(summary.name || summary.patient_name).trim() : ''
+  const rawGender = summary?.gender || summary?.patient_gender ? String(summary.gender || summary.patient_gender).trim() : ''
+  const rawAge = summary?.age ?? summary?.patient_age ?? ''
+  const normalizedAge = rawAge == null ? '' : String(rawAge).trim()
 
   const name = rawName ? maskName(rawName) : '--'
   const gender = rawGender || '--'
-  const age = rawAge ? (rawAge.endsWith('岁') ? rawAge : `${rawAge}岁`) : '--'
+  const age = normalizedAge ? (normalizedAge.endsWith('岁') ? normalizedAge : `${normalizedAge}岁`) : '--'
 
   if (name === '--' && gender === '--' && age === '--') {
     return '--'
@@ -447,6 +448,22 @@ const getRecommendedArchiveLabel = (patientName, matchScore, { masked = true } =
   const scoreText = formatMatchScorePercent(matchScore)
   if (!displayName) return '确认推荐'
   return `绑定${displayName}${scoreText ? `（${scoreText}）` : ''}`
+}
+
+const getCandidatePatientId = (candidate = {}) => (
+  candidate?.id || candidate?.patient_id || candidate?.patientId || candidate?.patientID || ''
+)
+
+const getGroupRecommendedPatient = (matchInfo = {}) => {
+  const candidates = Array.isArray(matchInfo?.candidates) ? matchInfo.candidates : []
+  const matchedPatientId = matchInfo?.matched_patient_id || matchInfo?.ai_recommendation || ''
+  const matchedCandidate = matchedPatientId
+    ? candidates.find((item) => getCandidatePatientId(item) === matchedPatientId) || candidates[0]
+    : candidates[0]
+  return {
+    patientId: matchedPatientId || getCandidatePatientId(matchedCandidate),
+    candidate: matchedCandidate || null,
+  }
 }
 
 const GROUP_PRIMARY_ACTION_TEXT_MAX_WIDTH = 132
@@ -1051,6 +1068,7 @@ const FileList = () => {
   const [createPatientDocIds, setCreatePatientDocIds] = useState([])
   const [createPatientMode, setCreatePatientMode] = useState('docs')
   const [createPatientGroupId, setCreatePatientGroupId] = useState(null)
+  const [createPatientPrefillValues, setCreatePatientPrefillValues] = useState(null)
 
   const [patientMatchVisible, setPatientMatchVisible] = useState(false)
   const [selectedMatchDocument, setSelectedMatchDocument] = useState(null)
@@ -1095,13 +1113,13 @@ const FileList = () => {
     concurrency: 3,
     maxRetries: 3,
     onTaskComplete: (task) => {
-      if (task.status === UploadStatus.SUCCESS) fetchFileList()
+      if (task.status === UploadStatus.SUCCESS) refreshAll({ forceTree: true })
     },
     onAllComplete: ({ successCount, failedCount }) => {
       if (successCount > 0 && failedCount === 0) message.success(`全部 ${successCount} 个文件上传成功`)
       else if (successCount > 0) message.warning(`上传完成：${successCount} 个成功，${failedCount} 个失败`)
       else if (failedCount > 0) message.error(`${failedCount} 个文件上传失败`)
-      fetchFileList()
+      refreshAll({ forceTree: true })
     },
   })
 
@@ -1672,6 +1690,31 @@ const FileList = () => {
     return { icon: <QuestionCircleOutlined style={{ fontSize: 14, color: token.colorTextSecondary }} />, tip: '待确认' }
   }
 
+
+  const todoDocumentStatusMap = useMemo(() => {
+    const map = new Map()
+    const todoGroups = Array.isArray(treeData?.todo_groups) ? treeData.todo_groups : []
+    todoGroups.forEach((group) => {
+      const groupStatus = Array.isArray(group?.status_set) && group.status_set.length
+        ? group.status_set[0]
+        : 'pending_confirm_uncertain'
+      if (Array.isArray(group?.document_ids)) {
+        group.document_ids.forEach((id) => map.set(id, groupStatus))
+      }
+    })
+    return map
+  }, [treeData])
+
+  const groupedTodoDocumentIds = useMemo(() => new Set(todoDocumentStatusMap.keys()), [todoDocumentStatusMap])
+
+  const normalizedTreeFileList = useMemo(
+    () => fileList.map((item) => {
+      const treeStatus = todoDocumentStatusMap.get(item.id)
+      return treeStatus ? { ...item, task_status: treeStatus, taskStatus: treeStatus } : item
+    }),
+    [fileList, todoDocumentStatusMap]
+  )
+
   const treeTableData = useMemo(() => {
     // 筛选激活时：
     //  · 已归档患者 → 从 fileList 按 patient_id 重建患者分组
@@ -1733,11 +1776,10 @@ const FileList = () => {
           seen.add(g.group_id)
 
           const groupDocumentIds = new Set(Array.isArray(g.document_ids) ? g.document_ids : [])
-          const matchedItems = fileList.filter((item) =>
-            !addedIds.has(item.id) &&
-            todoStatuses.has(item.task_status) &&
-            groupDocumentIds.has(item.id)
-          )
+          const groupStatus = Array.isArray(g.status_set) && g.status_set.length ? g.status_set[0] : 'pending_confirm_uncertain'
+          const matchedItems = normalizedTreeFileList
+            .filter((item) => !addedIds.has(item.id) && groupDocumentIds.has(item.id))
+            .map((item) => ({ ...item, task_status: todoStatuses.has(item.task_status) ? item.task_status : groupStatus }))
 
           if (!matchedItems.length) continue
 
@@ -1765,7 +1807,7 @@ const FileList = () => {
         }
 
         // 兜底：若有命中的待归档文档未出现在分组树中，则以扁平文件行展示
-        for (const item of fileList) {
+        for (const item of normalizedTreeFileList) {
           if (addedIds.has(item.id)) continue
           if (todoStatuses.has(item.task_status)) {
             rows.push({ ...item, _isFile: true, key: item.id })
@@ -1874,7 +1916,10 @@ const FileList = () => {
       for (const r of rows) {
         if (r._isFile) groupedFileIds.add(r.key)
       }
-      for (const item of fileList) {
+      for (const group of todoGroups) {
+        if (Array.isArray(group?.document_ids)) group.document_ids.forEach((id) => groupedFileIds.add(id))
+      }
+      for (const item of normalizedTreeFileList) {
         if (!groupedFileIds.has(item.id)) {
           const isParsePhase = ['uploaded', 'parsing', 'parse_failed', 'parsed', 'extracted', 'ai_matching'].includes(item.task_status)
           if (isParsePhase) {
@@ -1885,7 +1930,7 @@ const FileList = () => {
     }
 
     return rows
-  }, [fileList, treeData, activeTab, groupDocsMap, expandedGroups, columnFilters, isFilterActive])
+  }, [fileList, normalizedTreeFileList, treeData, activeTab, groupDocsMap, expandedGroups, columnFilters, isFilterActive])
 
   /**
    * 按文件 ID 聚合当前页面已加载文件记录，统一供批量与弹窗逻辑复用。
@@ -1905,11 +1950,12 @@ const FileList = () => {
     return map
   }, [fileList, treeTableData])
 
+
   const pendingParseFiles = useMemo(
-    () => fileList
-      .filter((item) => PARSE_STAGE_TASK_STATUSES.includes(item.task_status))
+    () => normalizedTreeFileList
+      .filter((item) => PARSE_STAGE_TASK_STATUSES.includes(item.task_status) && !groupedTodoDocumentIds.has(item.id))
       .map((item) => ({ ...item, _isFile: true, key: item.id, _groupType: 'pending_parse' })),
-    [fileList]
+    [normalizedTreeFileList, groupedTodoDocumentIds]
   )
 
   const patientGroupList = useMemo(() => {
@@ -1978,7 +2024,7 @@ const FileList = () => {
         const todoGroups = Array.isArray(treeData?.todo_groups) ? treeData.todo_groups : []
         const targetGroup = todoGroups.find((item) => item?.group_id === groupId)
         const groupDocumentIds = new Set(Array.isArray(targetGroup?.document_ids) ? targetGroup.document_ids : [])
-        return fileList
+        return normalizedTreeFileList
           .filter((item) => TODO_STAGE_TASK_STATUSES.includes(item.task_status) && groupDocumentIds.has(item.id))
           .map((item) => ({ ...item, _isFile: true, _groupId: groupId, key: item.id }))
       }
@@ -1999,7 +2045,7 @@ const FileList = () => {
       return cachedItems.map((item) => ({ ...item, _isFile: true, _patientId: patientId, key: item.id }))
     }
     return []
-  }, [activeGroupKey, fileList, groupDocsMap, isFilterActive, pendingParseFiles, treeData])
+  }, [activeGroupKey, fileList, normalizedTreeFileList, groupDocsMap, isFilterActive, pendingParseFiles, treeData])
 
   const displayDataSource = useMemo(() => {
     if (viewMode === 'patient') return patientRightPaneDataSource
@@ -2335,14 +2381,10 @@ const FileList = () => {
           matchResult: md.match_result || 'matched',
         })
       } else {
-        message.error('获取文档匹配信息失败')
-        setPatientMatchVisible(false)
-        setSelectedMatchDocument(null)
+        message.info('未获取到 AI 推荐，可手动搜索患者归档')
       }
     } catch {
-      message.error('获取文档匹配信息失败')
-      setPatientMatchVisible(false)
-      setSelectedMatchDocument(null)
+      message.info('未获取到 AI 推荐，可手动搜索患者归档')
     } finally {
       setMatchInfoLoading(false)
     }
@@ -2353,21 +2395,30 @@ const FileList = () => {
     setCreatePatientMode('docs')
     setCreatePatientGroupId(null)
     setCreatePatientDocIds([record.id])
+    setCreatePatientPrefillValues(null)
     setCreatePatientDrawerOpen(true)
   }, [])
 
   const handleConfirmRecommendedArchive = useCallback(async (record) => {
     const hideLoading = message.loading('正在获取推荐信息...', 0)
     try {
-      const matchInfo = await getDocumentAiMatchInfo(record.id)
+      const groupRecommendation = record?._groupId
+        ? getGroupRecommendedPatient(groupDocsMap[record._groupId]?.matchInfo)
+        : { patientId: '', candidate: null }
+      let matchInfo = null
+      let recommendedPatientId = groupRecommendation.patientId
+      if (!recommendedPatientId) {
+        matchInfo = await getDocumentAiMatchInfo(record.id)
+        recommendedPatientId = matchInfo?.data?.ai_recommendation
+      }
       hideLoading()
-      const recommendedPatientId = matchInfo?.data?.ai_recommendation
       if (recommendedPatientId) {
-        const candidates = matchInfo.data.candidates || []
-        const candidate = candidates.find((c) => c.id === recommendedPatientId) || candidates[0]
+        const candidates = matchInfo?.data?.candidates || []
+        const candidate = groupRecommendation.candidate || candidates.find((c) => c.id === recommendedPatientId) || candidates[0]
         const patientName = candidate?.name || candidate?.patient_name || '未知'
-        const confirmLabel = getRecommendedArchiveLabel(patientName, matchInfo.data.match_score)
-        const matchScoreText = formatMatchScorePercent(matchInfo.data.match_score)
+        const matchScore = matchInfo?.data?.match_score ?? candidate?.similarity
+        const confirmLabel = getRecommendedArchiveLabel(patientName, matchScore)
+        const matchScoreText = formatMatchScorePercent(matchScore)
         modal.confirm({
           title: confirmLabel,
           content: (
@@ -2405,7 +2456,7 @@ const FileList = () => {
       hideLoading()
       message.error('获取推荐信息失败')
     }
-  }, [refreshAll, handleArchivePatient])
+  }, [groupDocsMap, refreshAll, handleArchivePatient])
 
   // ─── 分组操作 ───
   const handleAutoArchiveGroup = useCallback(async (groupId) => {
@@ -2413,10 +2464,10 @@ const FileList = () => {
     setAutoArchivingGroupIds((prev) => new Set([...prev, groupId]))
     try {
       const cached = groupDocsMap[groupId]?.matchInfo
-      let matchedPatientId = cached?.matched_patient_id
+      let matchedPatientId = getGroupRecommendedPatient(cached).patientId
       if (!matchedPatientId) {
         const mr = await matchGroup(groupId)
-        matchedPatientId = mr?.data?.matched_patient_id
+        matchedPatientId = getGroupRecommendedPatient(mr?.data?.match_info || mr?.data).patientId
       }
       if (!matchedPatientId) {
         message.warning('未找到推荐患者，请手动选择')
@@ -2442,15 +2493,20 @@ const FileList = () => {
   const handleCreatePatientForGroup = useCallback(async (groupId) => {
     if (!groupId) return
     let items = groupDocsMap[groupId]?.items
+    let groupPayload = groupDocsMap[groupId]
     if (!Array.isArray(items)) {
       try {
         const res = await getFileListV2GroupDocuments(groupId, { page: 1, page_size: 100 })
         items = res?.success ? res?.data?.items || [] : []
+        groupPayload = res?.success ? res?.data : groupPayload
       } catch { items = [] }
     }
+    const groupDocuments = groupPayload?.group?.documents || []
+    const prefillSources = items?.length ? items : groupDocuments
     setCreatePatientMode('group')
     setCreatePatientGroupId(groupId)
     setCreatePatientDocIds((items || []).map((x) => x.id).filter(Boolean))
+    setCreatePatientPrefillValues(mergePatientPrefills(prefillSources))
     setCreatePatientDrawerOpen(true)
   }, [groupDocsMap])
 
@@ -2574,44 +2630,47 @@ const FileList = () => {
       message.warning('请先选择文档和患者')
       return
     }
+    const documentIds = selectedRowKeys
+      .map((key) => fileRecordMap.get(key))
+      .filter((item) => item?.id && item.task_status !== 'archived')
+      .map((item) => item.id)
+    if (!documentIds.length) {
+      message.warning('当前选中文档没有可归档的文档')
+      return
+    }
     setBatchProcessing(true)
     try {
-      let ok = 0
-      const errors = []
-      for (const id of selectedRowKeys) {
-        try {
-          const res = await archiveDocument(id, selectedBatchPatient.id, true)
-          if (res?.success) ok += 1
-          else errors.push({ id, message: res?.message || '归档失败' })
-        } catch (e) {
-          errors.push({ id, message: e?.message || '归档失败' })
-        }
-      }
-      if (ok > 0 && errors.length === 0)
+      const res = await batchArchiveDocuments(documentIds, selectedBatchPatient.id, true)
+      const ok = Number(res?.data?.total ?? res?.data?.items?.length ?? 0)
+      if (res?.success && ok > 0) {
         message.success(`已归档 ${ok} 个文档到患者「${selectedBatchPatient.name || '未知'}」`)
-      else if (ok > 0) message.warning(`归档完成：成功 ${ok} 个，失败 ${errors.length} 个`)
-      else message.error('归档失败')
-      setSelectedRowKeys([])
-      setBatchManualArchiveVisible(false)
-      refreshAll({ forceTree: true })
+        setSelectedRowKeys([])
+        setBatchManualArchiveVisible(false)
+        refreshAll({ forceTree: true })
+      } else {
+        message.error(res?.message || '归档失败')
+      }
     } catch {
       message.error('批量归档失败')
     } finally {
       setBatchProcessing(false)
     }
-  }, [selectedRowKeys, selectedBatchPatient, refreshAll])
+  }, [fileRecordMap, selectedRowKeys, selectedBatchPatient, refreshAll])
 
   const handleBatchCreatePatientFromSelection = useCallback(() => {
     if (!selectedRowKeys.length) return message.warning('请先选择文档')
     const selected = selectedRowKeys
       .map((key) => fileRecordMap.get(key))
       .filter(Boolean)
-    const eligible = selected.filter((r) => r.task_status === 'pending_confirm_new').map((r) => r.id)
+    const eligible = selected
+      .filter((r) => r?.id && r.task_status !== 'archived')
+      .map((r) => r.id)
     if (!eligible.length)
-      return message.warning('当前选中文档中没有可「新建患者」的文档（仅支持：待确认-新建）')
+      return message.warning('当前选中文档中没有可「新建患者」并归档的文档')
     setCreatePatientMode('docs')
     setCreatePatientGroupId(null)
     setCreatePatientDocIds(eligible)
+    setCreatePatientPrefillValues(mergePatientPrefills(selected.filter((r) => eligible.includes(r.id))))
     setCreatePatientDrawerOpen(true)
   }, [fileRecordMap, selectedRowKeys])
 
@@ -2697,11 +2756,8 @@ const FileList = () => {
     const selectedRecords = selectedRowKeys.map((id) => fileRecordMap.get(id)).filter(Boolean)
     if (!selectedRecords.length) return message.warning('没有找到可处理的文档')
 
-    const archivableStatuses = new Set([
-      'auto_archived', 'pending_confirm_review', 'pending_confirm_uncertain', 'pending_confirm_new',
-    ])
-    const eligible = selectedRecords.filter((r) => archivableStatuses.has(r.task_status))
-    if (!eligible.length) return message.warning('选中文档中没有处于待归档状态的文档')
+    const eligible = selectedRecords.filter((r) => r?.id && r.task_status !== 'archived')
+    if (!eligible.length) return message.warning('选中文档中没有可确认推荐归档的文档')
 
     setBatchConfirmArchiveLoading(true)
     let successCount = 0
@@ -2728,7 +2784,7 @@ const FileList = () => {
       const gid = doc._groupId
       if (gid) {
         if (processedGroupIds.has(gid)) continue  // 同组其他文件已加入队列
-        const matchedPatientId = groupDocsMap[gid]?.matchInfo?.matched_patient_id
+        const matchedPatientId = getGroupRecommendedPatient(groupDocsMap[gid]?.matchInfo).patientId
         if (matchedPatientId) {
           processedGroupIds.add(gid)
           groupArchives.push({ groupId: gid, matchedPatientId })
@@ -2766,8 +2822,13 @@ const FileList = () => {
     // 无组 / 缺缓存的逐个归档
     for (const doc of soloArchives) {
       try {
-        const matchRes = await getDocumentAiMatchInfo(doc.id)
-        const matchedPatientId = matchRes?.data?.ai_recommendation
+        let matchedPatientId = doc?._groupId
+          ? getGroupRecommendedPatient(groupDocsMap[doc._groupId]?.matchInfo).patientId
+          : ''
+        if (!matchedPatientId) {
+          const matchRes = await getDocumentAiMatchInfo(doc.id)
+          matchedPatientId = matchRes?.data?.ai_recommendation
+        }
         if (!matchedPatientId) {
           skippedNoMatchCount += 1
           skippedNoMatchDocNames.add(getDocName(doc))
@@ -3086,20 +3147,28 @@ const FileList = () => {
     const isArchived = record?._groupType === 'archived'
     if (isTodo) {
       const statusSet = record?._statusSet || []
+      const isPendingProcessGroup = statusSet.includes('parse') || statusSet.includes('parsing')
       const hasAutoArchived = statusSet.includes('auto_archived')
       const hasPendingReview = statusSet.includes('pending_confirm_review')
       const hasPendingNew = statusSet.includes('pending_confirm_new')
       const isUncertainGroup = statusSet.includes('pending_confirm_uncertain')
       const matchInfo = record?._matchInfo
-      const matchedPatientId = matchInfo?.matched_patient_id
-      const candidates = matchInfo?.candidates || []
-      const matchedCandidate = matchedPatientId
-        ? candidates.find((item) => item.id === matchedPatientId) || candidates[0]
-        : candidates[0]
+      const { patientId: matchedPatientId, candidate: matchedCandidate } = getGroupRecommendedPatient(matchInfo)
       const matchedPatientNameRaw = matchedCandidate?.name || matchedCandidate?.patient_name
       const recommendedArchiveLabel = getRecommendedArchiveLabel(matchedPatientNameRaw, matchInfo?.match_score)
 
-      if (hasAutoArchived || hasPendingReview || isUncertainGroup) {
+      if (isPendingProcessGroup) {
+        actions.push(
+          <Button
+            key="pending"
+            size="small"
+            icon={<LoadingOutlined />}
+            onClick={(event) => { event.stopPropagation(); toggleGroup(record) }}
+          >
+            {renderGroupPrimaryActionLabel('查看')}
+          </Button>
+        )
+      } else if (hasAutoArchived || hasPendingReview || isUncertainGroup) {
         actions.push(
           <Button
             key="confirm"
@@ -3138,11 +3207,11 @@ const FileList = () => {
           </Button>
         )
       }
-      const moreItems = [
+      const moreItems = isPendingProcessGroup ? [] : [
         { key: 'auto', icon: <CheckCircleOutlined />, label: recommendedArchiveLabel, disabled: !matchedPatientId, onClick: () => handleAutoArchiveGroup(record._groupId) },
         { key: 'manual', icon: <TeamOutlined />, label: '手动选择', onClick: () => openManualArchiveForGroup(record._groupId) },
       ]
-      if (!isUncertainGroup) {
+      if (!isPendingProcessGroup && !isUncertainGroup) {
         moreItems.splice(1, 0, {
           key: 'new_patient',
           icon: <UserAddOutlined />,
@@ -3150,11 +3219,13 @@ const FileList = () => {
           onClick: () => handleCreatePatientForGroup(record._groupId),
         })
       }
-      actions.push(
-        <Dropdown key="more" trigger={['click']} menu={{ items: moreItems }}>
-          <Button size="small" icon={<MoreOutlined />} onClick={(event) => event.stopPropagation()} />
-        </Dropdown>
-      )
+      if (moreItems.length) {
+        actions.push(
+          <Dropdown key="more" trigger={['click']} menu={{ items: moreItems }}>
+            <Button size="small" icon={<MoreOutlined />} onClick={(event) => event.stopPropagation()} />
+          </Dropdown>
+        )
+      }
     }
     if (isArchived && record?._patientId) {
       if (record?._patientDeleted) {
@@ -3215,11 +3286,7 @@ const FileList = () => {
     const hasPendingNew = statusSet.includes('pending_confirm_new')
     const isUncertainGroup = statusSet.includes('pending_confirm_uncertain')
     const matchInfo = record._matchInfo
-    const matchedPatientId = matchInfo?.matched_patient_id
-    const candidates = matchInfo?.candidates || []
-    const matchedCandidate = matchedPatientId
-      ? candidates.find((c) => c.id === matchedPatientId) || candidates[0]
-      : candidates[0]
+    const { patientId: matchedPatientId, candidate: matchedCandidate } = getGroupRecommendedPatient(matchInfo)
     const matchedPatientNameRaw = matchedCandidate?.name || matchedCandidate?.patient_name
     const matchedPatientName = matchedPatientNameRaw ? maskName(matchedPatientNameRaw) : ''
     const recommendedArchiveLabel = getRecommendedArchiveLabel(matchedPatientNameRaw, matchInfo?.match_score)
@@ -4127,31 +4194,47 @@ const FileList = () => {
       {/* 创建患者抽屉 */}
       <CreatePatientDrawer
         open={createPatientDrawerOpen}
-        onClose={() => setCreatePatientDrawerOpen(false)}
+        onClose={() => { setCreatePatientDrawerOpen(false); setCreatePatientPrefillValues(null) }}
         documentIds={createPatientDocIds}
+        prefillValues={createPatientPrefillValues}
         mode={createPatientMode}
         groupId={createPatientGroupId}
+        onSubmit={async (patientData) => createPatient(patientData)}
         onSuccess={async (result) => {
           setCreatePatientDrawerOpen(false)
+          setCreatePatientPrefillValues(null)
+          const patient = result?.response?.data || result?.patient || null
+          const patientId = patient?.id || result?.patientId
+          if (!patientId) {
+            message.error('患者创建成功，但未获取到患者 ID，无法归档')
+            refreshAll({ forceTree: true })
+            return
+          }
           if (createPatientMode === 'group' && createPatientGroupId) {
             try {
-              const patientId = result?.patient?.id || result?.patientId
-              if (patientId) {
-                const res = await confirmGroupArchive(createPatientGroupId, patientId, true)
-                if (res?.success)
-                  message.success(`新建患者并归档完成：成功 ${res.data?.archived_count || 0} 个文档`)
-                else message.error(res?.message || '新建患者成功但归档失败')
-              }
+              const res = await confirmGroupArchive(createPatientGroupId, patientId, true)
+              if (res?.success)
+                message.success(`新建患者「${patient?.name || '未知'}」并归档完成：成功 ${res.data?.archived_count || 0} 个文档`)
+              else message.error(res?.message || '新建患者成功但归档失败')
             } catch {
               message.error('归档失败')
             }
           } else if (createPatientMode === 'docs' && createPatientDocIds.length) {
             try {
-              const patientId = result?.patient?.id || result?.patientId
-              if (patientId) {
-                const res = await confirmCreatePatientAndArchive(patientId, createPatientDocIds)
-                if (res?.success) message.success(`已归档 ${createPatientDocIds.length} 个文档`)
+              let archivedCount = 0
+              const errors = []
+              for (const documentId of createPatientDocIds) {
+                try {
+                  const res = await archiveDocument(documentId, patientId, true)
+                  if (res?.success) archivedCount += 1
+                  else errors.push({ documentId, message: res?.message || '归档失败' })
+                } catch (error) {
+                  errors.push({ documentId, message: error?.message || '归档失败' })
+                }
               }
+              if (archivedCount === createPatientDocIds.length) message.success(`新建患者「${patient?.name || '未知'}」并归档完成：成功 ${archivedCount} 个文档`)
+              else if (archivedCount > 0) message.warning(`新建患者成功，归档成功 ${archivedCount} 个，失败 ${errors.length} 个`)
+              else message.error('新建患者成功但归档失败')
             } catch {
               message.error('归档失败')
             }

@@ -13,6 +13,7 @@ from .research_project_repository import (
     ResearchProjectRepository,
 )
 from .schema_template_repository import SchemaTemplateRepository, SchemaTemplateVersionRepository
+from .user_repository import UserRepository
 
 __all__ = [
     "DataContextRepository",
@@ -29,4 +30,5 @@ __all__ = [
     "ResearchProjectRepository",
     "SchemaTemplateRepository",
     "SchemaTemplateVersionRepository",
+    "UserRepository",
 ]

@@ -23,6 +23,7 @@ from app.repositories import (
     ResearchProjectRepository,
 )
 from app.services.schema_service import SchemaService
+from app.services.schema_field_planner import schema_top_level_forms
 from app.services.structured_value_service import StructuredValueService
 from core.db import Transactional
 
@@ -72,23 +73,29 @@ class ResearchProjectService:
         page: int = 1,
         page_size: int = 20,
         status: str | None = None,
+        owner_id: str | None = None,
     ) -> tuple[list[ResearchProject], int]:
         offset = (page - 1) * page_size
-        projects = await self.project_repository.list_projects(status=status, limit=page_size, offset=offset)
-        total = await self.project_repository.count_projects(status=status)
+        projects = await self.project_repository.list_projects(status=status, limit=page_size, offset=offset, owner_id=owner_id)
+        total = await self.project_repository.count_projects(status=status, owner_id=owner_id)
         return projects, total
 
-    async def get_project(self, project_id: str) -> ResearchProject | None:
-        return await self.project_repository.get_by_id(project_id)
+    async def get_project(self, project_id: str, *, owner_id: str | None = None) -> ResearchProject | None:
+        project = await self.project_repository.get_by_id(project_id)
+        if project is None:
+            return None
+        if owner_id is not None and project.owner_id != owner_id:
+            return None
+        return project
 
-    async def list_template_bindings(self, project_id: str) -> list[ProjectTemplateBinding]:
-        project = await self.get_project(project_id)
+    async def list_template_bindings(self, project_id: str, *, owner_id: str | None = None) -> list[ProjectTemplateBinding]:
+        project = await self.get_project(project_id, owner_id=owner_id)
         if project is None:
             raise ResearchProjectNotFoundError("Research project not found")
         return await self.binding_repository.list_by_project(project_id)
 
-    async def list_project_patients(self, project_id: str) -> list[ProjectPatient]:
-        project = await self.get_project(project_id)
+    async def list_project_patients(self, project_id: str, *, owner_id: str | None = None) -> list[ProjectPatient]:
+        project = await self.get_project(project_id, owner_id=owner_id)
         if project is None:
             raise ResearchProjectNotFoundError("Research project not found")
         return await self.project_patient_repository.list_by_project(project_id)
@@ -103,8 +110,8 @@ class ResearchProjectService:
         )
 
     @Transactional()
-    async def update_project(self, project_id: str, **params: Any) -> ResearchProject:
-        project = await self.get_project(project_id)
+    async def update_project(self, project_id: str, *, owner_id: str | None = None, **params: Any) -> ResearchProject:
+        project = await self.get_project(project_id, owner_id=owner_id)
         if project is None:
             raise ResearchProjectNotFoundError("Research project not found")
         for key, value in params.items():
@@ -271,7 +278,69 @@ class ResearchProjectService:
         field_path: str,
     ) -> list[FieldValueEvent]:
         context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
-        return await self.event_repository.list_by_field(context_id=context.id, field_path=field_path)
+        for query_path in self._field_path_aliases(field_path):
+            events = await self.event_repository.list_by_field(context_id=context.id, field_path=query_path)
+            if events:
+                evidences = await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+                evidence_by_event_id: dict[str, FieldValueEvidence] = {}
+                for evidence in evidences:
+                    evidence_by_event_id.setdefault(evidence.value_event_id, evidence)
+                for event in events:
+                    evidence = evidence_by_event_id.get(event.id)
+                    if evidence is not None:
+                        setattr(event, "source_page", evidence.page_no)
+                        setattr(event, "source_text", evidence.quote_text)
+                        setattr(event, "source_location", self._source_location_from_evidence(evidence))
+                return events
+        return []
+
+    async def list_crf_field_candidates(
+        self,
+        *,
+        project_id: str,
+        project_patient_id: str,
+        field_path: str,
+    ) -> dict[str, Any]:
+        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
+        query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
+        events = await self.event_repository.list_candidates_by_context_field(context_id=context.id, field_path=query_path)
+        current_values = await self.current_repository.list_by_context(context.id)
+        current = next((value for value in current_values if value.field_path == query_path), None)
+        evidences = await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+        evidence_by_event_id: dict[str, FieldValueEvidence] = {}
+        for evidence in evidences:
+            evidence_by_event_id.setdefault(evidence.value_event_id, evidence)
+
+        candidates = []
+        distinct_values: set[str] = set()
+        for event in events:
+            value = self._event_display_value(event)
+            distinct_values.add(str(value))
+            evidence = evidence_by_event_id.get(event.id)
+            candidates.append(
+                {
+                    "id": event.id,
+                    "event_id": event.id,
+                    "value": value,
+                    "value_type": event.value_type,
+                    "review_status": event.review_status,
+                    "confidence": float(event.confidence) if event.confidence is not None else None,
+                    "source_document_id": event.source_document_id,
+                    "source_page": evidence.page_no if evidence is not None else None,
+                    "source_text": evidence.quote_text if evidence is not None else None,
+                    "source_location": self._source_location_from_evidence(evidence) if evidence is not None else None,
+                    "created_at": event.created_at,
+                }
+            )
+
+        selected_value = self._current_display_value(current) if current is not None else None
+        return {
+            "candidates": candidates,
+            "selected_candidate_id": current.selected_event_id if current is not None else None,
+            "selected_value": selected_value,
+            "has_value_conflict": len(distinct_values) > 1,
+            "distinct_value_count": len(distinct_values),
+        }
 
     async def list_crf_field_evidence(
         self,
@@ -281,7 +350,36 @@ class ResearchProjectService:
         field_path: str,
     ) -> list[FieldValueEvidence]:
         context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
-        return await self.evidence_repository.list_by_field(context_id=context.id, field_path=field_path)
+        query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
+        return await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+
+    def _canonical_field_path(self, field_path: str) -> str:
+        parts = [part for part in str(field_path or "").split(".") if part and not part.isdigit()]
+        return ".".join(parts)
+
+    def _field_path_aliases(self, field_path: str) -> list[str]:
+        raw_path = str(field_path or "").strip()
+        canonical_path = self._canonical_field_path(raw_path)
+        return list(dict.fromkeys(path for path in [raw_path, canonical_path] if path))
+
+    async def _resolve_existing_field_path(self, *, context_id: str, field_path: str) -> str:
+        current_values = await self.current_repository.list_by_context(context_id)
+        existing_paths = {value.field_path for value in current_values}
+        for query_path in self._field_path_aliases(field_path):
+            if query_path in existing_paths:
+                return query_path
+        return self._canonical_field_path(field_path)
+
+    def _source_location_from_evidence(self, evidence: FieldValueEvidence) -> dict[str, Any] | list[Any] | None:
+        location = evidence.bbox_json
+        if isinstance(location, dict):
+            next_location = dict(location)
+            next_location.setdefault("page", evidence.page_no or next_location.get("page_no") or 1)
+            next_location.setdefault("page_no", evidence.page_no or next_location.get("page") or 1)
+            if "position" not in next_location and isinstance(next_location.get("polygon"), list):
+                next_location["position"] = next_location["polygon"]
+            return next_location
+        return location
 
     @Transactional()
     async def manual_update_crf_field(
@@ -322,9 +420,80 @@ class ResearchProjectService:
     ) -> FieldCurrentValue:
         context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
         event = await self.event_repository.get_by_id(event_id)
-        if event is None or event.context_id != context.id or event.field_path != field_path:
+        allowed_paths = set(self._field_path_aliases(field_path))
+        if event is None or event.context_id != context.id or event.field_path not in allowed_paths:
             raise ResearchProjectNotFoundError("CRF field event not found")
         return await self.value_service.select_current_value(event=event, selected_by=selected_by)
+
+    @Transactional()
+    async def delete_crf_field_value(self, *, project_id: str, project_patient_id: str, field_path: str) -> None:
+        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
+        query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
+        await self.evidence_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
+        await self.current_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
+        await self.event_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
+
+    @Transactional()
+    async def create_crf_record_instance(
+        self,
+        *,
+        project_id: str,
+        project_patient_id: str,
+        form_key: str,
+        form_title: str | None = None,
+        group_key: str | None = None,
+        group_title: str | None = None,
+        instance_label: str | None = None,
+    ) -> RecordInstance:
+        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
+        repeat_index = await self.record_repository.next_repeat_index(context_id=context.id, form_key=form_key)
+        return await self.record_repository.create(
+            {
+                "context_id": context.id,
+                "group_key": group_key,
+                "group_title": group_title,
+                "form_key": form_key,
+                "form_title": form_title or form_key,
+                "repeat_index": repeat_index,
+                "instance_label": instance_label or f"{form_title or form_key} #{repeat_index + 1}",
+                "review_status": "unreviewed",
+            }
+        )
+
+    @Transactional()
+    async def delete_crf_record_instance(self, *, project_id: str, project_patient_id: str, record_instance_id: str) -> None:
+        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
+        record = await self.record_repository.get_by_id(record_instance_id)
+        if record is None or record.context_id != context.id:
+            raise ResearchProjectNotFoundError("CRF record instance not found")
+
+        events = await self.event_repository.list_by_record(record_instance_id)
+        await self.evidence_repository.delete_by_event_ids([event.id for event in events])
+        await self.current_repository.delete_by_record(record_instance_id)
+        await self.event_repository.delete_by_record(record_instance_id)
+        await self.record_repository.delete(record)
+
+    def _event_display_value(self, event: FieldValueEvent) -> Any:
+        if event.value_json is not None:
+            return event.value_json
+        if event.value_number is not None:
+            return float(event.value_number)
+        if event.value_date is not None:
+            return event.value_date.isoformat()
+        if event.value_datetime is not None:
+            return event.value_datetime.isoformat()
+        return event.value_text
+
+    def _current_display_value(self, current: FieldCurrentValue) -> Any:
+        if current.value_json is not None:
+            return current.value_json
+        if current.value_number is not None:
+            return float(current.value_number)
+        if current.value_date is not None:
+            return current.value_date.isoformat()
+        if current.value_datetime is not None:
+            return current.value_datetime.isoformat()
+        return current.value_text
 
     async def _get_project_patient_or_404(self, project_id: str, project_patient_id: str) -> ProjectPatient:
         project_patient = await self.project_patient_repository.get_by_id(project_patient_id)
@@ -356,31 +525,28 @@ class ResearchProjectService:
         *,
         context_id: str,
         schema_json: dict[str, Any],
-    ):
-        created = []
-        for group in schema_json.get("groups", []):
-            for form in group.get("forms", []):
-                if form.get("repeatable", False):
-                    continue
-                existing = await self.record_repository.get_by_form(
-                    context_id=context_id,
-                    form_key=form["key"],
-                    repeat_index=0,
+    ) -> list[RecordInstance]:
+        created: list[RecordInstance] = []
+        for form in schema_top_level_forms(schema_json):
+            existing = await self.record_repository.get_by_form(
+                context_id=context_id,
+                form_key=form["form_key"],
+                repeat_index=0,
+            )
+            if existing is not None:
+                continue
+            created.append(
+                await self.record_repository.create(
+                    {
+                        "context_id": context_id,
+                        "group_key": form.get("group_key"),
+                        "group_title": form.get("group_title"),
+                        "form_key": form["form_key"],
+                        "form_title": form["form_title"] or form["form_key"],
+                        "repeat_index": 0,
+                        "instance_label": form["form_title"] or form["form_key"],
+                        "review_status": "unreviewed",
+                    }
                 )
-                if existing is not None:
-                    continue
-                created.append(
-                    await self.record_repository.create(
-                        {
-                            "context_id": context_id,
-                            "group_key": group.get("key"),
-                            "group_title": group.get("title"),
-                            "form_key": form["key"],
-                            "form_title": form.get("title", form["key"]),
-                            "repeat_index": 0,
-                            "instance_label": form.get("title", form["key"]),
-                            "review_status": "unreviewed",
-                        }
-                    )
-                )
+            )
         return created

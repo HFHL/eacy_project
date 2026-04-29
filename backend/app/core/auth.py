@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from fastapi import Depends, HTTPException, Request, status
+from uuid import UUID
 
 from app.core.security import decode_authorization_header
 from core.config import config
@@ -60,3 +61,15 @@ def require_permissions(required_permissions: list[str]):
         return current_user
 
     return dependency
+
+
+def uuid_user_id_or_none(current_user: CurrentUser) -> str | None:
+    """Return a user id only when it can be stored in UUID columns."""
+    try:
+        return str(UUID(str(current_user.id)))
+    except (TypeError, ValueError):
+        return None
+
+
+def is_admin_user(current_user: CurrentUser) -> bool:
+    return current_user.role == "admin" or "*" in current_user.permissions

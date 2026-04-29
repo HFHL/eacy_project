@@ -12,6 +12,7 @@ from .record_instance import RecordInstance
 from .research_project import ResearchProject
 from .schema_template import SchemaTemplate
 from .schema_template_version import SchemaTemplateVersion
+from .user import User
 
 __all__ = [
     "DataContext",
@@ -28,4 +29,5 @@ __all__ = [
     "ResearchProject",
     "SchemaTemplate",
     "SchemaTemplateVersion",
+    "User",
 ]

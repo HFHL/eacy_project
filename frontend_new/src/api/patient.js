@@ -257,6 +257,58 @@ const setByDotPath = (target, path, value) => {
   })
 }
 
+const hasAnyEhrValue = (value) => {
+  if (value == null) return false
+  if (Array.isArray(value)) return value.some(hasAnyEhrValue)
+  if (typeof value === 'object') return Object.values(value).some(hasAnyEhrValue)
+  return value !== ''
+}
+
+const getByPathParts = (target, parts) => {
+  let cursor = target
+  for (const part of parts) {
+    if (cursor == null || typeof cursor !== 'object') return undefined
+    cursor = cursor[part]
+  }
+  return cursor
+}
+
+const setByPathParts = (target, parts, value) => {
+  let cursor = target
+  parts.forEach((part, index) => {
+    const isLast = index === parts.length - 1
+    if (isLast) {
+      cursor[part] = value
+      return
+    }
+    if (cursor[part] == null || typeof cursor[part] !== 'object') cursor[part] = {}
+    cursor = cursor[part]
+  })
+}
+
+const wrapRepeatableSchemaForms = (data, schema) => {
+  const folders = schema?.properties && typeof schema.properties === 'object'
+    ? schema.properties
+    : {}
+
+  Object.entries(folders).forEach(([folderName, folderSchema]) => {
+    const forms = folderSchema?.properties && typeof folderSchema.properties === 'object'
+      ? folderSchema.properties
+      : {}
+
+    Object.entries(forms).forEach(([formName, formSchema]) => {
+      if (formSchema?.type !== 'array' || !formSchema.items?.properties) return
+
+      const pathParts = [folderName, formName]
+      const formData = getByPathParts(data, pathParts)
+      if (Array.isArray(formData) || formData == null) return
+      if (typeof formData !== 'object' || !hasAnyEhrValue(formData)) return
+
+      setByPathParts(data, pathParts, [formData])
+    })
+  })
+}
+
 const normalizeEhrResponse = (payload = {}) => {
   const currentValues = payload.current_values && typeof payload.current_values === 'object'
     ? payload.current_values
@@ -266,6 +318,8 @@ const normalizeEhrResponse = (payload = {}) => {
   Object.entries(currentValues).forEach(([fieldPath, currentValue]) => {
     setByDotPath(data, fieldPath, getCurrentValuePayload(currentValue))
   })
+
+  wrapRepeatableSchemaForms(data, payload.schema)
 
   return {
     context: payload.context || null,
@@ -320,6 +374,37 @@ const collectLeafValues = (value, prefix = '', result = {}) => {
   return result
 }
 
+const collectDeletedLeafPaths = (previousValue, nextValue, prefix = '', result = []) => {
+  if (previousValue === undefined || previousValue === null) return result
+
+  if (Array.isArray(previousValue)) {
+    if (!Array.isArray(nextValue)) {
+      Object.keys(collectLeafValues(previousValue, prefix)).forEach((path) => result.push(path))
+      return result
+    }
+    previousValue.forEach((item, index) => {
+      collectDeletedLeafPaths(item, nextValue[index], prefix ? `${prefix}.${index}` : String(index), result)
+    })
+    return result
+  }
+
+  if (isPlainObject(previousValue)) {
+    const entries = Object.entries(previousValue).filter(([key]) => !String(key).startsWith('_'))
+    if (!isPlainObject(nextValue) && !Array.isArray(nextValue)) {
+      Object.keys(collectLeafValues(previousValue, prefix)).forEach((path) => result.push(path))
+      return result
+    }
+    entries.forEach(([key, item]) => {
+      const childNext = nextValue && typeof nextValue === 'object' ? nextValue[key] : undefined
+      collectDeletedLeafPaths(item, childNext, prefix ? `${prefix}.${key}` : key, result)
+    })
+    return result
+  }
+
+  if (prefix && nextValue === undefined) result.push(prefix)
+  return result
+}
+
 const inferEhrValuePayload = (fieldPath, value) => {
   const fieldKey = String(fieldPath || '').split('.').filter(Boolean).at(-1) || fieldPath
   if (value instanceof Date) {
@@ -359,10 +444,57 @@ const normalizeHistoryEvent = (event = {}) => ({
   new_value: getCurrentValuePayload(event),
   value: getCurrentValuePayload(event),
   source: event.source_document_id ? 'document' : event.created_by ? 'manual' : 'system',
+  source_document_id: event.source_document_id || null,
+  source_event_id: event.source_event_id || null,
+  source_page: event.source_page ?? null,
+  source_text: event.source_text || null,
+  source_location: event.source_location || null,
+  extraction_run_id: event.extraction_run_id || null,
+  review_status: event.review_status || '',
+  created_at: event.created_at || '',
   operator: event.created_by || event.selected_by || '',
   timestamp: event.created_at || event.updated_at || '',
   confidence: event.confidence,
   note: event.note,
+})
+
+const normalizeEvidenceLocation = (evidence = {}) => {
+  let rawLocation = evidence.bbox_json
+  if (typeof rawLocation === 'string') {
+    try {
+      rawLocation = JSON.parse(rawLocation)
+    } catch {
+      rawLocation = null
+    }
+  }
+  const location = rawLocation && typeof rawLocation === 'object' ? rawLocation : {}
+  const pageNo = evidence.page_no || location.page_no || location.page || 1
+  const polygon = Array.isArray(location.polygon)
+    ? location.polygon
+    : Array.isArray(location.textin_position)
+      ? location.textin_position
+      : Array.isArray(location.position)
+        ? location.position
+        : null
+
+  return {
+    ...location,
+    page: pageNo,
+    page_no: pageNo,
+    polygon,
+    coord_space: location.coord_space || 'pixel',
+    page_width: location.page_width,
+    page_height: location.page_height,
+    quote_text: evidence.quote_text || location.quote_text || '',
+    evidence_id: evidence.id,
+    evidence_type: evidence.evidence_type,
+    document_id: evidence.document_id,
+  }
+}
+
+const normalizeFieldEvidence = (evidence = {}) => ({
+  ...evidence,
+  source_location: normalizeEvidenceLocation(evidence),
 })
 
 export const getPatientEhr = async (patientId = '') => {
@@ -390,13 +522,30 @@ export const updatePatientEhrSchemaData = async (patientId = '', data = {}, opti
     updated.push(current)
   }
 
+  const deleted = []
+  const deletedPaths = collectDeletedLeafPaths(previousData, data)
+    .filter((fieldPath) => !Object.prototype.hasOwnProperty.call(nextValues, fieldPath))
+  for (const fieldPath of deletedPaths) {
+    await request.delete(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}`)
+    deleted.push(fieldPath)
+  }
+
   return emptySuccess({
     data,
     updated,
+    deleted,
     updated_count: updated.length,
+    deleted_count: deleted.length,
   })
 }
-export const updatePatientEhrFolder = async () => emptySuccess(null)
+export const updatePatientEhrFolder = async (patientId = '') => {
+  if (!patientId) return emptySuccess({ created_jobs: 0, job_ids: [] })
+  const payload = await request.post(`${PATIENTS_ENDPOINT}/${patientId}/ehr/update-folder`)
+  return emptySuccess({
+    ...payload,
+    message: `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个电子病历夹抽取任务，后台正在抽取`,
+  })
+}
 export const updatePatientEhr = async (patientId, data = {}) => updatePatientEhrSchemaData(patientId, data)
 export const getPatientDocuments = async (patientId = '') => {
   const response = await getDocumentList({ patient_id: patientId, page: 1, page_size: 100 })
@@ -405,25 +554,85 @@ export const getPatientDocuments = async (patientId = '') => {
 export const mergeEhrData = async () => emptySuccess(null)
 export const getConflictsByExtractionId = async () => emptyList()
 export const resolveConflict = async () => emptySuccess(null)
-export const startPatientExtraction = async () => emptyTask()
-export const getExtractionTaskStatus = async () => emptyTask()
+export const startPatientExtraction = async (patientId = '') => {
+  if (!patientId) return emptyTask()
+  const payload = await request.post('/extraction-jobs', {
+    job_type: 'patient_ehr',
+    patient_id: patientId,
+    input_json: { source: 'patient_extract' },
+  })
+  return emptySuccess({ ...payload, task_id: payload.id })
+}
+export const getExtractionTaskStatus = async (taskId = '') => {
+  if (!taskId) return emptyTask()
+  const payload = await request.get(`/extraction-jobs/${taskId}`)
+  return emptySuccess({
+    ...payload,
+    task_id: payload.id,
+    percentage: payload.progress || 0,
+  })
+}
 export const getEhrFieldHistory = async (patientId = '', fieldPath = '') => {
   const events = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/events`)
   return emptySuccess((Array.isArray(events) ? events : []).map(normalizeHistoryEvent))
+}
+export const getEhrFieldEvidence = async (patientId = '', fieldPath = '') => {
+  const evidences = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/evidence`)
+  return emptySuccess((Array.isArray(evidences) ? evidences : []).map(normalizeFieldEvidence))
 }
 export const getEhrFieldHistoryV2 = async (patientId = '', fieldPath = '') => {
   const history = await getEhrFieldHistory(patientId, fieldPath)
   return emptySuccess({ history: history.data || [] })
 }
 export const getEhrFieldHistoryV3 = async (patientId = '', fieldPath = '') => getEhrFieldHistoryV2(patientId, fieldPath)
-export const getEhrFieldCandidatesV3 = async () => emptySuccess({
-  candidates: [],
-  selected_candidate_id: null,
-  selected_value: null,
-  has_value_conflict: false,
-  distinct_value_count: 0,
-})
-export const selectEhrFieldCandidateV3 = async () => emptySuccess(null)
+export const getEhrFieldCandidatesV3 = async (patientId = '', fieldPath = '') => {
+  if (!patientId || !fieldPath) return emptySuccess({
+    candidates: [],
+    selected_candidate_id: null,
+    selected_value: null,
+    has_value_conflict: false,
+    distinct_value_count: 0,
+  })
+  const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/candidates`)
+  return emptySuccess(payload)
+}
+export const saveEhrFieldValueV3 = async (patientId = '', fieldPath = '', value, options = {}) => {
+  if (!patientId || !fieldPath) return emptySuccess(null)
+  const payload = {
+    ...inferEhrValuePayload(fieldPath, value),
+    ...(options.record_instance_id ? { record_instance_id: options.record_instance_id } : {}),
+    ...(options.note ? { note: options.note } : {}),
+  }
+  const current = await request.patch(
+    `${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}`,
+    payload
+  )
+  return emptySuccess(current)
+}
+export const deleteEhrFieldValueV3 = async (patientId = '', fieldPath = '') => {
+  if (!patientId || !fieldPath) return emptySuccess(null)
+  await request.delete(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}`)
+  return emptySuccess(null)
+}
+export const createEhrRecordInstanceV3 = async (patientId = '', data = {}) => {
+  if (!patientId) return emptySuccess(null)
+  const payload = await request.post(`${PATIENTS_ENDPOINT}/${patientId}/ehr/records`, data)
+  return emptySuccess(payload)
+}
+export const deleteEhrRecordInstanceV3 = async (patientId = '', recordInstanceId = '') => {
+  if (!patientId || !recordInstanceId) return emptySuccess(null)
+  await request.delete(`${PATIENTS_ENDPOINT}/${patientId}/ehr/records/${recordInstanceId}`)
+  return emptySuccess(null)
+}
+export const selectEhrFieldCandidateV3 = async (patientId = '', fieldPath = '', candidateId = '', selectedValue) => {
+  if (!patientId || !fieldPath) return emptySuccess(null)
+  if (!candidateId) return saveEhrFieldValueV3(patientId, fieldPath, selectedValue)
+  const payload = await request.post(
+    `${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/select-candidate`,
+    { candidate_id: candidateId }
+  )
+  return emptySuccess(payload)
+}
 export const uploadAndExtractField = async () => emptyTask()
 export const getFieldConflicts = async () => emptyList()
 export const resolveFieldConflict = async () => emptySuccess(null)
@@ -452,9 +661,14 @@ export default {
   startPatientExtraction,
   getExtractionTaskStatus,
   getEhrFieldHistory,
+  getEhrFieldEvidence,
   getEhrFieldHistoryV2,
   getEhrFieldHistoryV3,
   getEhrFieldCandidatesV3,
+  saveEhrFieldValueV3,
+  deleteEhrFieldValueV3,
+  createEhrRecordInstanceV3,
+  deleteEhrRecordInstanceV3,
   selectEhrFieldCandidateV3,
   uploadAndExtractField,
   getFieldConflicts,

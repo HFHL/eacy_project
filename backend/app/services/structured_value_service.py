@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from app.models import FieldCurrentValue, FieldValueEvent, FieldValueEvidence
@@ -42,6 +42,7 @@ class StructuredValueService:
         review_status: str = "candidate",
         **params: Any,
     ) -> FieldValueEvent:
+        params = self._normalize_value_params(params)
         return await self.event_repository.create(
             {
                 "context_id": context_id,
@@ -86,25 +87,27 @@ class StructuredValueService:
             record_instance_id=event.record_instance_id,
             field_path=event.field_path,
         )
-        values = {field: getattr(event, field, None) for field in VALUE_FIELDS}
+        values = self._normalize_value_params({field: getattr(event, field, None) for field in VALUE_FIELDS})
         now = datetime.utcnow()
 
         if current is None:
-            current = await self.current_repository.create(
-                {
-                    "context_id": event.context_id,
-                    "record_instance_id": event.record_instance_id,
-                    "field_key": event.field_key,
-                    "field_path": event.field_path,
-                    "selected_event_id": event.id,
-                    "value_type": event.value_type,
-                    "selected_by": selected_by,
-                    "selected_at": now,
-                    "review_status": review_status,
-                    "updated_at": now,
-                    **values,
-                }
-            )
+            current_values = {
+                "context_id": event.context_id,
+                "record_instance_id": event.record_instance_id,
+                "field_key": event.field_key,
+                "field_path": event.field_path,
+                "selected_event_id": event.id,
+                "value_type": event.value_type,
+                "selected_by": selected_by,
+                "selected_at": now,
+                "review_status": review_status,
+                "updated_at": now,
+                **values,
+            }
+            if hasattr(self.current_repository, "upsert_selected_value"):
+                current = await self.current_repository.upsert_selected_value(current_values)
+            else:
+                current = await self.current_repository.create(current_values)
         else:
             current.selected_event_id = event.id
             current.value_type = event.value_type
@@ -172,12 +175,41 @@ class StructuredValueService:
             await self.add_evidence(value_event_id=event.id, **evidence)
 
         if auto_select_if_empty:
-            current = await self.current_repository.get_by_field(
-                context_id=context_id,
-                record_instance_id=record_instance_id,
-                field_path=field_path,
-            )
-            if current is None:
-                await self.select_current_value(event=event, selected_by=None, review_status="unreviewed")
+            await self.select_current_value(event=event, selected_by=None, review_status="unreviewed")
 
         return event
+
+    def _normalize_value_params(self, values: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(values)
+        if "value_date" in normalized:
+            normalized["value_date"] = self._coerce_date(normalized.get("value_date"))
+        if "value_datetime" in normalized:
+            normalized["value_datetime"] = self._coerce_datetime(normalized.get("value_datetime"))
+        if "value_json" in normalized:
+            normalized["value_json"] = self._coerce_json(normalized.get("value_json"))
+        return normalized
+
+    def _coerce_date(self, value: Any) -> date | None:
+        if value is None or value == "" or value == "null":
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return date.fromisoformat(str(value).strip())
+
+    def _coerce_datetime(self, value: Any) -> datetime | None:
+        if value is None or value == "" or value == "null":
+            return None
+        if isinstance(value, datetime):
+            return value
+        text = str(value).strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+        return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed
+
+    def _coerce_json(self, value: Any) -> dict[str, Any] | list[Any] | None:
+        if value is None or value == "" or value == "null":
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        return {"value": value}

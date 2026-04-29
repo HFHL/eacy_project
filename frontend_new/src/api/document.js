@@ -1,5 +1,6 @@
-import request from './request'
+import request, { ensureFreshAccessToken } from './request'
 import { emptyFileUrl, emptyList, emptySuccess, emptyTask } from './_empty'
+import { createPatient } from './patient'
 
 const DOCUMENTS_ENDPOINT = '/documents'
 const DEFAULT_API_BASE_URL = '/api/v1'
@@ -35,17 +36,74 @@ const getFileType = (document = {}) => (
   document.file_ext || document.mime_type || document.file_type || 'unknown'
 )
 
+const METADATA_FIELD_TO_CN = {
+  identifiers: '唯一标识符',
+  organizationName: '机构名称',
+  patientName: '患者姓名',
+  gender: '患者性别',
+  age: '患者年龄',
+  birthDate: '出生日期',
+  phone: '联系电话',
+  diagnosis: '诊断',
+  department: '科室信息',
+  documentType: '文档类型',
+  documentSubtype: '文档子类型',
+  documentTitle: '文档标题',
+  effectiveDate: '文档生效日期',
+}
+
+const getMetadataResult = (metadata = {}) => (
+  metadata?.result && typeof metadata.result === 'object' && !Array.isArray(metadata.result)
+    ? metadata.result
+    : {}
+)
+
+const firstNonEmpty = (...values) => {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') return value
+  }
+  return ''
+}
+
+const normalizeMetadataForDisplay = (metadata = {}, summary = {}) => {
+  const safeMetadata = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {}
+  const safeSummary = summary && typeof summary === 'object' && !Array.isArray(summary) ? summary : {}
+  const result = getMetadataResult(safeMetadata)
+  const identifiers = Array.isArray(result['唯一标识符'])
+    ? result['唯一标识符']
+    : (Array.isArray(safeMetadata.identifiers) ? safeMetadata.identifiers : (Array.isArray(safeSummary.identifiers) ? safeSummary.identifiers : []))
+
+  return {
+    ...safeMetadata,
+    result,
+    identifiers,
+    organizationName: firstNonEmpty(safeMetadata.organizationName, safeMetadata.organization_name, safeSummary.organization_name, result['机构名称']),
+    patientName: firstNonEmpty(safeMetadata.patientName, safeMetadata.patient_name, safeSummary.patient_name, result['患者姓名']),
+    gender: firstNonEmpty(safeMetadata.gender, safeMetadata.patient_gender, safeSummary.patient_gender, result['患者性别']),
+    age: firstNonEmpty(safeMetadata.age, safeMetadata.patient_age, safeSummary.patient_age, result['患者年龄']),
+    birthDate: firstNonEmpty(safeMetadata.birthDate, safeMetadata.birth_date, safeSummary.birth_date, result['出生日期']),
+    phone: firstNonEmpty(safeMetadata.phone, safeSummary.phone, result['联系电话']),
+    diagnosis: firstNonEmpty(safeMetadata.diagnosis, safeSummary.diagnosis, result['诊断']),
+    department: firstNonEmpty(safeMetadata.department, safeSummary.department, result['科室信息']),
+    documentType: firstNonEmpty(safeMetadata.documentType, safeMetadata.document_type, safeSummary.document_type, result['文档类型']),
+    documentSubtype: firstNonEmpty(safeMetadata.documentSubtype, safeMetadata.document_subtype, safeSummary.document_subtype, result['文档子类型']),
+    documentTitle: firstNonEmpty(safeMetadata.documentTitle, safeMetadata.document_title, safeMetadata.title, safeSummary.document_title, result['文档标题']),
+    effectiveDate: firstNonEmpty(safeMetadata.effectiveDate, safeMetadata.effective_at, safeMetadata.effectiveAt, safeSummary.effective_date, result['文档生效日期']),
+  }
+}
+
 const getDocumentType = (document = {}) => (
-  document.doc_type || document.document_type || document.metadata_json?.documentType || document.metadata_json?.document_type || ''
+  document.doc_type || document.document_type || normalizeMetadataForDisplay(document.metadata_json, document.document_metadata_summary).documentType || ''
 )
 
 const getDocumentSubtype = (document = {}) => (
-  document.doc_subtype || document.document_sub_type || document.metadata_json?.documentSubtype || document.metadata_json?.document_subtype || ''
+  document.doc_subtype || document.document_sub_type || normalizeMetadataForDisplay(document.metadata_json, document.document_metadata_summary).documentSubtype || ''
 )
 
 const normalizeTaskStatus = (document = {}) => {
   const status = document.status || document.task_status || 'uploaded'
-  if (status === 'archived') return 'archived'
+  const archivedAt = document.archived_at || document.archivedAt
+  if (status === 'archived' || archivedAt) return 'archived'
   if (status === 'failed') return 'parse_failed'
   if (status === 'ocr_pending') return 'parsing'
   if (status === 'ocr_completed') return 'parsed'
@@ -62,13 +120,19 @@ export const normalizeDocument = (document = {}) => {
   const metadata = document.metadata_json && typeof document.metadata_json === 'object'
     ? document.metadata_json
     : {}
+  const displayMetadata = normalizeMetadataForDisplay(metadata, document.document_metadata_summary)
   const fileName = document.original_filename || document.file_name || document.fileName || ''
   const documentType = getDocumentType(document)
   const documentSubtype = getDocumentSubtype(document)
   const taskStatus = normalizeTaskStatus(document)
   const createdAt = document.created_at || document.upload_time || document.uploadTime || ''
-  const effectiveAt = document.effective_at || metadata.effectiveAt || metadata.effective_at || metadata.effectiveDate || ''
+  const effectiveAt = document.effective_at || displayMetadata.effectiveDate || ''
   const patientId = document.patient_id || document.patientId || document.patient_info?.patient_id || null
+  const documentMetadataSummary = document.document_metadata_summary || {
+    name: displayMetadata.patientName,
+    gender: displayMetadata.gender,
+    age: displayMetadata.age,
+  }
 
   return {
     ...document,
@@ -110,16 +174,16 @@ export const normalizeDocument = (document = {}) => {
     documentSubtype,
     doc_type: document.doc_type || documentType,
     doc_subtype: document.doc_subtype || documentSubtype,
-    doc_title: document.doc_title || metadata.documentTitle || metadata.title || fileName,
+    doc_title: document.doc_title || displayMetadata.documentTitle || fileName,
     metadata_json: metadata,
     metadata: {
-      ...metadata,
+      ...displayMetadata,
       documentType,
       documentSubtype,
       effectiveDate: effectiveAt,
       effective_at: effectiveAt,
-      organizationName: metadata.organizationName || metadata.organization_name || '',
     },
+    document_metadata_summary: documentMetadataSummary,
     effective_at: effectiveAt || null,
     is_parsed: ['parsed', 'extracted', 'ai_matching', 'archived'].includes(taskStatus) || !!document.ocr_text,
     isParsed: ['parsed', 'extracted', 'ai_matching', 'archived'].includes(taskStatus) || !!document.ocr_text,
@@ -199,6 +263,11 @@ export const normalizeDocumentListResponse = (payload = {}, params = {}) => {
 const normalizeUpdatePayload = (metadata = {}) => {
   const payload = {}
   const nextMetadata = { ...(metadata.metadata_json || metadata.metadata || {}) }
+  const result = {
+    ...(nextMetadata.result && typeof nextMetadata.result === 'object' && !Array.isArray(nextMetadata.result)
+      ? nextMetadata.result
+      : {}),
+  }
 
   const docType = metadata.doc_type ?? metadata.document_type ?? metadata.documentType
   if (docType !== undefined) payload.doc_type = docType
@@ -219,9 +288,12 @@ const normalizeUpdatePayload = (metadata = {}) => {
   Object.entries(metadata).forEach(([key, value]) => {
     if (payload[key] === undefined && !['metadata', 'metadata_json'].includes(key)) {
       nextMetadata[key] = value
+      const cnKey = METADATA_FIELD_TO_CN[key]
+      if (cnKey) result[cnKey] = value
     }
   })
 
+  if (Object.keys(result).length) nextMetadata.result = result
   if (Object.keys(nextMetadata).length) payload.metadata_json = nextMetadata
   return payload
 }
@@ -292,7 +364,16 @@ export const getDocumentTempUrl = async (documentId = '', expiresIn = 3600) => {
 
 export function getDocumentPdfStreamUrl(documentId = '') {
   if (!documentId) return ''
-  return buildApiUrl(`${DOCUMENTS_ENDPOINT}/${documentId}/stream`)
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('access_token') : ''
+  const path = buildApiUrl(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/stream`)
+  return token ? `${path}${path.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}` : path
+}
+
+export async function getFreshDocumentPdfStreamUrl(documentId = '') {
+  if (!documentId) return ''
+  const token = typeof localStorage !== 'undefined' ? await ensureFreshAccessToken() : ''
+  const path = buildApiUrl(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/stream`)
+  return token ? `${path}${path.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}` : path
 }
 
 export const archiveDocument = async (documentId = '', patientId = '', createExtractionJob = true) => {
@@ -301,6 +382,18 @@ export const archiveDocument = async (documentId = '', patientId = '', createExt
     create_extraction_job: createExtractionJob,
   })
   return emptySuccess(normalizeDocument(payload))
+}
+
+export const batchArchiveDocuments = async (documentIds = [], patientId = '', createExtractionJob = true) => {
+  const ids = Array.isArray(documentIds) ? documentIds.filter(Boolean) : []
+  if (!ids.length || !patientId) return emptySuccess({ items: [], total: 0 })
+  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/batch-archive`, {
+    document_ids: ids,
+    patient_id: patientId,
+    create_extraction_job: createExtractionJob,
+  })
+  const items = Array.isArray(payload.items) ? payload.items.map(normalizeDocument) : []
+  return emptySuccess({ ...payload, items, total: payload.total ?? items.length })
 }
 
 export const unarchiveDocument = async (documentId = '') => {
@@ -329,16 +422,120 @@ export const updateDocumentMetadata = async (documentId = '', metadata = {}) => 
 export const getParseResult = async () => emptySuccess(null)
 export const getParseProgress = async () => emptyTask()
 export const parseDocuments = async () => []
-export const extractEhrData = async () => emptyTask()
-export const extractEhrDataTargeted = async () => emptyTask()
-export const extractDocumentMetadata = async () => emptyTask()
+export const extractEhrData = async (documentId = '', patientId = '') => {
+  if (!documentId) return emptyTask()
+  const detail = await getDocumentDetail(documentId)
+  const resolvedPatientId = patientId || detail.data?.patient_id
+  const payload = await request.post('/extraction-jobs', {
+    job_type: 'patient_ehr',
+    patient_id: resolvedPatientId,
+    document_id: documentId,
+    input_json: { source: 'document_reextract' },
+  })
+  let fieldsCount = 0
+  if (payload?.id) {
+    const runs = await request.get(`/extraction-jobs/${payload.id}/runs`)
+    fieldsCount = Array.isArray(runs)
+      ? runs.reduce((sum, run) => sum + (run.parsed_output_json?.fields?.length || 0), 0)
+      : 0
+  }
+  return emptySuccess({
+    ...payload,
+    task_id: payload.id,
+    fields_count: fieldsCount,
+  })
+}
+export const extractEhrDataTargeted = async (documentOrOptions = {}, legacyPatientId = '', legacyTargetFormKey = '', legacyOptions = {}) => {
+  const options = typeof documentOrOptions === 'object' && documentOrOptions !== null
+    ? documentOrOptions
+    : {
+        ...legacyOptions,
+        documentId: documentOrOptions,
+        patientId: legacyPatientId,
+        targetFormKey: legacyTargetFormKey,
+      }
+  const {
+    documentId = '',
+    patientId = '',
+    contextId = '',
+    schemaVersionId = '',
+    targetFormKey = '',
+    waitForDocumentReady = false,
+    jobType = options.instanceType === 'project_crf' ? 'project_crf' : 'patient_ehr',
+    projectId = '',
+    projectPatientId = '',
+  } = options
+  if (!documentId || !targetFormKey) return emptyTask()
+  const payload = await request.post('/extraction-jobs', {
+    job_type: jobType,
+    patient_id: patientId || undefined,
+    document_id: documentId,
+    project_id: projectId || undefined,
+    project_patient_id: projectPatientId || undefined,
+    context_id: contextId || undefined,
+    schema_version_id: schemaVersionId || undefined,
+    target_form_key: targetFormKey,
+    input_json: {
+      source: 'form_targeted_extract',
+      form_keys: [targetFormKey],
+      wait_for_document_ready: !!waitForDocumentReady,
+      enqueue_async: true,
+    },
+  })
+  return emptySuccess({ ...payload, task_id: payload.id })
+}
+export const extractDocumentMetadata = async (documentId = '') => {
+  if (!documentId) return emptyTask()
+  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${documentId}/metadata`)
+  return emptySuccess(normalizeDocument(payload))
+}
 export const markDocumentReview = async () => emptySuccess(null)
 export const getDocumentOperationHistory = async () => emptyList()
 export const aiMatchPatient = async () => emptySuccess(null)
 export const aiExtractAndMatchPatient = aiMatchPatient
 export const getDocumentAiMatchInfo = async () => emptySuccess(null)
-export const confirmCreatePatientAndArchive = async () => emptySuccess(null)
-export const batchCreatePatientAndArchive = async () => emptySuccess(null)
+export const confirmCreatePatientAndArchive = async (documentId = '', patientData = {}) => {
+  if (!documentId) return emptySuccess(null, { message: '缺少文档 ID' })
+  const patientRes = await createPatient(patientData)
+  if (!patientRes?.success || !patientRes?.data?.id) return patientRes
+
+  const archiveRes = await archiveDocument(documentId, patientRes.data.id, true)
+  return emptySuccess({
+    patient: patientRes.data,
+    patientId: patientRes.data.id,
+    documentIds: [documentId],
+    archived_count: archiveRes?.success ? 1 : 0,
+    archived_document_ids: archiveRes?.success ? [documentId] : [],
+    archive: archiveRes?.data || null,
+  })
+}
+export const batchCreatePatientAndArchive = async (documentIds = [], patientData = {}) => {
+  const ids = Array.isArray(documentIds) ? documentIds.filter(Boolean) : []
+  if (!ids.length) return emptySuccess(null, { message: '缺少文档 ID' })
+  const patientRes = await createPatient(patientData)
+  if (!patientRes?.success || !patientRes?.data?.id) return patientRes
+
+  const archivedIds = []
+  const failed = []
+  for (const documentId of ids) {
+    try {
+      const archiveRes = await archiveDocument(documentId, patientRes.data.id, true)
+      if (archiveRes?.success) archivedIds.push(documentId)
+      else failed.push({ documentId, message: archiveRes?.message || '归档失败' })
+    } catch (error) {
+      failed.push({ documentId, message: error?.message || '归档失败' })
+    }
+  }
+
+  return emptySuccess({
+    patient: patientRes.data,
+    patientId: patientRes.data.id,
+    documentIds: ids,
+    archived_count: archivedIds.length,
+    archived_document_ids: archivedIds,
+    failed,
+  })
+}
 export const confirmAutoArchive = async () => emptySuccess(null)
 export const batchConfirmAutoArchive = async () => emptySuccess(null)
 
@@ -354,40 +551,43 @@ export const getFileStatusesByIds = async (documentIds = []) => {
 }
 
 export const getFileListV2Tree = async (params = {}) => {
-  const response = await getDocumentList({ ...params, page: 1, page_size: 100 })
-  const documents = response.data || []
-  const groupMap = new Map()
-
-  documents.forEach((document) => {
-    const patientId = document.patient_info?.patient_id || 'unarchived'
-    const groupKey = patientId === 'unarchived' ? 'virtual:unarchived' : `patient:${patientId}`
-    if (!groupMap.has(groupKey)) {
-      groupMap.set(groupKey, {
-        id: groupKey,
-        key: groupKey,
-        patient_id: patientId === 'unarchived' ? null : patientId,
-        patient_info: document.patient_info || null,
-        documents: [],
-      })
-    }
-    groupMap.get(groupKey).documents.push(document)
-  })
-
-  return emptySuccess({
-    groups: Array.from(groupMap.values()),
-    documents,
-    total: response.total || documents.length,
-  })
+  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/v2/tree`, params)
+  return emptySuccess(payload)
 }
 
-export const getFileListV2GroupDocuments = async (_groupId, params = {}) => getDocumentList(params)
-export const rebuildGroups = async () => emptySuccess(null)
-export const matchGroup = async () => emptySuccess(null)
-export const confirmGroupArchive = async () => emptySuccess(null)
+const getGroupTaskStatus = (matchInfo = {}) => {
+  const result = matchInfo.match_result
+  if (result === 'pending') return 'parsing'
+  if (result === 'matched') return 'auto_archived'
+  if (result === 'review') return 'pending_confirm_review'
+  if (result === 'new') return 'pending_confirm_new'
+  return 'pending_confirm_uncertain'
+}
+
+export const getFileListV2GroupDocuments = async (groupId, params = {}) => {
+  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/v2/groups/${groupId}/documents`, params)
+  const taskStatus = getGroupTaskStatus(payload.match_info || {})
+  const items = (payload.items || []).map((item) => normalizeDocument({ ...item, task_status: taskStatus }))
+  return emptySuccess({ ...payload, items })
+}
+
+export const rebuildGroups = async () => getFileListV2Tree({ refresh: true })
+export const matchGroup = async (groupId) => getFileListV2GroupDocuments(groupId)
+export const confirmGroupArchive = async (groupId, patientId, autoMergeEhr = true) => {
+  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/v2/groups/${groupId}/confirm-archive`, {}, {
+    params: { patient_id: patientId, auto_merge_ehr: autoMergeEhr },
+  })
+  return emptySuccess(payload)
+}
 export const createPatientAndArchiveGroup = async () => emptySuccess(null)
 export const moveDocumentToGroup = async () => emptySuccess(null)
-export const uploadAndArchiveToPatient = async (file, patientId) => uploadDocument(file, patientId)
-export const uploadAndArchiveAsync = async (file, patientId) => uploadDocument(file, patientId)
+export const uploadAndArchiveToPatient = async (file, patientId) => {
+  const uploadRes = await uploadDocument(file, patientId)
+  const documentId = uploadRes?.data?.id || uploadRes?.data?.document_id
+  if (!documentId || !patientId) return uploadRes
+  return archiveDocument(documentId, patientId, false)
+}
+export const uploadAndArchiveAsync = uploadAndArchiveToPatient
 export const extractEhrDataAsync = async () => emptyTask()
 export const aiMatchPatientAsync = async () => emptyTask()
 export const batchAiMatchAsync = async () => emptyTask()
@@ -403,7 +603,9 @@ export default {
   deleteDocuments,
   getDocumentTempUrl,
   getDocumentPdfStreamUrl,
+  getFreshDocumentPdfStreamUrl,
   archiveDocument,
+  batchArchiveDocuments,
   unarchiveDocument,
   changeArchivePatient,
   parseDocument,

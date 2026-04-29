@@ -4,18 +4,26 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.auth import CurrentUser, get_current_user
+from app.core.auth import CurrentUser, get_current_user, is_admin_user, uuid_user_id_or_none
 from app.services.schema_service import SchemaConflictError, SchemaNotFoundError, SchemaService
 
 router = APIRouter(tags=["schema-templates"])
 
 
 class SchemaTemplateCreate(BaseModel):
-    template_code: str = Field(..., min_length=1, max_length=100)
+    template_code: str | None = Field(default=None, min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=200)
     template_type: str = Field(..., min_length=1, max_length=50)
     description: str | None = None
     status: str = Field(default="active", max_length=50)
+
+
+
+
+class SchemaTemplateUpdate(BaseModel):
+    template_name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    status: str | None = Field(default=None, max_length=50)
 
 
 class SchemaTemplateVersionCreate(BaseModel):
@@ -69,6 +77,12 @@ def get_schema_service() -> SchemaService:
     return SchemaService()
 
 
+def user_scope_id(current_user: CurrentUser) -> str | None:
+    if is_admin_user(current_user):
+        return None
+    return uuid_user_id_or_none(current_user)
+
+
 def _raise_schema_error(error: SchemaNotFoundError | SchemaConflictError) -> None:
     if isinstance(error, SchemaNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
@@ -90,6 +104,7 @@ async def list_schema_templates(
         page_size=page_size,
         template_type=template_type,
         status=status_filter,
+        created_by=user_scope_id(current_user),
     )
     return SchemaTemplateListResponse(items=templates, total=total, page=page, page_size=page_size)
 
@@ -102,7 +117,7 @@ async def create_schema_template(
 ) -> SchemaTemplateResponse:
     try:
         template = await service.create_template(
-            created_by=current_user.id,
+            created_by=uuid_user_id_or_none(current_user),
             **payload.model_dump(exclude_none=True),
         )
     except (SchemaNotFoundError, SchemaConflictError) as error:
@@ -116,7 +131,7 @@ async def get_schema_template(
     current_user: CurrentUser = Depends(get_current_user),
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateDetailResponse:
-    template = await service.get_template(template_id)
+    template = await service.get_template(template_id, created_by=user_scope_id(current_user))
     if template is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schema template not found")
     versions = await service.list_versions(template_id)
@@ -124,6 +139,24 @@ async def get_schema_template(
     response.versions = [SchemaTemplateVersionResponse.model_validate(version) for version in versions]
     return response
 
+
+
+
+@router.patch("/schema-templates/{template_id}", response_model=SchemaTemplateResponse)
+async def update_schema_template(
+    template_id: str,
+    payload: SchemaTemplateUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: SchemaService = Depends(get_schema_service),
+) -> SchemaTemplateResponse:
+    try:
+        template = await service.update_template(
+            template_id=template_id,
+            **payload.model_dump(exclude_none=True),
+        )
+    except (SchemaNotFoundError, SchemaConflictError) as error:
+        _raise_schema_error(error)
+    return SchemaTemplateResponse.model_validate(template)
 
 @router.delete("/schema-templates/{template_id}", response_model=SchemaTemplateResponse)
 async def archive_schema_template(
@@ -152,7 +185,7 @@ async def create_schema_template_version(
     try:
         version = await service.create_version(
             template_id=template_id,
-            created_by=current_user.id,
+            created_by=uuid_user_id_or_none(current_user),
             **payload.model_dump(by_alias=True, exclude_none=True),
         )
     except (SchemaNotFoundError, SchemaConflictError) as error:

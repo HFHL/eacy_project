@@ -55,12 +55,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "EACY开发计划.md",
+                "file": "前端可视化，获取精准坐标.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "EACY开发计划"
+              "title": "前端可视化，获取精准坐标"
             }
           },
           {
@@ -135,7 +135,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 559.5
+    "width": 342.5
   },
   "right": {
     "id": "6ec418e50128aeb9",
@@ -170,12 +170,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "EACY开发计划.md",
+                "file": "前端可视化，获取精准坐标.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "EACY开发计划 的出链列表"
+              "title": "前端可视化，获取精准坐标 的出链列表"
             }
           },
           {
@@ -242,16 +242,18 @@
   },
   "active": "059f31a48873d18d",
   "lastOpenFiles": [
-    "EACY架构总览.md",
-    "Eacy后端开发文档.md",
+    "EACY开发计划 6.3.5 Extraction Worker - 抽取任务与落库实施计划.md",
     "EACY开发计划.md",
+    "EHR-CRF 数据库与抽取落库设计.md",
+    "Eacy后端开发文档.md",
+    "EACY 后端接口文档/EACY 后端接口文档 - Projects 与 CRF.md",
+    "EACY架构总览.md",
     "EACY开发计划 6.3.4 Metadata Worker - Agent Prompt 与入库设计.md",
     "textin文档.md",
     "EACY 后端接口文档/EACY 后端接口文档 - Documents.md",
     "EACY 后端接口文档/EACY 后端接口文档 - Extraction Jobs.md",
     "EACY 后端接口文档/EACY 后端接口文档.md",
     "EACY 后端接口文档/EACY 后端接口文档 - Auth 与基础状态.md",
-    "EACY 后端接口文档/EACY 后端接口文档 - Projects 与 CRF.md",
     "EACY 后端接口文档/EACY 后端接口文档 - Schema Templates.md",
     "EACY 后端接口文档/EACY 后端接口文档 - Patients 与 EHR.md",
     "EACY 后端接口文档/EACY 后端接口文档 - 通用约定.md",
@@ -269,7 +271,6 @@
     "EACY开发计划 1.3 开发期宽松鉴权实施路径.md",
     "EACY开发计划 1.2 建立统一 API 路由实施路径.md",
     "phase3_restful_api_contract.md",
-    "Eacy开发文档.md",
     "Eacy前端开发文档.md.tmp.21968.1777284624833",
     "EACY架构总览.md.tmp.21968.1777284605235",
     "Eacy前端开发文档.md.tmp.21968.1777284352492"

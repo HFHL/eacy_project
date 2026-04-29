@@ -37,16 +37,9 @@ const getInitialState = () => {
     }
   }
   
-  // 迁移期：登录流程尚未对接后端，默认进入已登录态以绕开 MainLayout 的 /login 硬拦截。
-  // 真正接入登录后删除下面这段，改回返回 isAuthenticated: false。
   return {
-    isAuthenticated: true,
-    userInfo: {
-      id: 'local-dev-user',
-      name: '本地开发用户',
-      email: 'dev@local',
-      role: 'admin'
-    },
+    isAuthenticated: false,
+    userInfo: null,
     preferences: {
       theme: 'light',
       language: 'zh-CN',
@@ -54,8 +47,8 @@ const getInitialState = () => {
       autoSave: true
     },
     userSettings: null,
-    loginTime: new Date().toISOString(),
-    lastActivity: new Date().toISOString()
+    loginTime: null,
+    lastActivity: null
   }
 }
 

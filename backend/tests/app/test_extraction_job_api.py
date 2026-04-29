@@ -49,6 +49,14 @@ class FakeExtractionService:
         ]
         return job
 
+    async def create_planned_jobs(self, **params):
+        first = await self.create_and_process_job(**{**params, "target_form_key": "basic.demographics"})
+        second = await self.create_and_process_job(**{**params, "target_form_key": "basic.diagnosis"})
+        second.id = "job-2"
+        self.jobs[second.id] = second
+        self.runs[second.id] = self.runs.pop("job-1") if "job-1" in self.runs and first.id != "job-1" else self.runs.get(second.id, [])
+        return [first, second]
+
     async def get_job(self, job_id):
         return self.jobs.get(job_id)
 
@@ -123,6 +131,21 @@ def test_extraction_job_create_query_runs_retry_and_delete_policy():
     retry_response = client.post(f"/api/v1/extraction-jobs/{job['id']}/retry")
     assert retry_response.status_code == 200
     assert len(fake_service.runs[job["id"]]) == 2
+
+    plan_response = client.post(
+        "/api/v1/extraction-jobs/plan",
+        json={
+            "job_type": "project_crf",
+            "patient_id": "patient-1",
+            "document_id": "document-1",
+            "project_id": "project-1",
+            "project_patient_id": "project-patient-1",
+            "context_id": "context-1",
+            "schema_version_id": "schema-version-1",
+        },
+    )
+    assert plan_response.status_code == 202
+    assert len(plan_response.json()["jobs"]) == 2
 
     delete_response = client.delete(f"/api/v1/extraction-jobs/{job['id']}")
     assert delete_response.status_code == 409

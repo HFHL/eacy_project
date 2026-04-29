@@ -38,7 +38,7 @@ import { deriveTemplateFieldGroupsFromSchema } from './adapters/datasetAdapter'
 import useProjectPatientData from './hooks/useProjectPatientData'
 import {
   updateProjectPatientCrfFields,
-  startCrfExtraction,
+  updateProjectCrfFolder,
   getCrfExtractionProgress,
 } from '@/api/project'
 import { message } from 'antd'
@@ -697,7 +697,7 @@ const ProjectPatientDetail = () => {
     projectInfo?.projectName ||
     projectInfo?.name ||
     '未知项目'
-  const resolvedProjectPatientId = patientInfo?.patientId || patientId || null
+  const resolvedProjectPatientId = patientInfo?.id || patientInfo?.project_patient_id || patientId || null
   /**
    * 患者姓名脱敏展示：
    * 两字：王*；三字：王*宁；四字及以上：王**宁。
@@ -779,7 +779,15 @@ const ProjectPatientDetail = () => {
   const schemaData = useMemo(() => {
     const baseData = cloneJsonValue(crfData?.data || {}) || {}
     const taskResults = crfData?._task_results || []
-    const documents = crfData?._documents || {}
+    const hookDocuments = Object.fromEntries(
+      (Array.isArray(documents) ? documents : [])
+        .filter((doc) => doc?.id)
+        .map((doc) => [String(doc.id), doc])
+    )
+    const crfDocuments = crfData?._documents && typeof crfData._documents === 'object' && !Array.isArray(crfData._documents)
+      ? crfData._documents
+      : {}
+    const metadataDocuments = { ...hookDocuments, ...crfDocuments }
     const groups = crfData?.groups || {}
     const normalizedHookTemplateGroups = (Array.isArray(projectTemplateGroups) ? projectTemplateGroups : []).map((group) => ({
       key: String(group?.key || ''),
@@ -839,14 +847,14 @@ const ProjectPatientDetail = () => {
       ...data,
       _extraction_metadata: {
         audit: { fields: allFields },
-        documents,
+        documents: metadataDocuments,
         extracted_at: crfData?._extracted_at,
         edited_at: crfData?._edited_at,
         edited_by: crfData?._edited_by,
         stats: crfData?._stats
       },
     }
-  }, [crfData, projectSchema, projectTemplateFieldGroups, projectTemplateGroups])
+  }, [crfData, documents, projectSchema, projectTemplateFieldGroups, projectTemplateGroups])
 
   const getSchemaFieldPath = (fieldKey, field) => {
     const raw = field?.field_path || field?.db_field || fieldKey
@@ -1068,15 +1076,15 @@ const ProjectPatientDetail = () => {
     setExtractionModalVisible(false)
     setIsExtracting(true)
     try {
-      const response = await startCrfExtraction(
-        projectId,
-        [resolvedProjectPatientId || patientId],
-        extractionModalMode,
-        extractionModalGroups
-      )
+      const response = await updateProjectCrfFolder(projectId, resolvedProjectPatientId || patientId)
       if (response.success) {
-        message.success('专项抽取任务已启动')
-        const taskId = response.data.task_id
+        const taskId = response.data?.task_id || response.data?.job_ids?.[0] || ''
+        message.success(response.data?.message || '专项抽取任务已启动')
+        if (!taskId) {
+          setIsExtracting(false)
+          await refresh()
+          return
+        }
         const poll = async () => {
           try {
             const res = await getCrfExtractionProgress(projectId, taskId)
@@ -1166,6 +1174,7 @@ const ProjectPatientDetail = () => {
             schemaData={projectSchema}
             patientData={schemaData}
             patientId={resolvedProjectPatientId}
+            sourcePatientId={patientInfo.patientId}
             projectDocuments={documents}
             onSave={handleProjectSchemaSave}
             onFieldCandidateSolidified={handleFieldCandidateSolidified}

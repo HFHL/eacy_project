@@ -14,6 +14,7 @@ class Patient(TimestampMixin, Base):
     __table_args__ = (
         Index("idx_patients_name", "name"),
         Index("idx_patients_department", "department"),
+        Index("idx_patients_owner_id", "owner_id"),
     )
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -24,5 +25,6 @@ class Patient(TimestampMixin, Base):
     department: Mapped[str | None] = mapped_column(String(100))
     main_diagnosis: Mapped[str | None] = mapped_column(String(500))
     doctor_name: Mapped[str | None] = mapped_column(String(100))
+    owner_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False))
     extra_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime)

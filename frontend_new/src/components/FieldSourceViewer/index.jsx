@@ -31,8 +31,9 @@ import {
   FileImageOutlined,
   InfoCircleOutlined
 } from '@ant-design/icons';
-import { getDocumentTempUrl } from '../../api/document';
+import { getFreshDocumentPdfStreamUrl, getDocumentTempUrl } from '../../api/document';
 import { appThemeToken } from '../../styles/themeTokens';
+import PdfPageWithHighlight from '../PdfPageWithHighlight';
 import './styles.css';
 
 const { Text, Paragraph } = Typography;
@@ -177,13 +178,9 @@ const DocumentBboxViewer = ({ documentId, fileName, bbox, pageIndex = 0, sourceI
         const urlRes = await getDocumentTempUrl(documentId);
         if (cancelled) return;
         if (urlRes.success && urlRes.data?.temp_url) {
-          const ft = urlRes.data?.file_type || null;
+          const ft = urlRes.data?.file_type || urlRes.data?.mime_type || null;
           setFileType(ft);
-          const pIdx = Number.isFinite(pageIndex) ? Math.max(0, pageIndex) : 0;
-          const nextUrl = ft === 'pdf'
-            ? `${urlRes.data.temp_url}${urlRes.data.temp_url.includes('#') ? '&' : '#'}page=${pIdx + 1}`
-            : urlRes.data.temp_url;
-          setImageUrl(nextUrl);
+          setImageUrl(String(ft).toLowerCase().includes('pdf') ? await getFreshDocumentPdfStreamUrl(documentId) : urlRes.data.temp_url);
         } else {
           setError('无法获取文档图片');
         }
@@ -296,22 +293,13 @@ const DocumentBboxViewer = ({ documentId, fileName, bbox, pageIndex = 0, sourceI
             )}
           </Space>
         </div>
-        <iframe
-          title={fileName || '原始文档'}
-          src={imageUrl}
-          style={{ width: '100%', minHeight: 560, border: 0, borderRadius: 4, background: appThemeToken.colorBgContainer }}
+        <PdfPageWithHighlight
+          pdfUrl={imageUrl}
+          pageNumber={(pageIndex || 0) + 1}
+          locations={bbox ? [{ bbox, page: (pageIndex || 0) + 1 }] : []}
+          maxWidth="100%"
+          loading={false}
         />
-        <div style={{
-          marginTop: 12,
-          padding: '8px 12px',
-          background: 'rgba(250, 173, 20, 0.1)',
-          border: `1px solid ${appThemeToken.colorWarning}`,
-          borderRadius: 4,
-          fontSize: 14,
-          color: appThemeToken.colorWarning
-        }}>
-          PDF 源文件已改为直接预览原文档，不再请求页图渲染接口，因此当前模式下不显示 bbox 高亮框。
-        </div>
       </div>
     );
   }

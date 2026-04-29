@@ -44,6 +44,15 @@ class Config(BaseSettings):
     TEXTIN_API_URL: str | None = None
     TEXTIN_TIMEOUT_SECONDS: float = 120.0
     DOCUMENT_OCR_AUTO_ENQUEUE: bool = True
+    OPENAI_API_KEY: str | None = None
+    OPENAI_API_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    METADATA_LLM_TIMEOUT_SECONDS: float = 120.0
+    METADATA_LLM_TEMPERATURE: float = 0.0
+    METADATA_LLM_ENABLE_RULE_FALLBACK: bool = True
+    EACY_EXTRACTION_STRATEGY: str = "simple"
+    EXTRACTION_LLM_TIMEOUT_SECONDS: float = 180.0
+    EXTRACTION_LLM_TEMPERATURE: float = 0.0
 
     @model_validator(mode="after")
     def use_database_url_when_writer_reader_are_default(self):

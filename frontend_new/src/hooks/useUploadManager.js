@@ -259,19 +259,6 @@ export const useUploadManager = (options = {}) => {
     
     files.forEach(file => {
       const fingerprint = generateFileFingerprint(file)
-      
-      // 检查是否已存在（去重）
-      if (existingFingerprints.has(fingerprint)) {
-        console.log(`跳过已上传文件: ${file.name}`)
-        return
-      }
-
-      // 检查当前队列是否已有
-      const existsInQueue = tasks.some(t => t.fingerprint === fingerprint)
-      if (existsInQueue) {
-        console.log(`跳过队列中已存在的文件: ${file.name}`)
-        return
-      }
 
       const taskId = generateTaskId()
       const task = {

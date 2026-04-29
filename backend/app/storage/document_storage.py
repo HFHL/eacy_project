@@ -69,9 +69,15 @@ class AliyunOssDocumentStorage(DocumentStorage):
         expires: int | None = None,
         date_header: str | None = None,
         content_type: str = "",
+        subresources: dict[str, str] | None = None,
     ) -> str:
         date_or_expires = str(expires) if expires is not None else date_header or email.utils.formatdate(usegmt=True)
         canonical_resource = f"/{self.bucket_name}/{quote(key, safe='/')}"
+        if subresources:
+            canonical_resource += "?" + "&".join(
+                f"{name}={value}"
+                for name, value in sorted(subresources.items())
+            )
         string_to_sign = f"{method}\n\n{content_type}\n{date_or_expires}\n{canonical_resource}"
         return base64.b64encode(
             hmac.new(
@@ -81,17 +87,38 @@ class AliyunOssDocumentStorage(DocumentStorage):
             ).digest()
         ).decode("utf-8")
 
-    def get_signed_url(self, key: str, *, expires_in: int = 3600) -> str:
+    def get_signed_url(
+        self,
+        key: str,
+        *,
+        expires_in: int = 3600,
+        response_content_disposition: str | None = None,
+    ) -> str:
+        object_url = self._object_url(key)
+        response_params = {}
+        extra_params = []
+        if response_content_disposition:
+            response_params["response-content-disposition"] = response_content_disposition
+            extra_params.append(
+                "response-content-disposition="
+                f"{quote(response_content_disposition, safe='')}"
+            )
         if self.public_base_url:
-            return self._object_url(key)
+            if not extra_params:
+                return object_url
+            separator = "&" if "?" in object_url else "?"
+            return f"{object_url}{separator}{'&'.join(extra_params)}"
         expires = int(time.time()) + max(1, int(expires_in))
-        signature = quote(self._sign("GET", key, expires=expires), safe="")
+        signature = quote(self._sign("GET", key, expires=expires, subresources=response_params), safe="")
         access_key_id = quote(self.access_key_id, safe="")
-        separator = "&" if "?" in self._object_url(key) else "?"
-        return (
-            f"{self._object_url(key)}{separator}"
-            f"OSSAccessKeyId={access_key_id}&Expires={expires}&Signature={signature}"
-        )
+        separator = "&" if "?" in object_url else "?"
+        query_params = [
+            f"OSSAccessKeyId={access_key_id}",
+            f"Expires={expires}",
+            f"Signature={signature}",
+            *extra_params,
+        ]
+        return f"{object_url}{separator}{'&'.join(query_params)}"
 
     def _put_object(self, key: str, content: bytes) -> None:
         parsed = urlparse(self.endpoint)

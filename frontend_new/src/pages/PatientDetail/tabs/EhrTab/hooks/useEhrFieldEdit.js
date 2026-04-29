@@ -4,7 +4,7 @@
  */
 import { useState, useCallback } from 'react'
 import { message } from 'antd'
-import { selectEhrFieldCandidateV3 } from '@/api/patient'
+import { saveEhrFieldValueV3 } from '@/api/patient'
 
 /**
  * 将字段路径标准化为候选值接口可识别的点分路径。
@@ -45,7 +45,7 @@ export const useEhrFieldEdit = (patientId = null, onSaveSuccess = null) => {
     setSaving(true)
     try {
       const normalizedFieldPath = normalizeFieldPath(fieldId)
-      const res = await selectEhrFieldCandidateV3(patientId, normalizedFieldPath, null, editingEhrValue)
+      const res = await saveEhrFieldValueV3(patientId, normalizedFieldPath, editingEhrValue)
       
       if (res.success) {
         message.success('保存成功')
@@ -94,10 +94,9 @@ export const useEhrFieldEdit = (patientId = null, onSaveSuccess = null) => {
       const results = await Promise.all(
         fieldUpdates.map((fieldUpdate) => {
           const normalizedFieldPath = normalizeFieldPath(fieldUpdate?.fieldId)
-          return selectEhrFieldCandidateV3(
+          return saveEhrFieldValueV3(
             patientId,
             normalizedFieldPath,
-            null,
             fieldUpdate?.value,
           )
         }),

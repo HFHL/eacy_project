@@ -47,6 +47,7 @@ const ProjectSchemaEhrTab = ({
   // 患者数据
   patientData = null,
   patientId = null,
+  sourcePatientId = null,
   
   // 项目文档
   projectDocuments = [],
@@ -224,8 +225,9 @@ const ProjectSchemaEhrTab = ({
     onDocumentSelect: handleDocumentSelect,
     onUploadDocument,
     onAddRepeatableInstance: handleAddRepeatableInstance,
-    repeatableNamingPattern: '{formName}_{index}'
-  }), [projectDocuments, selectedDocument, handleDocumentSelect, onUploadDocument, handleAddRepeatableInstance])
+    repeatableNamingPattern: '{formName}_{index}',
+    sourcePatientId
+  }), [projectDocuments, selectedDocument, handleDocumentSelect, onUploadDocument, handleAddRepeatableInstance, sourcePatientId])
   
   // 渲染加载状态
   if (loading) {

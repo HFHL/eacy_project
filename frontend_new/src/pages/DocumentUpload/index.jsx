@@ -485,22 +485,13 @@ const DocumentUpload = () => {
         }
       } catch (error) {
         failedCount++
-        // 检查是否是文件重复错误
-        const isDuplicate = error.response?.data?.code === 40001
-        
         setUploadFiles(prev => prev.map(f => 
           f.id === file.id ? { 
             ...f, 
             uploadStatus: 'failed',
-            error: isDuplicate 
-              ? `文件重复：${error.response?.data?.data?.existing_file_name || '已存在相同文件'}`
-              : (error.response?.data?.message || error.message || '上传失败')
+            error: error.response?.data?.message || error.message || '上传失败'
           } : f
         ))
-        
-        if (isDuplicate) {
-          message.warning(`文件 "${file.name}" 已存在，跳过上传`)
-        }
       }
     }
     
@@ -624,22 +615,14 @@ const DocumentUpload = () => {
         fetchUnparsedDocuments()
       }
     } catch (error) {
-      const isDuplicate = error.response?.data?.code === 40001
       setUploadFiles(prev => prev.map(f => 
         f.id === file.id ? { 
           ...f, 
           uploadStatus: 'failed',
-          error: isDuplicate 
-            ? `文件重复：${error.response?.data?.data?.existing_file_name || '已存在相同文件'}`
-            : (error.response?.data?.message || error.message || '上传失败')
+          error: error.response?.data?.message || error.message || '上传失败'
         } : f
       ))
-      
-      if (isDuplicate) {
-        message.warning(`文件 "${file.name}" 已存在`)
-      } else {
-        message.error(`文件 "${file.name}" 上传失败`)
-      }
+      message.error(`文件 "${file.name}" 上传失败`)
     }
   }
 

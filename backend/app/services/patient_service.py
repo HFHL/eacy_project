@@ -29,7 +29,7 @@ class PatientService:
         initialize_ehr: bool = True,
         **params: Any,
     ) -> Patient:
-        patient = await self.patient_repository.create({"name": name, **params})
+        patient = await self.patient_repository.create({"name": name, "owner_id": created_by, **params})
         if initialize_ehr:
             schema_version = await self.schema_service.get_latest_published("ehr")
             if schema_version is not None:
@@ -40,8 +40,8 @@ class PatientService:
                 )
         return patient
 
-    async def get_patient(self, patient_id: str) -> Patient | None:
-        return await self.patient_repository.get_active_by_id(patient_id)
+    async def get_patient(self, patient_id: str, *, owner_id: str | None = None) -> Patient | None:
+        return await self.patient_repository.get_active_by_id(patient_id, owner_id=owner_id)
 
     async def list_patients(
         self,
@@ -50,6 +50,7 @@ class PatientService:
         page_size: int = 20,
         keyword: str | None = None,
         department: str | None = None,
+        owner_id: str | None = None,
     ) -> tuple[list[Patient], int]:
         offset = (page - 1) * page_size
         patients = await self.patient_repository.list_active(
@@ -57,13 +58,14 @@ class PatientService:
             limit=page_size,
             keyword=keyword,
             department=department,
+            owner_id=owner_id,
         )
-        total = await self.patient_repository.count_active(keyword=keyword, department=department)
+        total = await self.patient_repository.count_active(keyword=keyword, department=department, owner_id=owner_id)
         return patients, total
 
     @Transactional()
-    async def update_patient(self, patient_id: str, **params: Any) -> Patient:
-        patient = await self.get_patient(patient_id)
+    async def update_patient(self, patient_id: str, *, owner_id: str | None = None, **params: Any) -> Patient:
+        patient = await self.get_patient(patient_id, owner_id=owner_id)
         if patient is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
@@ -72,8 +74,8 @@ class PatientService:
         return await self.patient_repository.save(patient)
 
     @Transactional()
-    async def delete_patient(self, patient_id: str) -> None:
-        patient = await self.get_patient(patient_id)
+    async def delete_patient(self, patient_id: str, *, owner_id: str | None = None) -> None:
+        patient = await self.get_patient(patient_id, owner_id=owner_id)
         if patient is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
@@ -85,5 +87,5 @@ class PatientService:
 
         await self.patient_repository.soft_delete(patient)
 
-    async def search_patients(self, name: str, *, limit: int = 20) -> list[Patient]:
-        return await self.patient_repository.search_by_name(name, limit=limit)
+    async def search_patients(self, name: str, *, limit: int = 20, owner_id: str | None = None) -> list[Patient]:
+        return await self.patient_repository.search_by_name(name, limit=limit, owner_id=owner_id)

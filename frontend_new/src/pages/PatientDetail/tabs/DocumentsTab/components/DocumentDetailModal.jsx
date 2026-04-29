@@ -74,13 +74,14 @@ import FieldEditor from './FieldEditor'
 import StatusIndicator from './StatusIndicator'
 import ConflictDetailModal from './ConflictDetailModal'
 import { DOC_TYPE_CATEGORIES } from '../../../../../components/FormDesigner/core/docTypes'
-import { extractEhrDataAsync, extractDocumentMetadata, getDocumentDetail, getDocumentOperationHistory, getDocumentTempUrl, getDocumentPdfStreamUrl, reparseDocumentSync, unarchiveDocument, updateDocumentMetadata, deleteDocument } from '../../../../../api/document'
+import { extractEhrDataAsync, extractDocumentMetadata, getDocumentDetail, getDocumentOperationHistory, getDocumentTempUrl, getDocumentPdfStreamUrl, getFreshDocumentPdfStreamUrl, reparseDocumentSync, unarchiveDocument, updateDocumentMetadata, deleteDocument } from '../../../../../api/document'
 import { mergeEhrData } from '../../../../../api/patient'
 import { getFieldLabel, isArrayField, isEmptyValue, normalizeDisplayValue, EHR_FIELD_GROUPS } from './ehrFieldLabels'
 import './DocumentDetailModal.css'
 import StructuredDataView from '../../../../../components/Common/StructuredDataView'
 import MarkdownRenderer from '../../AiSummaryTab/components/MarkdownRenderer'
 import { appThemeToken } from '../../../../../styles/themeTokens'
+import PdfPageWithHighlight from '../../../../../components/PdfPageWithHighlight'
 
 const { Title, Text, Paragraph } = Typography
 const { Panel } = Collapse
@@ -131,6 +132,7 @@ const DocumentDetailModal = forwardRef(({
   
   // 文档预览URL
   const [previewUrl, setPreviewUrl] = useState(null)
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewImageLoading, setPreviewImageLoading] = useState(false)
   const [previewError, setPreviewError] = useState(false)
@@ -183,6 +185,7 @@ const DocumentDetailModal = forwardRef(({
       // 弹窗关闭时清空详情数据
       setDocumentDetail(null)
       setPreviewUrl(null)
+      setPdfPreviewUrl('')
       setPreviewImageLoading(false)
       setOcrImageLoading(new Map())
       setOcrDisplayMode('blocks')
@@ -232,6 +235,26 @@ const DocumentDetailModal = forwardRef(({
   useEffect(() => {
     if (visible && document?.id) {
       fetchOperationHistory(document.id)
+    }
+  }, [visible, document?.id])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadPdfUrl() {
+      if (!visible || !document?.id) {
+        setPdfPreviewUrl('')
+        return
+      }
+      try {
+        const url = await getFreshDocumentPdfStreamUrl(document.id)
+        if (!cancelled) setPdfPreviewUrl(url)
+      } catch (_) {
+        if (!cancelled) setPdfPreviewUrl(getDocumentPdfStreamUrl(document.id))
+      }
+    }
+    loadPdfUrl()
+    return () => {
+      cancelled = true
     }
   }, [visible, document?.id])
 
@@ -805,7 +828,6 @@ const DocumentDetailModal = forwardRef(({
     }
 
     const fileTypeDisplay = rawFileType.startsWith('.') ? rawFileType.substring(1).toUpperCase() : rawFileType.toUpperCase()
-    const pdfPreviewUrl = document?.id ? getDocumentPdfStreamUrl(document.id) : ''
     const canRenderPreview = isPDF(rawFileType, fileName, previewUrl) ? Boolean(pdfPreviewUrl) : Boolean(previewUrl)
 
     return (
@@ -839,17 +861,25 @@ const DocumentDetailModal = forwardRef(({
               padding: '16px'
             }}>
               {isPDF(rawFileType, fileName, previewUrl) ? (
-                <iframe
-                  title="document-preview"
-                  src={pdfPreviewUrl}
-                  style={{ 
-                    width: '100%', 
-                    height: '100%', 
-                    border: `1px solid ${appThemeToken.colorBorder}`, 
-                    borderRadius: 8,
-                    minHeight: '500px'
-                  }}
-                />
+                <div style={{
+                  width: '100%',
+                  height: '100%',
+                  minHeight: 500,
+                  overflow: 'auto',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'flex-start',
+                  padding: 12,
+                  border: `1px solid ${appThemeToken.colorBorder}`,
+                  borderRadius: 8,
+                  background: appThemeToken.colorBgLayout,
+                }}>
+                  <PdfPageWithHighlight
+                    pdfUrl={pdfPreviewUrl}
+                    pageNumber={1}
+                    maxWidth={900}
+                  />
+                </div>
               ) : isImage(rawFileType, fileName, previewUrl) ? (
                 <div style={{ 
                   width: '100%', 

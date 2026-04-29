@@ -8,15 +8,28 @@ const emptyUser = {
   role: 'admin',
 }
 
-export const register = async () => emptySuccess(null)
+export const register = async (data = {}) => {
+  const payload = await request.post('/auth/register', data)
+  return emptySuccess(payload)
+}
 export const sendRegisterEmailCode = async () => emptySuccess(null)
 export const sendResetPasswordEmailCode = async () => emptySuccess(null)
 export const resetPasswordByEmail = async () => emptySuccess(null)
-export const loginByEmail = async () => emptySuccess({ access_token: '', refresh_token: '', user: emptyUser })
+export const loginByEmail = async (data = {}) => {
+  const payload = await request.post('/auth/login', data)
+  return emptySuccess(payload)
+}
 export const getWechatQrCode = async () => emptySuccess({ ticket: '', qr_code_url: '' })
 export const checkWechatScanStatus = async () => emptySuccess({ status: 'idle' })
-export const refreshToken = async () => emptySuccess({ access_token: '', refresh_token: '' })
-export const logout = async () => emptySuccess(null)
+export const refreshToken = async (refreshTokenValue = localStorage.getItem('refresh_token')) => {
+  if (!refreshTokenValue) return emptySuccess({ access_token: '', refresh_token: '' })
+  const payload = await request.post('/auth/refresh', { refresh_token: refreshTokenValue })
+  return emptySuccess(payload)
+}
+export const logout = async () => {
+  await request.post('/auth/logout', {})
+  return emptySuccess(null)
+}
 export const getCurrentUser = async () => {
   const user = await request.get('/auth/me')
   return emptySuccess({

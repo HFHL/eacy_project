@@ -9,8 +9,10 @@ class ResearchProjectRepository(BaseRepo[ResearchProject]):
     def __init__(self):
         super().__init__(ResearchProject)
 
-    async def get_by_code(self, project_code: str) -> ResearchProject | None:
+    async def get_by_code(self, project_code: str, *, owner_id: str | None = None) -> ResearchProject | None:
         query = select(ResearchProject).where(ResearchProject.project_code == project_code)
+        if owner_id is not None:
+            query = query.where(ResearchProject.owner_id == owner_id)
         result = await session.execute(query)
         return result.scalars().first()
 
@@ -20,15 +22,21 @@ class ResearchProjectRepository(BaseRepo[ResearchProject]):
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        owner_id: str | None = None,
     ) -> list[ResearchProject]:
-        query = select(ResearchProject).order_by(ResearchProject.created_at.desc())
+        query = select(ResearchProject)
+        if owner_id is not None:
+            query = query.where(ResearchProject.owner_id == owner_id)
+        query = query.order_by(ResearchProject.created_at.desc())
         if status is not None:
             query = query.where(ResearchProject.status == status)
         result = await session.execute(query.limit(limit).offset(offset))
         return list(result.scalars().all())
 
-    async def count_projects(self, *, status: str | None = None) -> int:
+    async def count_projects(self, *, status: str | None = None, owner_id: str | None = None) -> int:
         query = select(func.count()).select_from(ResearchProject)
+        if owner_id is not None:
+            query = query.where(ResearchProject.owner_id == owner_id)
         if status is not None:
             query = query.where(ResearchProject.status == status)
         result = await session.execute(query)

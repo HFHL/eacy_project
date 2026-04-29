@@ -6,6 +6,20 @@ from fastapi import HTTPException, Request, status
 from core.config import config
 
 
+def decode_access_token(token: str) -> dict[str, Any]:
+    try:
+        return jwt.decode(
+            token.strip(),
+            config.JWT_SECRET_KEY,
+            algorithms=[config.JWT_ALGORITHM],
+        )
+    except jwt.exceptions.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization token",
+        )
+
+
 def decode_authorization_header(request: Request) -> dict[str, Any]:
     authorization = request.headers.get("Authorization")
     if not authorization:
@@ -28,14 +42,4 @@ def decode_authorization_header(request: Request) -> dict[str, Any]:
             detail="Invalid authorization header",
         )
 
-    try:
-        return jwt.decode(
-            token.strip(),
-            config.JWT_SECRET_KEY,
-            algorithms=[config.JWT_ALGORITHM],
-        )
-    except jwt.exceptions.PyJWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization token",
-        )
+    return decode_access_token(token)

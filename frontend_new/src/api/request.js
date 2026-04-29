@@ -82,8 +82,53 @@ const createBody = (data) => {
   return JSON.stringify(data)
 }
 
+const clearAuthAndRedirect = () => {
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('refresh_token')
+  localStorage.removeItem('user_info')
+  localStorage.removeItem('user_settings')
+  localStorage.removeItem('login_time')
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login'
+  }
+}
+
+let refreshPromise = null
+
+export const ensureFreshAccessToken = async () => {
+  const refreshToken = localStorage.getItem('refresh_token')
+  if (!refreshToken) return localStorage.getItem('access_token') || ''
+
+  if (!refreshPromise) {
+    refreshPromise = fetch(buildUrl('/auth/refresh'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      credentials: 'same-origin',
+    })
+      .then(async (response) => {
+        const body = await readResponseBody(response)
+        if (!response.ok) {
+          throw new ApiRequestError(
+            getErrorMessage(body, `Request failed with status ${response.status}`),
+            { status: response.status, data: body, url: buildUrl('/auth/refresh'), method: 'POST' }
+          )
+        }
+        if (body?.access_token) localStorage.setItem('access_token', body.access_token)
+        if (body?.refresh_token) localStorage.setItem('refresh_token', body.refresh_token)
+        if (body?.user) localStorage.setItem('user_info', JSON.stringify(body.user))
+        return body?.access_token || localStorage.getItem('access_token') || ''
+      })
+      .finally(() => {
+        refreshPromise = null
+      })
+  }
+
+  return refreshPromise
+}
+
 const request = async (method, url, data, options = {}) => {
-  const { params, headers, ...fetchOptions } = options
+  const { params, headers, _retried = false, ...fetchOptions } = options
   const hasBody = method !== 'GET' && method !== 'DELETE'
   const bodyData = hasBody ? data : undefined
   const targetUrl = buildUrl(url, hasBody ? params : data || params)
@@ -99,6 +144,17 @@ const request = async (method, url, data, options = {}) => {
   const body = await readResponseBody(response)
 
   if (!response.ok) {
+    const isAuthEndpoint = targetUrl.includes('/auth/login') || targetUrl.includes('/auth/register') || targetUrl.includes('/auth/refresh')
+    if (response.status === 401 && !isAuthEndpoint && !_retried && localStorage.getItem('refresh_token')) {
+      try {
+        await ensureFreshAccessToken()
+        return request(method, url, data, { ...options, _retried: true })
+      } catch (_) {
+        clearAuthAndRedirect()
+      }
+    } else if (response.status === 401 && !isAuthEndpoint) {
+      clearAuthAndRedirect()
+    }
     throw new ApiRequestError(
       getErrorMessage(body, `Request failed with status ${response.status}`),
       {

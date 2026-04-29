@@ -18,6 +18,7 @@ import {
   ZoomOutOutlined
 } from '@ant-design/icons';
 import { appThemeToken } from '../../styles/themeTokens';
+import PdfPageWithHighlight from '../PdfPageWithHighlight';
 import './styles.css';
 
 const { Option } = Select;
@@ -40,12 +41,6 @@ const TYPE_COLORS = {
   table: appThemeToken.colorSuccess,     // 绿色 - 表格
   image: 'rgb(114, 46, 209)',            // 紫色 - 图片
   discarded: appThemeToken.colorTextTertiary  // 灰色 - 丢弃内容
-};
-
-const buildPdfPreviewUrl = (url, pageIndex) => {
-  if (!url) return url;
-  const base = String(url).split('#')[0];
-  return `${base}#page=${Math.max(0, pageIndex) + 1}`;
 };
 
 const PREVIEW_HORIZONTAL_PADDING = 32; // .preview-scroll-content 左右各 16px
@@ -274,14 +269,13 @@ const ImagePreviewArea = ({
   if (fileType === 'pdf') {
     return (
       <div className="preview-container" ref={containerRef}>
-        <iframe
-          title="Document preview"
-          src={buildPdfPreviewUrl(imageUrl, pageIndex)}
-          style={{ width: '100%', minHeight: 640, border: 0, background: appThemeToken.colorBgContainer }}
+        <PdfPageWithHighlight
+          pdfUrl={imageUrl}
+          pageNumber={Math.max(0, pageIndex) + 1}
+          locations={currentPageBlocks}
+          maxWidth="100%"
+          loading={false}
         />
-        <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: 4, background: 'rgba(250, 173, 20, 0.1)', border: `1px solid ${appThemeToken.colorWarning}`, color: appThemeToken.colorWarning, fontSize: 12 }}>
-          PDF 已改为原文档预览模式，不再调用页图渲染接口，因此左侧不显示 bbox 高亮框。
-        </div>
       </div>
     );
   }

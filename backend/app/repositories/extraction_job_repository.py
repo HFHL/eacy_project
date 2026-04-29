@@ -14,6 +14,31 @@ class ExtractionJobRepository(BaseRepo[ExtractionJob]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
+    async def list_by_patient_documents(self, *, patient_id: str, document_ids: list[str]) -> list[ExtractionJob]:
+        if not document_ids:
+            return []
+        query = (
+            select(ExtractionJob)
+            .where(ExtractionJob.patient_id == patient_id)
+            .where(ExtractionJob.document_id.in_(document_ids))
+            .where(ExtractionJob.status != "cancelled")
+        )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_pending_waiting_for_document(self, document_id: str) -> list[ExtractionJob]:
+        query = (
+            select(ExtractionJob)
+            .where(ExtractionJob.document_id == document_id)
+            .where(ExtractionJob.status == "pending")
+        )
+        result = await session.execute(query)
+        return [
+            job
+            for job in result.scalars().all()
+            if isinstance(job.input_json, dict) and job.input_json.get("wait_for_document_ready") is True
+        ]
+
 
 class ExtractionRunRepository(BaseRepo[ExtractionRun]):
     def __init__(self):

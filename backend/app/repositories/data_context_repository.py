@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import DataContext, RecordInstance
 from core.db import session
@@ -65,3 +65,9 @@ class RecordInstanceRepository(BaseRepo[RecordInstance]):
         query = select(RecordInstance).where(RecordInstance.context_id == context_id).order_by(RecordInstance.created_at)
         result = await session.execute(query)
         return list(result.scalars().all())
+
+    async def next_repeat_index(self, *, context_id: str, form_key: str) -> int:
+        query = select(func.max(RecordInstance.repeat_index)).where(RecordInstance.context_id == context_id).where(RecordInstance.form_key == form_key)
+        result = await session.execute(query)
+        current = result.scalar()
+        return int(current or 0) + 1

@@ -4,7 +4,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.auth import CurrentUser, get_current_user
+from app.core.auth import CurrentUser, get_current_user, is_admin_user, uuid_user_id_or_none
+from app.services.extraction_service import ExtractionConflictError, ExtractionNotFoundError, ExtractionService
 from app.services.ehr_service import EhrService
 from app.services.patient_service import PatientService
 
@@ -65,6 +66,18 @@ class EhrFieldUpdate(EhrFieldValue):
 
 class EhrSelectEventRequest(BaseModel):
     event_id: str
+
+
+class EhrSelectCandidateRequest(BaseModel):
+    candidate_id: str
+
+
+class EhrRecordCreate(BaseModel):
+    form_key: str = Field(..., min_length=1, max_length=100)
+    form_title: str | None = Field(default=None, max_length=200)
+    group_key: str | None = Field(default=None, max_length=100)
+    group_title: str | None = Field(default=None, max_length=200)
+    instance_label: str | None = Field(default=None, max_length=200)
 
 
 class EhrContextResponse(BaseModel):
@@ -133,6 +146,9 @@ class EhrEventResponse(EhrFieldValue):
     extraction_run_id: str | None = None
     source_document_id: str | None = None
     source_event_id: str | None = None
+    source_page: int | None = None
+    source_text: str | None = None
+    source_location: dict[str, Any] | list[Any] | None = None
     review_status: str
     created_by: str | None = None
     created_at: datetime
@@ -157,6 +173,28 @@ class EhrEvidenceResponse(BaseModel):
     created_at: datetime
 
 
+class EhrCandidateResponse(BaseModel):
+    id: str
+    event_id: str
+    value: Any = None
+    value_type: str
+    review_status: str
+    confidence: float | None = None
+    source_document_id: str | None = None
+    source_page: int | None = None
+    source_text: str | None = None
+    source_location: dict[str, Any] | list[Any] | None = None
+    created_at: datetime
+
+
+class EhrCandidatesResponse(BaseModel):
+    candidates: list[EhrCandidateResponse]
+    selected_candidate_id: str | None = None
+    selected_value: Any = None
+    has_value_conflict: bool = False
+    distinct_value_count: int = 0
+
+
 class EhrResponse(BaseModel):
     context: EhrContextResponse | None
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
@@ -164,12 +202,36 @@ class EhrResponse(BaseModel):
     current_values: dict[str, EhrCurrentValueResponse]
 
 
+class EhrFolderUpdateResponse(BaseModel):
+    patient_id: str
+    documents_total: int
+    eligible_documents: int
+    already_extracted_documents: int
+    planned_documents: int
+    created_jobs: int
+    submitted_jobs: int = 0
+    completed_jobs: int = 0
+    failed_jobs: int = 0
+    job_ids: list[str]
+    skipped: list[dict[str, str]] = Field(default_factory=list)
+
+
 def get_patient_service() -> PatientService:
     return PatientService()
 
 
+def user_scope_id(current_user: CurrentUser) -> str | None:
+    if is_admin_user(current_user):
+        return None
+    return uuid_user_id_or_none(current_user)
+
+
 def get_ehr_service() -> EhrService:
     return EhrService()
+
+
+def get_extraction_service() -> ExtractionService:
+    return ExtractionService()
 
 
 @router.get("/", response_model=PatientListResponse)
@@ -187,6 +249,7 @@ async def list_patients(
         page_size=page_size,
         keyword=keyword,
         department=department,
+        owner_id=user_scope_id(current_user),
     )
     return PatientListResponse(items=patients, total=total, page=page, page_size=page_size)
 
@@ -198,7 +261,7 @@ async def create_patient(
     service: PatientService = Depends(get_patient_service),
 ) -> PatientResponse:
     patient = await service.create_patient(
-        created_by=current_user.id,
+        created_by=uuid_user_id_or_none(current_user),
         **payload.model_dump(exclude_none=True),
     )
     return PatientResponse.model_validate(patient)
@@ -210,7 +273,7 @@ async def get_patient(
     current_user: CurrentUser = Depends(get_current_user),
     service: PatientService = Depends(get_patient_service),
 ) -> PatientResponse:
-    patient = await service.get_patient(patient_id)
+    patient = await service.get_patient(patient_id, owner_id=user_scope_id(current_user))
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
     return PatientResponse.model_validate(patient)
@@ -222,8 +285,28 @@ async def get_patient_ehr(
     current_user: CurrentUser = Depends(get_current_user),
     service: EhrService = Depends(get_ehr_service),
 ) -> EhrResponse:
-    ehr = await service.get_patient_ehr(patient_id, created_by=current_user.id)
+    ehr = await service.get_patient_ehr(patient_id, created_by=uuid_user_id_or_none(current_user))
     return EhrResponse.model_validate(ehr)
+
+
+@router.post("/{patient_id}/ehr/update-folder", response_model=EhrFolderUpdateResponse, status_code=status.HTTP_202_ACCEPTED)
+async def update_patient_ehr_folder(
+    patient_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: ExtractionService = Depends(get_extraction_service),
+) -> EhrFolderUpdateResponse:
+    try:
+        result = await service.update_patient_ehr_folder(patient_id=patient_id, requested_by=uuid_user_id_or_none(current_user))
+    except ExtractionNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    except ExtractionConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    return EhrFolderUpdateResponse.model_validate(
+        {
+            **result,
+            "job_ids": [job.id for job in result.get("jobs", [])],
+        }
+    )
 
 
 @router.patch("/{patient_id}/ehr/fields/{field_path}", response_model=EhrCurrentValueResponse)
@@ -244,7 +327,7 @@ async def update_patient_ehr_field(
         record_instance_id=payload.record_instance_id,
         field_key=payload.field_key,
         value_type=payload.value_type,
-        edited_by=current_user.id,
+        edited_by=uuid_user_id_or_none(current_user),
         note=payload.note,
         values=values,
     )
@@ -262,6 +345,17 @@ async def list_patient_ehr_field_events(
     return [EhrEventResponse.model_validate(event) for event in events]
 
 
+@router.get("/{patient_id}/ehr/fields/{field_path}/candidates", response_model=EhrCandidatesResponse)
+async def list_patient_ehr_field_candidates(
+    patient_id: str,
+    field_path: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: EhrService = Depends(get_ehr_service),
+) -> EhrCandidatesResponse:
+    candidates = await service.list_field_candidates(patient_id=patient_id, field_path=field_path)
+    return EhrCandidatesResponse.model_validate(candidates)
+
+
 @router.post("/{patient_id}/ehr/fields/{field_path}/select-event", response_model=EhrCurrentValueResponse)
 async def select_patient_ehr_field_event(
     patient_id: str,
@@ -274,9 +368,59 @@ async def select_patient_ehr_field_event(
         patient_id=patient_id,
         field_path=field_path,
         event_id=payload.event_id,
-        selected_by=current_user.id,
+        selected_by=uuid_user_id_or_none(current_user),
     )
     return EhrCurrentValueResponse.model_validate(current)
+
+
+@router.post("/{patient_id}/ehr/fields/{field_path}/select-candidate", response_model=EhrCurrentValueResponse)
+async def select_patient_ehr_field_candidate(
+    patient_id: str,
+    field_path: str,
+    payload: EhrSelectCandidateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: EhrService = Depends(get_ehr_service),
+) -> EhrCurrentValueResponse:
+    current = await service.select_field_event(
+        patient_id=patient_id,
+        field_path=field_path,
+        event_id=payload.candidate_id,
+        selected_by=uuid_user_id_or_none(current_user),
+    )
+    return EhrCurrentValueResponse.model_validate(current)
+
+
+@router.delete("/{patient_id}/ehr/fields/{field_path}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_patient_ehr_field(
+    patient_id: str,
+    field_path: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: EhrService = Depends(get_ehr_service),
+) -> Response:
+    await service.delete_field_value(patient_id=patient_id, field_path=field_path)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{patient_id}/ehr/records", response_model=EhrRecordResponse, status_code=status.HTTP_201_CREATED)
+async def create_patient_ehr_record(
+    patient_id: str,
+    payload: EhrRecordCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: EhrService = Depends(get_ehr_service),
+) -> EhrRecordResponse:
+    record = await service.create_record_instance(patient_id=patient_id, **payload.model_dump(exclude_none=True))
+    return EhrRecordResponse.model_validate(record)
+
+
+@router.delete("/{patient_id}/ehr/records/{record_instance_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_patient_ehr_record(
+    patient_id: str,
+    record_instance_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: EhrService = Depends(get_ehr_service),
+) -> Response:
+    await service.delete_record_instance(patient_id=patient_id, record_instance_id=record_instance_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{patient_id}/ehr/fields/{field_path}/evidence", response_model=list[EhrEvidenceResponse])
@@ -310,5 +454,5 @@ async def delete_patient(
     current_user: CurrentUser = Depends(get_current_user),
     service: PatientService = Depends(get_patient_service),
 ) -> Response:
-    await service.delete_patient(patient_id)
+    await service.delete_patient(patient_id, owner_id=user_scope_id(current_user))
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -36,6 +36,15 @@ class FakeSchemaService:
         self.templates[template.id] = template
         return template
 
+    async def update_template(self, template_id, **params):
+        template = self.templates.get(template_id)
+        if template is None:
+            raise SchemaNotFoundError("Schema template not found")
+        for key, value in params.items():
+            setattr(template, key, value)
+        template.updated_at = datetime(2026, 1, 2)
+        return template
+
     async def archive_template(self, template_id):
         template = self.templates.get(template_id)
         if template is None:
@@ -96,6 +105,14 @@ def test_schema_template_create_version_publish_archive_flow():
     list_response = client.get("/api/v1/schema-templates", params={"page": 1, "page_size": 10})
     assert list_response.status_code == 200
     assert list_response.json()["total"] == 1
+
+    update_response = client.patch(
+        f"/api/v1/schema-templates/{template['id']}",
+        json={"template_name": "Updated EHR", "description": "Updated description"},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["template_name"] == "Updated EHR"
+    assert update_response.json()["description"] == "Updated description"
 
     version_response = client.post(
         f"/api/v1/schema-templates/{template['id']}/versions",

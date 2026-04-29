@@ -75,6 +75,7 @@ const CRFDesigner = () => {
     // template_code 不再由用户输入：后端会根据模板名自动生成（全局唯一）
 
     const fieldGroups = buildFieldGroupsForBackend(designData)
+    const schema_json = formDesignerRef.current?.exportSchema?.() || {}
     const designer = { ...designData, fieldGroups }
 
     try {
@@ -84,6 +85,7 @@ const CRFDesigner = () => {
           category,
           description,
           publish,
+          schema_json,
           designer
         })
         if (!res?.success) {
@@ -108,6 +110,7 @@ const CRFDesigner = () => {
         category,
         description,
         publish,
+        schema_json,
         designer
       })
       if (!res?.success) {
