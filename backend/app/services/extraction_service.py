@@ -725,7 +725,7 @@ class ExtractionService:
                             {
                                 "document_id": job.document_id,
                                 "evidence_type": field.get("evidence_type") or "document_text",
-                                "quote_text": evidence.get("source_text") or evidence.get("text") or evidence.get("quote_text") or field.get("quote_text") or field.get("value_text"),
+                                "quote_text": self._resolved_evidence_quote(evidence=evidence, field=field),
                                 "evidence_score": field.get("confidence"),
                                 "page_no": evidence.get("page_no"),
                                 "bbox_json": evidence.get("bbox_json"),
@@ -744,7 +744,7 @@ class ExtractionService:
                         {
                             "document_id": job.document_id,
                             "evidence_type": field.get("evidence_type") or "document_text",
-                            "quote_text": resolved_evidence.get("source_text") or resolved_evidence.get("text") or resolved_evidence.get("quote_text") or field.get("quote_text") or field.get("value_text"),
+                            "quote_text": self._resolved_evidence_quote(evidence=resolved_evidence, field=field),
                             "evidence_score": field.get("confidence"),
                             "page_no": resolved_evidence.get("page_no"),
                             "bbox_json": resolved_evidence.get("bbox_json"),
@@ -769,6 +769,14 @@ class ExtractionService:
                 source_document_id=job.document_id,
                 evidences=evidences,
             )
+
+    def _resolved_evidence_quote(self, *, evidence: dict[str, Any], field: dict[str, Any]) -> Any:
+        matched_text = evidence.get("source_text") or evidence.get("text")
+        if matched_text:
+            return matched_text
+        if evidence.get("bbox_json"):
+            return evidence.get("quote_text") or field.get("quote_text") or self._field_display_value(field)
+        return self._field_display_value(field)
 
     def _field_display_value(self, field: dict[str, Any]) -> Any:
         for key in ("value_text", "value_number", "value_date", "value_datetime", "value_json", "normalized_text"):
