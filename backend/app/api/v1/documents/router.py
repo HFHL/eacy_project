@@ -403,7 +403,7 @@ async def trigger_document_ocr(
     current_user: CurrentUser = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentResponse:
-    document = await service.queue_document_ocr(document_id)
+    document = await service.queue_document_ocr(document_id, requested_by=user_scope_id(current_user))
     return document_response(document)
 
 

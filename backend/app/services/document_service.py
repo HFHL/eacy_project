@@ -70,7 +70,7 @@ class DocumentService:
         should_enqueue_ocr = self.ocr_auto_enqueue
         try:
             if patient_id is not None:
-                patient = await self.patient_repository.get_active_by_id(patient_id, owner_id=requested_by)
+                patient = await self.patient_repository.get_active_by_id(patient_id, owner_id=self._normalize_optional_uuid(uploaded_by))
                 if patient is None:
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
@@ -214,7 +214,7 @@ class DocumentService:
             routing_key=OCR_QUEUE,
         )
 
-    async def queue_document_ocr(self, document_id: str) -> Document:
+    async def queue_document_ocr(self, document_id: str, *, requested_by: str | None = None) -> Document:
         try:
             document = await self.get_document(document_id, uploaded_by=requested_by)
             if document is None:
