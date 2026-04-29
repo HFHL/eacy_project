@@ -77,10 +77,6 @@ def get_schema_service() -> SchemaService:
     return SchemaService()
 
 
-def user_scope_id(current_user: CurrentUser) -> str | None:
-    return uuid_user_id_or_none(current_user)
-
-
 def _raise_schema_error(error: SchemaNotFoundError | SchemaConflictError) -> None:
     if isinstance(error, SchemaNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
@@ -102,7 +98,6 @@ async def list_schema_templates(
         page_size=page_size,
         template_type=template_type,
         status=status_filter,
-        created_by=user_scope_id(current_user),
     )
     return SchemaTemplateListResponse(items=templates, total=total, page=page, page_size=page_size)
 
@@ -129,7 +124,7 @@ async def get_schema_template(
     current_user: CurrentUser = Depends(get_current_user),
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateDetailResponse:
-    template = await service.get_template(template_id, created_by=user_scope_id(current_user))
+    template = await service.get_template(template_id)
     if template is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schema template not found")
     versions = await service.list_versions(template_id)
