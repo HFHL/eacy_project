@@ -717,7 +717,7 @@ class ExtractionService:
             if job.document_id is not None:
                 field_evidences = field.get("evidences") if isinstance(field.get("evidences"), list) else []
                 if field_evidences:
-                    resolved_field_evidences = resolve_evidence_locations(source_document, field_evidences)
+                    resolved_field_evidences = resolve_evidence_locations(source_document, field_evidences, fallback_text=self._field_display_value(field))
                     for evidence in resolved_field_evidences:
                         if not isinstance(evidence, dict):
                             continue
@@ -725,7 +725,7 @@ class ExtractionService:
                             {
                                 "document_id": job.document_id,
                                 "evidence_type": field.get("evidence_type") or "document_text",
-                                "quote_text": evidence.get("quote_text") or field.get("quote_text") or field.get("value_text"),
+                                "quote_text": evidence.get("source_text") or evidence.get("text") or evidence.get("quote_text") or field.get("quote_text") or field.get("value_text"),
                                 "evidence_score": field.get("confidence"),
                                 "page_no": evidence.get("page_no"),
                                 "bbox_json": evidence.get("bbox_json"),
@@ -734,12 +734,20 @@ class ExtractionService:
                             }
                         )
                 else:
+                    resolved_field_evidences = resolve_evidence_locations(
+                        source_document,
+                        [{"quote_text": field.get("quote_text") or self._field_display_value(field)}],
+                        fallback_text=self._field_display_value(field),
+                    )
+                    resolved_evidence = resolved_field_evidences[0] if resolved_field_evidences else {}
                     evidences.append(
                         {
                             "document_id": job.document_id,
                             "evidence_type": field.get("evidence_type") or "document_text",
-                            "quote_text": field.get("quote_text") or field.get("value_text"),
+                            "quote_text": resolved_evidence.get("source_text") or resolved_evidence.get("text") or resolved_evidence.get("quote_text") or field.get("quote_text") or field.get("value_text"),
                             "evidence_score": field.get("confidence"),
+                            "page_no": resolved_evidence.get("page_no"),
+                            "bbox_json": resolved_evidence.get("bbox_json"),
                         }
                     )
             await self.value_service.record_ai_extracted_value(
@@ -761,6 +769,13 @@ class ExtractionService:
                 source_document_id=job.document_id,
                 evidences=evidences,
             )
+
+    def _field_display_value(self, field: dict[str, Any]) -> Any:
+        for key in ("value_text", "value_number", "value_date", "value_datetime", "value_json", "normalized_text"):
+            value = field.get(key)
+            if value not in (None, "", [], {}):
+                return value
+        return field.get("quote_text")
 
     def _resolve_output_record(
         self,

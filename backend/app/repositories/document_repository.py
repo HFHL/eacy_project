@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.models import Document, FieldValueEvidence
 from core.db import session
@@ -98,6 +98,18 @@ class DocumentRepository(BaseRepo[Document]):
             query = query.where(Document.uploaded_by == uploaded_by)
         result = await session.execute(query)
         return result.scalars().first()
+
+    async def soft_delete_by_patient(self, patient_id: str, *, uploaded_by: str | None = None) -> int:
+        query = (
+            update(Document)
+            .where(Document.patient_id == patient_id)
+            .where(Document.status != "deleted")
+            .values(status="deleted")
+        )
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
+        result = await session.execute(query)
+        return int(result.rowcount or 0)
 
     async def has_evidence(self, document_id: str) -> bool:
         query = select(FieldValueEvidence.id).where(FieldValueEvidence.document_id == document_id).limit(1)

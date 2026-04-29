@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from app.models import Patient
-from app.repositories import PatientRepository
+from app.repositories import DocumentRepository, PatientRepository, ProjectPatientRepository
 from app.services.ehr_service import EhrService
 from app.services.schema_service import SchemaService
 from core.db import Transactional
@@ -15,10 +15,14 @@ class PatientService:
         patient_repository: PatientRepository | None = None,
         schema_service: SchemaService | None = None,
         ehr_service: EhrService | None = None,
+        document_repository: DocumentRepository | None = None,
+        project_patient_repository: ProjectPatientRepository | None = None,
     ):
         self.patient_repository = patient_repository or PatientRepository()
         self.schema_service = schema_service or SchemaService()
         self.ehr_service = ehr_service or EhrService()
+        self.document_repository = document_repository or DocumentRepository()
+        self.project_patient_repository = project_patient_repository or ProjectPatientRepository()
 
     @Transactional()
     async def create_patient(
@@ -79,12 +83,8 @@ class PatientService:
         if patient is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
-        if await self.patient_repository.has_business_data(patient_id):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Patient has related business data and cannot be deleted in phase 3",
-            )
-
+        await self.document_repository.soft_delete_by_patient(patient_id, uploaded_by=owner_id)
+        await self.project_patient_repository.withdraw_by_patient(patient_id)
         await self.patient_repository.soft_delete(patient)
 
     async def search_patients(self, name: str, *, limit: int = 20, owner_id: str | None = None) -> list[Patient]:

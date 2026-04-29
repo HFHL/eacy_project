@@ -56,7 +56,7 @@ import {
 import { toggleSider, setActiveMenuKey, setBreadcrumbs, setSiderCollapsed } from '../../store/slices/uiSlice'
 import { logout } from '../../store/slices/userSlice'
 import { logout as logoutApi } from '../../api/auth'
-import { batchDeleteCheck, batchDeletePatients, getPatientList } from '../../api/patient'
+import { batchDeletePatients, getPatientList } from '../../api/patient'
 import { getDocumentList, getFileListV2Tree } from '../../api/document'
 import { deleteProject, getProjects } from '../../api/project'
 import { getCRFTemplate, getCRFTemplates, deleteCrfTemplate } from '../../api/crfTemplate'
@@ -364,65 +364,48 @@ const MainLayout = () => {
    * @param {{id: string, name: string}} patient 患者数据
    * @returns {Promise<void>}
    */
-  const handleDeletePatientFromRail = useCallback(async (patient) => {
+  const handleDeletePatientFromRail = useCallback((patient) => {
     if (!patient?.id) return
-    try {
-      let linkedProjects = []
-      try {
-        const checkResp = await batchDeleteCheck({ patient_ids: [patient.id] })
-        if (checkResp?.success && Array.isArray(checkResp?.data?.projects)) {
-          linkedProjects = checkResp.data.projects
-        }
-      } catch {
-        linkedProjects = []
-      }
 
-      const confirmContent = (
+    Modal.confirm({
+      title: '确认删除患者',
+      content: (
         <div>
           <p>确定删除患者「{patient.name || '未命名患者'}」吗？此操作不可恢复。</p>
-          {linkedProjects.length > 0 ? (
-            <div style={{ marginTop: 8, color: token.colorWarning, fontSize: 12 }}>
-              已关联项目：{linkedProjects.map((item) => `${item.project_name || '未命名项目'}（${item.patient_count || 0}）`).join('、')}
-            </div>
-          ) : null}
+          <p style={{ color: token.colorWarning, marginBottom: 0 }}>关联文档会一并删除，关联科研项目会自动退组。</p>
         </div>
-      )
-
-      Modal.confirm({
-        title: '确认删除患者',
-        content: confirmContent,
-        okText: '确认删除',
-        cancelText: '取消',
-        okButtonProps: { danger: true },
-        width: linkedProjects.length > 0 ? 560 : undefined,
-        onOk: async () => {
-          setDeletingPatientId(String(patient.id))
-          try {
-            const response = await batchDeletePatients({ patient_ids: [patient.id] })
-            if (!response?.success) {
-              message.error(response?.message || '删除失败，请稍后重试')
-              return
-            }
-            const successCount = Number(response?.data?.success_count || 0)
-            if (successCount > 0) {
-              message.success('患者删除成功')
-            } else {
-              message.warning(response?.message || '删除未生效，请刷新后重试')
-            }
-            await refreshPatientRail()
-            if (String(activePatientId) === String(patient.id)) {
-              navigate('/patient/pool')
-            }
-          } finally {
-            setDeletingPatientId('')
+      ),
+      okText: '确认删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setDeletingPatientId(String(patient.id))
+        try {
+          const response = await batchDeletePatients({ patient_ids: [patient.id] })
+          if (!response?.success) {
+            message.error(response?.message || '删除失败，请稍后重试')
+            return
           }
-        },
-      })
-    } catch (error) {
-      console.error('删除患者流程异常:', error)
-      message.error('删除流程异常，请稍后重试')
-    }
-  }, [activePatientId, navigate, refreshPatientRail])
+          const successCount = Number(response?.data?.success_count || 0)
+          if (successCount > 0) {
+            message.success('患者删除成功')
+          } else {
+            message.warning(response?.message || '删除未生效，请刷新后重试')
+          }
+          await refreshPatientRail()
+          if (String(activePatientId) === String(patient.id)) {
+            navigate('/patient/pool')
+          }
+        } catch (error) {
+          console.error('删除患者失败:', error)
+          message.error(error?.message || '删除患者失败')
+          throw error
+        } finally {
+          setDeletingPatientId('')
+        }
+      },
+    })
+  }, [activePatientId, navigate, refreshPatientRail, token.colorWarning])
 
   const pageEntries = useMemo(
     () => PAGE_SEARCH_ENTRIES.map((entry) => ({ ...entry, icon: searchIconMap[entry.iconKey] || <FileOutlined /> })),
@@ -1308,7 +1291,12 @@ const MainLayout = () => {
                       </span>
                     </Tooltip>
                   </div>
-                  <Space size={2}>
+                  <Space
+                    size={2}
+                    onClick={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
                     <Tooltip title="修改患者">
                       <Button
                         type="text"
@@ -1334,7 +1322,10 @@ const MainLayout = () => {
                         danger
                         loading={deletingPatientId === String(item.id)}
                         icon={<DeleteOutlined />}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
+                          event.preventDefault()
                           event.stopPropagation()
                           handleDeletePatientFromRail(item)
                         }}

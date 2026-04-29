@@ -1,4 +1,6 @@
-from sqlalchemy import func, select
+from datetime import datetime
+
+from sqlalchemy import func, select, update
 
 from app.models import ProjectPatient, ProjectTemplateBinding, ResearchProject
 from core.db import session
@@ -64,6 +66,16 @@ class ProjectPatientRepository(BaseRepo[ProjectPatient]):
         )
         result = await session.execute(query)
         return list(result.scalars().all())
+
+    async def withdraw_by_patient(self, patient_id: str) -> int:
+        query = (
+            update(ProjectPatient)
+            .where(ProjectPatient.patient_id == patient_id)
+            .where(ProjectPatient.status != "withdrawn")
+            .values(status="withdrawn", withdrawn_at=datetime.utcnow())
+        )
+        result = await session.execute(query)
+        return int(result.rowcount or 0)
 
 
 class ProjectTemplateBindingRepository(BaseRepo[ProjectTemplateBinding]):

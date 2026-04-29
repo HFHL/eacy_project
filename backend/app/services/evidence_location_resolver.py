@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
+import re
 from typing import Any
 
 from app.models import Document
@@ -46,7 +48,12 @@ def build_ocr_evidence_units(document: Document | None, *, limit: int = 260) -> 
     return units[:limit]
 
 
-def resolve_evidence_locations(document: Document | None, evidences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def resolve_evidence_locations(
+    document: Document | None,
+    evidences: list[dict[str, Any]],
+    *,
+    fallback_text: Any = None,
+) -> list[dict[str, Any]]:
     payload = _ocr_payload(document)
     if not isinstance(payload, dict) or not evidences:
         return evidences
@@ -57,13 +64,11 @@ def resolve_evidence_locations(document: Document | None, evidences: list[dict[s
         if not isinstance(evidence, dict):
             continue
         next_evidence = dict(evidence)
-        if next_evidence.get("bbox_json") is None:
-            location = _resolve_location(next_evidence, index)
-            if location is None:
-                location = _match_location_by_quote(next_evidence, index)
-            if location is not None:
-                next_evidence["bbox_json"] = location
-                next_evidence.setdefault("page_no", location.get("page_no"))
+        location = _match_location_by_quote(next_evidence, index, fallback_text=fallback_text)
+
+        if location is not None:
+            next_evidence["bbox_json"] = location
+            next_evidence.setdefault("page_no", location.get("page_no"))
         resolved.append(next_evidence)
     return resolved
 
@@ -82,23 +87,98 @@ def _resolve_location(evidence: dict[str, Any], index: dict[tuple[str, str], dic
     return None
 
 
-def _match_location_by_quote(evidence: dict[str, Any], index: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any] | None:
-    quote = _compact(evidence.get("quote_text"))
-    if not quote:
+def _match_location_by_quote(
+    evidence: dict[str, Any],
+    index: dict[tuple[str, str], dict[str, Any]],
+    *,
+    fallback_text: Any = None,
+) -> dict[str, Any] | None:
+    queries = _candidate_queries(fallback_text, evidence.get("quote_text"))
+    if not queries:
         return None
-    best: tuple[int, dict[str, Any]] | None = None
-    for location in index.values():
-        text = _compact(location.get("text"))
-        if not text:
-            continue
-        score = 0
-        if quote in text:
-            score = len(quote)
-        elif text in quote:
-            score = len(text)
-        if score and (best is None or score > best[0]):
-            best = (score, location)
-    return best[1] if best is not None else None
+    best: tuple[float, dict[str, Any], str] | None = None
+    for query in queries:
+        for location in index.values():
+            text = _compact(location.get("text"))
+            if not text:
+                continue
+            score = _text_match_score(query, text)
+            threshold = _match_threshold(query)
+            if score >= threshold and (best is None or score > best[0]):
+                best = (score, location, query)
+    if best is None:
+        return None
+    location = dict(best[1])
+    location["match_score"] = round(best[0], 4)
+    location["match_strategy"] = "ocr_value_fuzzy"
+    location["match_query"] = best[2][:80]
+    if location.get("text") is not None:
+        location["source_text"] = location.get("text")
+    return location
+
+
+def _candidate_queries(*values: Any) -> list[str]:
+    queries: list[str] = []
+    for value in values:
+        for text in _flatten_query_values(value):
+            compacted = _compact(text)
+            if compacted and compacted not in queries:
+                queries.append(compacted)
+    return queries
+
+
+def _flatten_query_values(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, dict):
+        output: list[str] = []
+        for item in value.values():
+            output.extend(_flatten_query_values(item))
+        return output
+    if isinstance(value, list):
+        output: list[str] = []
+        for item in value:
+            output.extend(_flatten_query_values(item))
+        return output
+    return [str(value)]
+
+
+def _match_threshold(query: str) -> float:
+    if len(query) <= 2:
+        return 0.98
+    if len(query) <= 4:
+        return 0.72
+    return 0.50
+
+
+def _text_match_score(query: str, text: str) -> float:
+    if not query or not text:
+        return 0.0
+    wildcard_score = _wildcard_match_score(query, text)
+    if wildcard_score > 0:
+        return wildcard_score
+    if query in text:
+        return min(1.0, 0.75 + min(len(query), 50) / 200)
+    if text in query:
+        return min(0.95, 0.65 + min(len(text), 50) / 250)
+    return SequenceMatcher(None, query, text).ratio()
+
+
+def _wildcard_match_score(query: str, text: str) -> float:
+    if "*" not in query and "＊" not in query:
+        return 0.0
+    parts = [part for part in re.split(r"[*＊]+", query) if part]
+    if not parts:
+        return 0.0
+    pattern = ".{0,8}".join(re.escape(part) for part in parts)
+    if re.search(pattern, text):
+        return 0.99 if len(query) <= 6 else 0.92
+    position = -1
+    for part in parts:
+        position = text.find(part, position + 1)
+        if position < 0:
+            return 0.0
+    return 0.86
 
 
 def _build_location_index(payload: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
