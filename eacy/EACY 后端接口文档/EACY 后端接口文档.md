@@ -51,17 +51,20 @@ aliases:
 
 `app/api/v1/__init__.py` 创建带 `/api/v1` 前缀的聚合路由，并注册以下模块：
 
-| 模块 | 前缀 | 子页面 |
-|---|---|---|
-| 健康检查 | `/api/v1/health` | [[EACY 后端接口文档 - Auth 与基础状态]] |
-| Auth | `/api/v1/auth` | [[EACY 后端接口文档 - Auth 与基础状态]] |
-| Admin | `/api/v1/admin` | [[EACY 后端接口文档 - Auth 与基础状态]] |
-| EHR 状态 | `/api/v1/ehr` | [[EACY 后端接口文档 - Auth 与基础状态]] |
-| Patients | `/api/v1/patients` | [[EACY 后端接口文档 - Patients 与 EHR]] |
-| Documents | `/api/v1/documents` | [[EACY 后端接口文档 - Documents]] |
-| Extraction Jobs | `/api/v1/extraction-jobs` | [[EACY 后端接口文档 - Extraction Jobs]] |
+| 模块               | 前缀                                                            | 子页面                                |
+| ---------------- | ------------------------------------------------------------- | ---------------------------------- |
+| 健康检查             | `/api/v1/health`                                              | [[EACY 后端接口文档 - Auth 与基础状态]]       |
+| Auth             | `/api/v1/auth`                                                | [[EACY 后端接口文档 - Auth 与基础状态]]       |
+| Admin            | `/api/v1/admin`                                               | [[EACY 后端接口文档 - Auth 与基础状态]]       |
+| EHR 状态           | `/api/v1/ehr`                                                 | [[EACY 后端接口文档 - Auth 与基础状态]]       |
+| Patients         | `/api/v1/patients`                                            | [[EACY 后端接口文档 - Patients 与 EHR]]   |
+| Documents        | `/api/v1/documents`                                           | [[EACY 后端接口文档 - Documents]]        |
+| Extraction Jobs  | `/api/v1/extraction-jobs`                                     | [[EACY 后端接口文档 - Extraction Jobs]]  |
 | Schema Templates | `/api/v1/schema-templates`、`/api/v1/schema-template-versions` | [[EACY 后端接口文档 - Schema Templates]] |
-| Projects / CRF | `/api/v1/projects` | [[EACY 后端接口文档 - Projects 与 CRF]] |
+| Projects / CRF   | `/api/v1/projects`                                            | [[EACY 后端接口文档 - Projects 与 CRF]]   |
+|                  |                                                               |                                    |
+|                  |                                                               |                                    |
+|                  |                                                               |                                    |
 
 ### 中间件与横切能力
 
