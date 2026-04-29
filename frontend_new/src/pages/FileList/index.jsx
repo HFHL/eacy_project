@@ -142,6 +142,8 @@ const TAB_STATUS_MAP = {
 const PARSE_STAGE_TASK_STATUSES = ['uploaded', 'parsing', 'parse_failed', 'parsed', 'extracted', 'ai_matching']
 const TODO_STAGE_TASK_STATUSES = ['pending_confirm_new', 'pending_confirm_review', 'pending_confirm_uncertain', 'auto_archived']
 const VIRTUAL_PENDING_PARSE_GROUP_KEY = 'virtual:pending_parse'
+const FILE_LIST_TREE_DEFER_MS = 350
+const FILE_LIST_TABLE_SCROLL_Y = Math.max(360, (typeof window !== 'undefined' ? window.innerHeight : 900) - PAGE_LAYOUT_HEIGHTS.fileList.tableScrollOffset)
 /**
  * 与主布局左侧目录栏宽度保持一致（见 MainLayout `CONTEXT_RAIL_WIDTH`）。
  */
@@ -981,6 +983,8 @@ const FileList = () => {
   const treeDataRef = useRef(treeData)
   const treeRefreshingRef = useRef(false)
   const treeRefreshPromiseRef = useRef(null)
+  const treeLoadTimerRef = useRef(null)
+  const hasLoadedTreeRef = useRef(false)
 
   // 文件列表
   const [fileList, setFileList] = useState([])
@@ -1235,6 +1239,7 @@ const FileList = () => {
       const res = await getFileListV2Tree(force ? { refresh: true } : {})
       if (res?.success) {
         const data = res.data
+        hasLoadedTreeRef.current = true
         setTreeData(data)
 
         // 若是强制刷新（例如元数据修改后重建分组），需要把已展开分组与最新树结构对齐：
@@ -1283,11 +1288,13 @@ const FileList = () => {
         }
         return
       }
-      fetchTree({ force: false })
       fetchFileList()
-      setGroupDocsMap({})
+      if (hasLoadedTreeRef.current || viewMode === 'patient') {
+        fetchTree({ force: false })
+        setGroupDocsMap({})
+      }
     },
-    [fetchTree, fetchFileList]
+    [fetchTree, fetchFileList, viewMode]
   )
   useEffect(() => {
     treeDataRef.current = treeData
@@ -1320,7 +1327,15 @@ const FileList = () => {
   }, [searchParams, setSearchParams])
 
   useEffect(() => { fetchFileList() }, [fetchFileList])
-  useEffect(() => { fetchTree() }, [fetchTree])
+  useEffect(() => {
+    if (treeLoadTimerRef.current) clearTimeout(treeLoadTimerRef.current)
+    treeLoadTimerRef.current = window.setTimeout(() => {
+      fetchTree()
+    }, FILE_LIST_TREE_DEFER_MS)
+    return () => {
+      if (treeLoadTimerRef.current) clearTimeout(treeLoadTimerRef.current)
+    }
+  }, [fetchTree])
 
   // ─── 轮询：解析状态 ───
   useEffect(() => {
@@ -1575,10 +1590,10 @@ const FileList = () => {
     }
   }, [])
 
-  // 保持已展开分组的文档数据：当 expandedGroups 或 groupDocsMap 变更时，为已展开但未加载的分组预加载文档
+  // 只校验已展开分组是否仍存在；分组文档改为点击展开/选中时按需加载，避免首屏批量请求。
   useEffect(() => {
     if (!Array.isArray(expandedGroups) || expandedGroups.length === 0) return
-    if (treeLoading) return
+    if (treeLoading || !treeData) return
 
     const todoGroupIds = new Set(
       (Array.isArray(treeData?.todo_groups) ? treeData.todo_groups : [])
@@ -1599,27 +1614,7 @@ const FileList = () => {
     if (invalidKeys.length > 0) {
       setExpandedGroups((prev) => prev.filter((key) => !invalidKeys.includes(key)))
     }
-
-    expandedGroups.forEach((key) => {
-      if (key.startsWith('group:')) {
-        const groupId = key.slice('group:'.length)
-        if (!groupId) return
-        if (!todoGroupIds.has(groupId)) return
-        const cached = groupDocsMap[groupId]
-        if (!cached || (!cached.loading && !Array.isArray(cached.items))) {
-          loadGroupDocs(groupId)
-        }
-      } else if (key.startsWith('patient:')) {
-        const pid = key.slice('patient:'.length)
-        if (!pid) return
-        if (!archivedPatientIds.has(pid)) return
-        const cached = groupDocsMap[`patient:${pid}`]
-        if (!cached || (!cached.loading && !Array.isArray(cached.items))) {
-          loadArchivedPatientDocs(pid)
-        }
-      }
-    })
-  }, [expandedGroups, groupDocsMap, loadGroupDocs, loadArchivedPatientDocs, treeData, treeLoading])
+  }, [expandedGroups, treeData, treeLoading])
 
   // 当文件类型 / 状态信息 / 上传时间 / 文件名 筛选激活时，树形分组视图无法正确过滤，切换为扁平列表模式
   const isFilterActive = useMemo(
@@ -3761,7 +3756,7 @@ const FileList = () => {
    * 仅在数据量较大时启用纵向滚动，保持与其他页面一致的滚动条体验。
    */
   const fileListTableScrollY = displayDataSource.length > FILE_LIST_MIN_ROWS_FOR_VERTICAL_SCROLL
-    ? toViewportHeight(PAGE_LAYOUT_HEIGHTS.fileList.tableScrollOffset)
+    ? FILE_LIST_TABLE_SCROLL_Y
     : undefined
   const tableScrollX = useMemo(() => {
     const widthSum = columns.reduce((acc, item) => acc + (Number(item?.width) || 0), 0)
@@ -4081,11 +4076,13 @@ const FileList = () => {
                 dataSource={displayDataSource}
                 rowKey="key"
                 size="middle"
-                loading={fileListLoading || treeLoading}
+                loading={fileListLoading}
                 pagination={tablePagination}
                 rowSelection={tableRowSelection}
                 onRow={getTableRowProps}
                 scroll={{ x: tableScrollX, y: fileListTableScrollY }}
+                virtual={displayDataSource.length > 80}
+                sticky
                 className="table-scrollbar-unified"
                 style={{ background: 'transparent' }}
               />
@@ -4105,11 +4102,13 @@ const FileList = () => {
               dataSource={displayDataSource}
               rowKey="key"
               size="middle"
-              loading={fileListLoading || treeLoading}
+              loading={fileListLoading}
               pagination={tablePagination}
               rowSelection={tableRowSelection}
               onRow={getTableRowProps}
               scroll={{ x: tableScrollX, y: fileListTableScrollY }}
+              virtual={displayDataSource.length > 80}
+              sticky
               className="table-scrollbar-unified"
               style={{ background: 'transparent' }}
             />
