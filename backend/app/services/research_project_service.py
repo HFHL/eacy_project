@@ -119,11 +119,11 @@ class ResearchProjectService:
         return await self.project_repository.save(project)
 
     @Transactional()
-    async def archive_project(self, project_id: str) -> ResearchProject:
-        project = await self.get_project(project_id)
+    async def archive_project(self, project_id: str, *, owner_id: str | None = None) -> ResearchProject:
+        project = await self.get_project(project_id, owner_id=owner_id)
         if project is None:
             raise ResearchProjectNotFoundError("Research project not found")
-        project.status = "archived"
+        project.status = "deleted"
         return await self.project_repository.save(project)
 
     @Transactional()

@@ -348,7 +348,7 @@ async def archive_project(
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> ResearchProjectResponse:
     try:
-        project = await service.archive_project(project_id)
+        project = await service.archive_project(project_id, owner_id=user_scope_id(current_user))
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
     return ResearchProjectResponse.model_validate(project)

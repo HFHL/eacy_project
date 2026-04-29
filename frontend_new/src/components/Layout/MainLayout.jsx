@@ -1372,6 +1372,10 @@ const MainLayout = () => {
             if (String(activeResearchProjectId) === String(item.id)) {
               navigate(researchHome())
             }
+          } catch (error) {
+            console.error('删除项目失败:', error)
+            message.error(error?.message || '删除项目失败')
+            throw error
           } finally {
             setDeletingProjectId('')
           }
@@ -1642,7 +1646,10 @@ const MainLayout = () => {
                           danger
                           loading={deletingProjectId === String(item.id)}
                           icon={<DeleteOutlined />}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => event.stopPropagation()}
                           onClick={(event) => {
+                            event.preventDefault()
                             event.stopPropagation()
                             handleDeleteProjectFromRail(item)
                           }}

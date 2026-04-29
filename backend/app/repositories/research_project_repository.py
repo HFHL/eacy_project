@@ -29,9 +29,11 @@ class ResearchProjectRepository(BaseRepo[ResearchProject]):
         query = select(ResearchProject)
         if owner_id is not None:
             query = query.where(ResearchProject.owner_id == owner_id)
-        query = query.order_by(ResearchProject.created_at.desc())
         if status is not None:
             query = query.where(ResearchProject.status == status)
+        else:
+            query = query.where(ResearchProject.status != "deleted")
+        query = query.order_by(ResearchProject.created_at.desc())
         result = await session.execute(query.limit(limit).offset(offset))
         return list(result.scalars().all())
 
@@ -41,6 +43,8 @@ class ResearchProjectRepository(BaseRepo[ResearchProject]):
             query = query.where(ResearchProject.owner_id == owner_id)
         if status is not None:
             query = query.where(ResearchProject.status == status)
+        else:
+            query = query.where(ResearchProject.status != "deleted")
         result = await session.execute(query)
         return int(result.scalar_one())
 
