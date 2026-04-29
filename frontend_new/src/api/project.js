@@ -1,6 +1,6 @@
 import { emptyList, emptySuccess, emptyTask } from './_empty'
 import { extractEhrDataTargeted, getDocumentList } from './document'
-import request from './request'
+import request, { ensureFreshAccessToken } from './request'
 
 const PROJECTS_ENDPOINT = '/projects'
 
@@ -477,7 +477,23 @@ export const getActiveExtractionTask = async () => emptySuccess(null)
 export const cancelCrfExtraction = async () => emptySuccess(null)
 export const resetCrfExtraction = async () => emptySuccess(null)
 export const applyTemplateVersion = async () => emptySuccess(null)
-export const exportProjectCrfFile = async () => emptySuccess(null)
+export const exportProjectCrfFile = async (projectId = '', payload = {}) => {
+  if (!projectId) return new Blob([])
+  const apiBase = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/+$/, '')
+  const token = await ensureFreshAccessToken()
+  const response = await fetch(`${apiBase}${PROJECTS_ENDPOINT}/${projectId}/export`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    credentials: 'same-origin',
+    body: JSON.stringify(payload || {}),
+  })
+  const blob = await response.blob()
+  if (!response.ok) return blob
+  return blob
+}
 
 export default {
   getProjects,

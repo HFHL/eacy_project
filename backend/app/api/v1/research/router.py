@@ -1,11 +1,13 @@
 from datetime import date, datetime
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
 from app.services.extraction_service import ExtractionConflictError, ExtractionNotFoundError, ExtractionService
+from app.services.research_project_export_service import ExportRequest, ResearchProjectExportService
 from app.services.research_project_service import (
     ResearchProjectConflictError,
     ResearchProjectNotFoundError,
@@ -252,6 +254,13 @@ class CrfResponse(BaseModel):
     current_values: dict[str, CrfCurrentValueResponse]
 
 
+class ProjectCrfExportRequest(BaseModel):
+    format: str = Field(default="excel", max_length=20)
+    scope: str = Field(default="all", max_length=20)
+    patient_ids: list[str] | None = None
+    expand_repeatable_rows: bool = True
+
+
 class CrfFolderUpdateResponse(BaseModel):
     project_id: str
     project_patient_id: str
@@ -278,6 +287,10 @@ def user_scope_id(current_user: CurrentUser) -> str | None:
 
 def get_extraction_service() -> ExtractionService:
     return ExtractionService()
+
+
+def get_research_project_export_service() -> ResearchProjectExportService:
+    return ResearchProjectExportService()
 
 
 def _raise_research_error(error: ResearchProjectNotFoundError | ResearchProjectConflictError) -> None:
@@ -352,6 +365,39 @@ async def archive_project(
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
     return ResearchProjectResponse.model_validate(project)
+
+
+@router.post("/{project_id}/export")
+async def export_project_crf_file(
+    project_id: str,
+    payload: ProjectCrfExportRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: ResearchProjectExportService = Depends(get_research_project_export_service),
+) -> Response:
+    if payload.format not in {"excel", "xlsx"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only xlsx export is supported")
+    if payload.scope not in {"all", "selected"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported export scope")
+    if payload.scope == "selected" and not payload.patient_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="patient_ids is required when scope is selected")
+    try:
+        content = await service.export_crf_xlsx(
+            project_id,
+            ExportRequest(
+                scope=payload.scope,
+                patient_ids=tuple(payload.patient_ids or ()),
+                expand_repeatable_rows=payload.expand_repeatable_rows,
+            ),
+            owner_id=user_scope_id(current_user),
+        )
+    except ResearchProjectNotFoundError as error:
+        _raise_research_error(error)
+    filename = quote(f"project_{project_id}_crf_export.xlsx")
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
 
 
 @router.post("/{project_id}/template-bindings", response_model=TemplateBindingResponse, status_code=status.HTTP_201_CREATED)
