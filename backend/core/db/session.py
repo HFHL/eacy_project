@@ -34,9 +34,22 @@ class EngineType(Enum):
     READER = "reader"
 
 
+def _engine_options() -> dict[str, int | bool]:
+    return {
+        "pool_size": config.DB_POOL_SIZE,
+        "max_overflow": config.DB_MAX_OVERFLOW,
+        "pool_timeout": config.DB_POOL_TIMEOUT,
+        "pool_recycle": config.DB_POOL_RECYCLE,
+        "pool_pre_ping": True,
+    }
+
+
+writer_engine = create_async_engine(config.WRITER_DB_URL, **_engine_options())
+reader_engine = writer_engine if config.READER_DB_URL == config.WRITER_DB_URL else create_async_engine(config.READER_DB_URL, **_engine_options())
+
 engines = {
-    EngineType.WRITER: create_async_engine(config.WRITER_DB_URL, pool_recycle=3600),
-    EngineType.READER: create_async_engine(config.READER_DB_URL, pool_recycle=3600),
+    EngineType.WRITER: writer_engine,
+    EngineType.READER: reader_engine,
 }
 
 

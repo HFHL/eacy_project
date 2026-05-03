@@ -770,13 +770,15 @@ class ExtractionService:
                 evidences=evidences,
             )
 
-    def _resolved_evidence_quote(self, *, evidence: dict[str, Any], field: dict[str, Any]) -> Any:
+    def _resolved_evidence_quote(self, *, evidence: dict[str, Any], field: dict[str, Any]) -> str | None:
         matched_text = evidence.get("source_text") or evidence.get("text")
         if matched_text:
-            return matched_text
+            return self._coerce_evidence_text(matched_text)
         if evidence.get("bbox_json"):
-            return evidence.get("quote_text") or field.get("quote_text") or self._field_display_value(field)
-        return self._field_display_value(field)
+            return self._coerce_evidence_text(
+                evidence.get("quote_text") or field.get("quote_text") or self._field_display_value(field)
+            )
+        return self._coerce_evidence_text(self._field_display_value(field))
 
     def _field_display_value(self, field: dict[str, Any]) -> Any:
         for key in ("value_text", "value_number", "value_date", "value_datetime", "value_json", "normalized_text"):
@@ -784,6 +786,12 @@ class ExtractionService:
             if value not in (None, "", [], {}):
                 return value
         return field.get("quote_text")
+
+    def _coerce_evidence_text(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text if text else None
 
     def _resolve_output_record(
         self,

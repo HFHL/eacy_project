@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getDocumentList, archiveDocument, changeArchivePatient, getDocumentAiMatchInfo, confirmCreatePatientAndArchive, batchCreatePatientAndArchive, confirmAutoArchive, batchConfirmAutoArchive, getDocumentDetail, getDocumentTempUrl, extractEhrData, batchAiMatchAsync } from '../../api/document'
+import { getDocumentList, archiveDocument, changeArchivePatient, getDocumentAiMatchInfo, confirmCreatePatientAndArchive, batchCreatePatientAndArchive, confirmAutoArchive, batchConfirmAutoArchive, getDocumentDetail, getDocumentTempUrl, getFreshDocumentPdfStreamUrl, extractEhrData, batchAiMatchAsync } from '../../api/document'
 import { getPatientList } from '../../api/patient'
 import DocumentDetailModal from '../PatientDetail/tabs/DocumentsTab/components/DocumentDetailModal'
 import CreatePatientDrawer from '../../components/Patient/CreatePatientDrawer'
+import PdfPageWithHighlight from '../../components/PdfPageWithHighlight'
 import {
   Card,
   Typography,
@@ -70,6 +71,20 @@ import {
 const { Title, Text, Paragraph } = Typography
 const { Search } = Input
 const { Panel } = Collapse
+
+const isPdfFileLike = ({ fileType, fileName, fileUrl } = {}) => {
+  const type = String(fileType || '').toLowerCase()
+  const name = String(fileName || '').toLowerCase()
+  const url = String(fileUrl || '').toLowerCase()
+  const cleanUrl = url.split('?')[0].split('#')[0]
+  return (
+    type === 'pdf' ||
+    type === '.pdf' ||
+    type.includes('application/pdf') ||
+    name.endsWith('.pdf') ||
+    cleanUrl.endsWith('.pdf')
+  )
+}
 
 const AIProcessing = () => {
   const navigate = useNavigate()
@@ -1231,18 +1246,30 @@ const AIProcessing = () => {
         getDocumentDetail(documentId, { include_extracted: true }).catch(err => ({ success: false, error: err }))
       ])
 
-      if (tempUrlRes?.success && tempUrlRes?.data?.temp_url) {
-        setDocPreviewTempUrl(tempUrlRes.data.temp_url)
-        setDocPreviewFileType(tempUrlRes.data.file_type || '')
-      }
-
+      let resolvedFileType = tempUrlRes?.data?.file_type || tempUrlRes?.data?.mime_type || ''
+      let resolvedFileName = documentName || tempUrlRes?.data?.file_name || ''
+      let resolvedTempUrl = tempUrlRes?.success ? (tempUrlRes?.data?.temp_url || '') : ''
       if (detailRes?.success && detailRes?.data) {
         const records = detailRes.data.extraction_records || []
         setDocPreviewExtractionRecord(records.length > 0 ? records[0] : null)
-        // 兜底：有些情况下 temp-url 失败，但 doc detail 里能拿到 file_type
-        if (!tempUrlRes?.success) {
-          setDocPreviewFileType(detailRes.data.file_type || '')
-        }
+        resolvedFileType = resolvedFileType || detailRes.data.file_type || detailRes.data.mime_type || ''
+        resolvedFileName = resolvedFileName || detailRes.data.file_name || detailRes.data.original_filename || ''
+      }
+
+      const isPdf = isPdfFileLike({
+        fileType: resolvedFileType,
+        fileName: resolvedFileName,
+        fileUrl: resolvedTempUrl,
+      })
+
+      if (isPdf) {
+        setDocPreviewTempUrl(await getFreshDocumentPdfStreamUrl(documentId))
+        setDocPreviewFileType('pdf')
+      } else if (resolvedTempUrl) {
+        setDocPreviewTempUrl(resolvedTempUrl)
+        setDocPreviewFileType(resolvedFileType || '')
+      } else if (resolvedFileType) {
+        setDocPreviewFileType(resolvedFileType)
       }
 
       if (!tempUrlRes?.success && !detailRes?.success) {
@@ -3519,11 +3546,13 @@ const AIProcessing = () => {
                         </div>
 
                         {String(docPreviewFileType).toLowerCase() === 'pdf' ? (
-                          <iframe
-                            title="document-preview"
-                            src={docPreviewTempUrl}
-                            style={{ width: '100%', height: '70vh', border: '1px solid #f0f0f0', borderRadius: 8 }}
-                          />
+                          <div style={{ height: '70vh', overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: 12, background: '#f5f5f5' }}>
+                            <PdfPageWithHighlight
+                              pdfUrl={docPreviewTempUrl}
+                              maxWidth="100%"
+                              renderAllPages
+                            />
+                          </div>
                         ) : ['image', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(String(docPreviewFileType).toLowerCase()) ? (
                           <img
                             alt="document-preview"

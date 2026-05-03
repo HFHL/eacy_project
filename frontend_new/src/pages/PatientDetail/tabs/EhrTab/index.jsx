@@ -18,6 +18,20 @@ import { extractEhrData, extractEhrDataTargeted, getFreshDocumentPdfStreamUrl, g
 import { getEhrFieldEvidence, getEhrFieldHistory, getPatientEhr } from '@/api/patient'
 import { appThemeToken } from '@/styles/themeTokens'
 
+const isPdfFileLike = ({ fileType, fileName, fileUrl } = {}) => {
+  const type = String(fileType || '').toLowerCase()
+  const name = String(fileName || '').toLowerCase()
+  const url = String(fileUrl || '').toLowerCase()
+  const cleanUrl = url.split('?')[0].split('#')[0]
+  return (
+    type === 'pdf' ||
+    type === '.pdf' ||
+    type.includes('application/pdf') ||
+    name.endsWith('.pdf') ||
+    cleanUrl.endsWith('.pdf')
+  )
+}
+
 const EhrTab = ({
   // 患者ID（用于保存病历字段）
   patientId,
@@ -265,7 +279,11 @@ const EhrTab = ({
             const urlRes = await getDocumentTempUrl(traceDocumentId)
             console.log('文档URL响应:', urlRes)
             if (urlRes.success && urlRes.data?.temp_url) {
-              const fileType = String(urlRes.data.file_type || urlRes.data.file_name || urlRes.data.mime_type || '').toLowerCase()
+              const isPdf = isPdfFileLike({
+                fileType: urlRes.data.file_type || urlRes.data.mime_type,
+                fileName: urlRes.data.file_name,
+                fileUrl: urlRes.data.temp_url,
+              })
               if (evidenceLocations.length > 0) {
                 setSourceLocation(evidenceLocations.map(location => ({
                   ...location,
@@ -273,7 +291,7 @@ const EhrTab = ({
                   mime_type: urlRes.data.mime_type,
                 })))
               }
-              setDocumentImageUrl(fileType === 'pdf'
+              setDocumentImageUrl(isPdf
                 ? await getFreshDocumentPdfStreamUrl(traceDocumentId)
                 : urlRes.data.temp_url)
             }
@@ -291,8 +309,12 @@ const EhrTab = ({
             try {
               const urlRes = await getDocumentTempUrl(matched.id)
               if (urlRes.success && urlRes.data?.temp_url) {
-                const fileType = String(urlRes.data.file_type || urlRes.data.file_name || urlRes.data.mime_type || '').toLowerCase()
-                setDocumentImageUrl(fileType === 'pdf'
+                const isPdf = isPdfFileLike({
+                  fileType: urlRes.data.file_type || urlRes.data.mime_type,
+                  fileName: urlRes.data.file_name || matched.name || matched.fileName,
+                  fileUrl: urlRes.data.temp_url,
+                })
+                setDocumentImageUrl(isPdf
                   ? await getFreshDocumentPdfStreamUrl(matched.id)
                   : urlRes.data.temp_url)
               }

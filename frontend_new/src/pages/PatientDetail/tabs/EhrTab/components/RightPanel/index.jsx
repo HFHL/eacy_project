@@ -713,8 +713,8 @@ const RightPanel = ({
                 <div style={{ maxHeight: '70vh', overflow: 'auto', padding: 8, display: 'flex', justifyContent: 'center' }}>
                   <PdfPageWithHighlight
                     pdfUrl={documentPreviewUrl}
-                    pageNumber={1}
                     maxWidth="100%"
+                    renderAllPages
                     loading={false}
                   />
                 </div>

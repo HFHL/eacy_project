@@ -37,6 +37,7 @@ class DocumentMetadataService:
             document.updated_at = datetime.utcnow()
             document = await self.document_repository.save(document)
             await session.commit()
+            await DocumentService().invalidate_archive_tree_cache(getattr(document, "uploaded_by", None))
         except Exception:
             await session.rollback()
             raise
@@ -70,6 +71,7 @@ class DocumentMetadataService:
             document.updated_at = datetime.utcnow()
             document = await self.document_repository.save(document)
             await session.commit()
+            await DocumentService().invalidate_archive_tree_cache(getattr(document, "uploaded_by", None))
             await DocumentService().enqueue_ready_extraction_jobs(document.id)
             return document
         except Exception as exc:
@@ -95,6 +97,7 @@ class DocumentMetadataService:
         document.updated_at = datetime.utcnow()
         document = await self.document_repository.save(document)
         await session.commit()
+        await DocumentService().invalidate_archive_tree_cache(getattr(document, "uploaded_by", None))
         return document
 
     async def _mark_failed(self, document_id: str, exc: Exception) -> Document:
@@ -111,6 +114,7 @@ class DocumentMetadataService:
         document.updated_at = datetime.utcnow()
         document = await self.document_repository.save(document)
         await session.commit()
+        await DocumentService().invalidate_archive_tree_cache(getattr(document, "uploaded_by", None))
         return document
 
     def _failure_metadata(self, *, reason: str) -> dict[str, Any]:

@@ -876,8 +876,8 @@ const DocumentDetailModal = forwardRef(({
                 }}>
                   <PdfPageWithHighlight
                     pdfUrl={pdfPreviewUrl}
-                    pageNumber={1}
                     maxWidth={900}
+                    renderAllPages
                   />
                 </div>
               ) : isImage(rawFileType, fileName, previewUrl) ? (

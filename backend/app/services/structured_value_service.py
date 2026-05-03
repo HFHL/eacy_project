@@ -65,13 +65,14 @@ class StructuredValueService:
         evidence_type: str,
         **params: Any,
     ) -> FieldValueEvidence:
+        normalized_params = self._normalize_evidence_params(params)
         return await self.evidence_repository.create(
             {
                 "value_event_id": value_event_id,
                 "document_id": document_id,
                 "evidence_type": evidence_type,
                 "created_at": datetime.utcnow(),
-                **params,
+                **normalized_params,
             }
         )
 
@@ -189,6 +190,19 @@ class StructuredValueService:
             normalized["value_json"] = self._coerce_json(normalized.get("value_json"))
         return normalized
 
+    def _normalize_evidence_params(self, values: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(values)
+
+        normalized["quote_text"] = self._coerce_text(normalized.get("quote_text"))
+        normalized["row_key"] = self._coerce_text(normalized.get("row_key"))
+        normalized["cell_key"] = self._coerce_text(normalized.get("cell_key"))
+        normalized["page_no"] = self._coerce_int(normalized.get("page_no"))
+        normalized["start_offset"] = self._coerce_int(normalized.get("start_offset"))
+        normalized["end_offset"] = self._coerce_int(normalized.get("end_offset"))
+        normalized["evidence_score"] = self._coerce_float(normalized.get("evidence_score"))
+
+        return normalized
+
     def _coerce_date(self, value: Any) -> date | None:
         if value is None or value == "" or value == "null":
             return None
@@ -213,3 +227,25 @@ class StructuredValueService:
         if isinstance(value, (dict, list)):
             return value
         return {"value": value}
+
+    def _coerce_text(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text if text else None
+
+    def _coerce_int(self, value: Any) -> int | None:
+        if value in (None, "", "null"):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _coerce_float(self, value: Any) -> float | None:
+        if value in (None, "", "null"):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None

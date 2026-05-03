@@ -18,6 +18,9 @@ const buildApiUrl = (path = '') => {
 }
 
 const TASK_STATUS_ALIAS = {
+  parsing: 'ocr_pending',
+  parsed: 'ocr_completed',
+  parse_failed: 'failed',
   pending_confirm_new: 'uploaded',
   pending_confirm_review: 'uploaded',
   pending_confirm_uncertain: 'uploaded',
@@ -106,9 +109,13 @@ const normalizeTaskStatus = (document = {}) => {
   if (status === 'archived' || archivedAt) return 'archived'
   if (status === 'failed') return 'parse_failed'
   if (status === 'ocr_pending') return 'parsing'
-  if (status === 'ocr_completed') return 'parsed'
 
   const ocrStatus = document.ocr_status || document.ocrStatus
+  const metaStatus = document.meta_status || document.metaStatus
+  if ((status === 'ocr_completed' || ocrStatus === 'completed') && metaStatus === 'completed') {
+    return 'pending_confirm_uncertain'
+  }
+  if (status === 'ocr_completed') return 'parsed'
   if (['queued', 'running'].includes(ocrStatus)) return 'parsing'
   if (ocrStatus === 'completed') return 'parsed'
   if (ocrStatus === 'failed') return 'parse_failed'
@@ -204,7 +211,7 @@ const normalizeListParams = (params = {}) => {
     .map((status) => TASK_STATUS_ALIAS[status] || status)
     .filter(Boolean)
   const uniqueStatuses = Array.from(new Set(statuses))
-  if (uniqueStatuses.length === 1) next.status = uniqueStatuses[0]
+  if (uniqueStatuses.length) next.status = uniqueStatuses.join(',')
 
   return next
 }
@@ -542,12 +549,11 @@ export const batchConfirmAutoArchive = async () => emptySuccess(null)
 export const searchUserFiles = async (params = {}) => getDocumentList(params)
 export const getFileStatusById = async (documentId = '') => getDocumentDetail(documentId)
 export const getFileStatusesByIds = async (documentIds = []) => {
-  const statuses = {}
-  for (const documentId of documentIds) {
-    const response = await getDocumentDetail(documentId)
-    if (response.success) statuses[documentId] = response.data
-  }
-  return emptySuccess(statuses)
+  const ids = Array.from(new Set((Array.isArray(documentIds) ? documentIds : []).filter(Boolean)))
+  if (!ids.length) return emptySuccess({ items: [], list: [], total: 0 })
+  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/statuses`, { document_ids: ids })
+  const items = (payload.items || []).map(normalizeDocument)
+  return emptySuccess({ items, list: items, total: items.length })
 }
 
 export const getFileListV2Tree = async (params = {}) => {

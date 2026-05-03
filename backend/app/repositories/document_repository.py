@@ -1,4 +1,5 @@
 from sqlalchemy import func, select, update
+from sqlalchemy.orm import load_only
 
 from app.models import Document, FieldValueEvidence
 from core.db import session
@@ -45,7 +46,25 @@ class DocumentRepository(BaseRepo[Document]):
         query = select(Document).where(Document.status != "deleted")
         if uploaded_by is not None:
             query = query.where(Document.uploaded_by == uploaded_by)
-        query = query.order_by(Document.created_at.desc())
+        query = query.options(
+            load_only(
+                Document.id,
+                Document.original_filename,
+                Document.status,
+                Document.ocr_status,
+                Document.meta_status,
+                Document.metadata_json,
+                Document.doc_type,
+                Document.doc_subtype,
+                Document.doc_title,
+                Document.effective_at,
+                Document.patient_id,
+                Document.uploaded_by,
+                Document.archived_at,
+                Document.created_at,
+                Document.updated_at,
+            )
+        ).order_by(Document.created_at.desc())
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -64,13 +83,85 @@ class DocumentRepository(BaseRepo[Document]):
         if patient_id is not None:
             query = query.where(Document.patient_id == patient_id)
         if status is not None:
-            query = query.where(Document.status == status)
+            statuses = [item.strip() for item in str(status).split(",") if item.strip()]
+            if len(statuses) > 1:
+                query = query.where(Document.status.in_(statuses))
+            elif statuses:
+                query = query.where(Document.status == statuses[0])
         else:
             query = query.where(Document.status != "deleted")
 
-        query = query.order_by(Document.created_at.desc()).offset(offset).limit(limit)
+        query = query.options(
+            load_only(
+                Document.id,
+                Document.file_name,
+                Document.file_type,
+                Document.patient_id,
+                Document.original_filename,
+                Document.file_ext,
+                Document.mime_type,
+                Document.file_size,
+                Document.storage_provider,
+                Document.storage_path,
+                Document.file_url,
+                Document.status,
+                Document.ocr_status,
+                Document.meta_status,
+                Document.metadata_json,
+                Document.doc_type,
+                Document.doc_subtype,
+                Document.doc_title,
+                Document.effective_at,
+                Document.uploaded_by,
+                Document.archived_at,
+                Document.created_at,
+                Document.updated_at,
+            )
+        ).order_by(Document.created_at.desc()).offset(offset).limit(limit)
         result = await session.execute(query)
         return list(result.scalars().all())
+
+    async def list_by_ids_light(self, document_ids: list[str], *, uploaded_by: str | None = None) -> list[Document]:
+        if not document_ids:
+            return []
+        query = (
+            select(Document)
+            .where(Document.id.in_(document_ids))
+            .where(Document.status != "deleted")
+            .options(
+                load_only(
+                    Document.id,
+                    Document.file_name,
+                    Document.file_type,
+                    Document.patient_id,
+                    Document.original_filename,
+                    Document.file_ext,
+                    Document.mime_type,
+                    Document.file_size,
+                    Document.storage_provider,
+                    Document.storage_path,
+                    Document.file_url,
+                    Document.status,
+                    Document.ocr_status,
+                    Document.meta_status,
+                    Document.metadata_json,
+                    Document.doc_type,
+                    Document.doc_subtype,
+                    Document.doc_title,
+                    Document.effective_at,
+                    Document.uploaded_by,
+                    Document.archived_at,
+                    Document.created_at,
+                    Document.updated_at,
+                )
+            )
+        )
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
+        result = await session.execute(query)
+        documents = list(result.scalars().all())
+        order = {document_id: index for index, document_id in enumerate(document_ids)}
+        return sorted(documents, key=lambda document: order.get(str(document.id), len(order)))
 
     async def count_documents(
         self,
@@ -85,7 +176,11 @@ class DocumentRepository(BaseRepo[Document]):
         if patient_id is not None:
             query = query.where(Document.patient_id == patient_id)
         if status is not None:
-            query = query.where(Document.status == status)
+            statuses = [item.strip() for item in str(status).split(",") if item.strip()]
+            if len(statuses) > 1:
+                query = query.where(Document.status.in_(statuses))
+            elif statuses:
+                query = query.where(Document.status == statuses[0])
         else:
             query = query.where(Document.status != "deleted")
 

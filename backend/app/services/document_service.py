@@ -18,6 +18,7 @@ from app.services.schema_service import SchemaService
 from app.storage.document_storage import AliyunOssDocumentStorage, DocumentStorage, build_document_storage
 from core.config import config
 from core.db import Transactional, session
+from core.helpers.redis import redis_client
 
 
 def document_user_scope(current_user: CurrentUser | None) -> str | None:
@@ -47,6 +48,16 @@ class DocumentService:
         else:
             self.storage_backend = build_document_storage()
         self.ocr_auto_enqueue = config.DOCUMENT_OCR_AUTO_ENQUEUE if ocr_auto_enqueue is None else ocr_auto_enqueue
+
+    @staticmethod
+    def _archive_cache_key(uploaded_by: str | None) -> str:
+        return f"documents:archive_tree:{uploaded_by or 'all'}"
+
+    async def invalidate_archive_tree_cache(self, uploaded_by: str | None = None) -> None:
+        try:
+            await redis_client.delete(self._archive_cache_key(uploaded_by))
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_optional_uuid(value: str | None) -> str | None:
@@ -108,6 +119,7 @@ class DocumentService:
                 }
             )
             await session.commit()
+            await self.invalidate_archive_tree_cache(uploaded_by)
         except Exception:
             await session.rollback()
             raise
@@ -193,6 +205,10 @@ class DocumentService:
         total = await self.document_repository.count_documents(patient_id=patient_id, status=status, uploaded_by=uploaded_by)
         return documents, total
 
+    async def list_documents_by_ids(self, document_ids: list[str], *, uploaded_by: str | None = None) -> list[Document]:
+        unique_ids = list(dict.fromkeys([str(document_id) for document_id in document_ids if document_id]))
+        return await self.document_repository.list_by_ids_light(unique_ids, uploaded_by=uploaded_by)
+
     @Transactional()
     async def update_document(self, document_id: str, **params: Any) -> Document:
         document = await self.get_document(document_id)
@@ -202,7 +218,9 @@ class DocumentService:
         for key, value in params.items():
             setattr(document, key, value)
         document.updated_at = datetime.utcnow()
-        return await self.document_repository.save(document)
+        document = await self.document_repository.save(document)
+        await self.invalidate_archive_tree_cache(getattr(document, "uploaded_by", None))
+        return document
 
     def _enqueue_ocr_task(self, document_id: str) -> None:
         from app.workers.celery_app import OCR_QUEUE, OCR_TASK_NAME, celery_app
@@ -227,6 +245,7 @@ class DocumentService:
             document.updated_at = datetime.utcnow()
             document = await self.document_repository.save(document)
             await session.commit()
+            await self.invalidate_archive_tree_cache(requested_by)
         except Exception:
             await session.rollback()
             raise
@@ -277,6 +296,7 @@ class DocumentService:
                 ocr_payload_json=payload,
                 archived_at=getattr(latest_document, "archived_at", None) or (datetime.utcnow() if getattr(latest_document, "patient_id", None) else None),
             )
+            await self.invalidate_archive_tree_cache(getattr(completed_document, "uploaded_by", None))
             try:
                 self._enqueue_metadata_task(completed_document.id)
             except Exception:
@@ -302,13 +322,15 @@ class DocumentService:
                 },
                 "errors": [{"message": str(exc), "type": exc.__class__.__name__}],
             }
-            return await self.update_document(
+            failed_document = await self.update_document(
                 document_id,
                 ocr_status="failed",
                 status="archived" if keep_archived else "failed",
                 archived_at=getattr(existing_document, "archived_at", None) if keep_archived and existing_document else None,
                 ocr_payload_json=failed_payload,
             )
+            await self.invalidate_archive_tree_cache(getattr(failed_document, "uploaded_by", None))
+            return failed_document
 
     def _enqueue_metadata_task(self, document_id: str) -> None:
         from app.workers.celery_app import METADATA_QUEUE, METADATA_TASK_NAME, celery_app
@@ -384,7 +406,16 @@ class DocumentService:
         return job.id
 
 
-    async def get_archive_tree(self, *, include_raw_documents: bool = False, uploaded_by: str | None = None) -> dict[str, Any]:
+    async def get_archive_tree(self, *, include_raw_documents: bool = False, refresh: bool = False, uploaded_by: str | None = None) -> dict[str, Any]:
+        cache_key = self._archive_cache_key(uploaded_by)
+        if not include_raw_documents and not refresh:
+            try:
+                cached = await redis_client.get(cache_key)
+                if cached:
+                    return json.loads(cached)
+            except Exception:
+                pass
+
         documents = await self.document_repository.list_visible_documents(uploaded_by=uploaded_by)
         total = len(documents)
         patients = await self.patient_repository.list_all_active(owner_id=uploaded_by)
@@ -454,7 +485,7 @@ class DocumentService:
         parse_total = len([document for document in documents if document.status != "archived" and document.meta_status != "completed"])
         todo_total = sum(group["count"] for group in todo_groups)
         archived_total = len([document for document in documents if document.status == "archived"])
-        return {
+        payload = {
             "total": total,
             "counts": {
                 "parse_total": parse_total,
@@ -464,6 +495,12 @@ class DocumentService:
             "todo_groups": todo_groups,
             "archived_patients": archived_patients,
         }
+        if not include_raw_documents:
+            try:
+                await redis_client.set(cache_key, json.dumps(payload, ensure_ascii=False), ex=300)
+            except Exception:
+                pass
+        return payload
 
     async def get_archive_group_documents(self, group_id: str, *, uploaded_by: str | None = None) -> dict[str, Any]:
         documents = await self.document_repository.list_visible_documents(uploaded_by=uploaded_by)
@@ -539,6 +576,7 @@ class DocumentService:
         document.archived_at = datetime.utcnow()
         document.updated_at = datetime.utcnow()
         document = await self.document_repository.save(document)
+        await self.invalidate_archive_tree_cache(requested_by)
 
         schema_version = await self.schema_service.get_latest_published("ehr")
         if schema_version is not None:
@@ -632,6 +670,8 @@ class DocumentService:
             for job_id in extraction_job_ids:
                 self._enqueue_extraction_task(job_id)
 
+        await self.invalidate_archive_tree_cache(requested_by)
+
         return archived_documents
 
     @Transactional()
@@ -644,7 +684,9 @@ class DocumentService:
         document.status = "uploaded"
         document.archived_at = None
         document.updated_at = datetime.utcnow()
-        return await self.document_repository.save(document)
+        document = await self.document_repository.save(document)
+        await self.invalidate_archive_tree_cache(requested_by)
+        return document
 
     @Transactional()
     async def delete_document(self, document_id: str, *, requested_by: str | None = None) -> None:
@@ -661,6 +703,7 @@ class DocumentService:
         document.status = "deleted"
         document.updated_at = datetime.utcnow()
         await self.document_repository.save(document)
+        await self.invalidate_archive_tree_cache(requested_by)
 
     async def list_patient_documents(self, patient_id: str, *, limit: int = 100, uploaded_by: str | None = None) -> list[Document]:
         return await self.document_repository.list_by_patient(patient_id, limit=limit, uploaded_by=uploaded_by)

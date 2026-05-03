@@ -19,6 +19,10 @@ class Config(BaseSettings):
     DATABASE_URL: str | None = None
     WRITER_DB_URL: str = "mysql+aiomysql://fastapi:fastapi@localhost:3306/fastapi"
     READER_DB_URL: str = "mysql+aiomysql://fastapi:fastapi@localhost:3306/fastapi"
+    DB_POOL_SIZE: int = 1
+    DB_MAX_OVERFLOW: int = 1
+    DB_POOL_TIMEOUT: int = 5
+    DB_POOL_RECYCLE: int = 600
     JWT_SECRET_KEY: str = "fastapi"
     JWT_ALGORITHM: str = "HS256"
     ENABLE_AUTH: bool = False

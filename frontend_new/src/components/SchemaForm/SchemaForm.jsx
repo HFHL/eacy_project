@@ -71,6 +71,20 @@ import { appThemeToken } from '../../styles/themeTokens'
 const { Sider, Content } = Layout
 const { Text, Paragraph } = Typography
 
+const isPdfFileLike = ({ fileType, fileName, fileUrl } = {}) => {
+  const type = String(fileType || '').toLowerCase()
+  const name = String(fileName || '').toLowerCase()
+  const url = String(fileUrl || '').toLowerCase()
+  const cleanUrl = url.split('?')[0].split('#')[0]
+  return (
+    type === 'pdf' ||
+    type === '.pdf' ||
+    type.includes('application/pdf') ||
+    name.endsWith('.pdf') ||
+    cleanUrl.endsWith('.pdf')
+  )
+}
+
 function _resolveFieldAuditFromExtractionMetadata(data, dotPath) {
   if (!dotPath) return null
   const fieldMaps = collectPatientAuditFieldMaps(data)
@@ -731,7 +745,7 @@ const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 4
   const [imgOffset, setImgOffset] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
-  const isPdf = documentInfo?.fileType === 'pdf'
+  const isPdf = isPdfFileLike(documentInfo)
   const effectiveMaxW = Math.max(panelWidth - 32, 200)
   const [pdfPage, setPdfPage] = useState(1)
   const [pdfPageCount, setPdfPageCount] = useState(null)
@@ -1410,16 +1424,21 @@ const SourcePanel = ({
         overflow: 'hidden',
         transition: isDragging ? 'none' : 'box-shadow 0.3s ease'
       }
-  const previewFileUrl = previewUrl && previewFileType === 'pdf'
+  const previewIsPdf = isPdfFileLike({
+    fileType: previewFileType,
+    fileName: displaySource?.source_document_name || displaySource?.file_name || fallbackDoc?.name || fallbackDoc?.fileName,
+    fileUrl: previewUrl,
+  })
+  const previewFileUrl = previewUrl && previewIsPdf
     ? `${previewUrl}${previewUrl.includes('#') ? '&' : '#'}page=${Math.max(0, sourcePageIdx) + 1}`
     : previewUrl
   // 只要是 PDF 且有 sourceDocId，就统一走同源 pdf-stream 接口，便于 PDF.js 渲染
-  const usePdfStream = previewFileType === 'pdf' && sourceDocId
+  const usePdfStream = previewIsPdf && sourceDocId
   const previewDocument = {
     fileName:
       displaySource?.document_type ?? displaySource?.source_document_name ??
       (sourceDocId ? `文档 ${String(sourceDocId).slice(0, 8)}` : '文档预览'),
-    fileType: previewFileType || 'image',
+    fileType: previewFileType || (usePdfStream ? 'pdf' : 'image'),
     fileUrl: usePdfStream ? (previewPdfUrl || getDocumentPdfStreamUrl(sourceDocId)) : (previewFileUrl || null)
   }
   const sourceDocumentName =

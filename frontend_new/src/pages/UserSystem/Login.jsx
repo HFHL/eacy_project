@@ -36,7 +36,8 @@ const Login = () => {
   const dispatch = useDispatch()
   const [registerForm] = Form.useForm()
   const [resetForm] = Form.useForm()
-  const [activeTab, setActiveTab] = useState('wechat') // 'wechat' | 'email'
+  // 默认不加载微信二维码，避免外网不可达/超时导致页面一直转圈
+  const [activeTab, setActiveTab] = useState('email') // 'wechat' | 'email'
   const [qrLoading, setQrLoading] = useState(true)
   const [qrExpired, setQrExpired] = useState(false)
   const [qrUrl, setQrUrl] = useState('')

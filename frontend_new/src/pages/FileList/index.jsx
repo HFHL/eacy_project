@@ -97,10 +97,10 @@ const TASK_STATUS_DISPLAY_CONFIG = {
   extracted: { color: 'processing', text: '解析中' },
   parse_failed: { color: 'error', text: '异常' },
   ai_matching: { color: 'processing', text: '解析中' },
-  pending_confirm_new: { color: 'warning', text: '待归档' },
-  pending_confirm_review: { color: 'warning', text: '待归档' },
-  pending_confirm_uncertain: { color: 'warning', text: '待归档' },
-  auto_archived: { color: 'warning', text: '待归档' },
+  pending_confirm_new: { color: 'warning', text: '元数据抽取完毕' },
+  pending_confirm_review: { color: 'warning', text: '元数据抽取完毕' },
+  pending_confirm_uncertain: { color: 'warning', text: '元数据抽取完毕' },
+  auto_archived: { color: 'warning', text: '元数据抽取完毕' },
   archived: { color: 'success', text: '已归档' },
 }
 
@@ -594,10 +594,10 @@ const getStatusInfoConfig = (record) => {
   if (status === 'extracted') return { semantic: 'processing', text: '抽取完成' }
   if (status === 'parse_failed') return { semantic: 'error', text: '解析/抽取失败' }
   if (status === 'ai_matching') return { semantic: 'processing', text: '匹配中' }
-  if (status === 'pending_confirm_new') return { semantic: 'warning', text: '匹配建议：新建患者' }
-  if (status === 'pending_confirm_review') return { semantic: 'warning', text: '匹配建议：候选' }
-  if (status === 'pending_confirm_uncertain') return { semantic: 'warning', text: '匹配建议：信息不足' }
-  if (status === 'auto_archived') return { semantic: 'warning', text: '匹配建议：高度匹配' }
+  if (status === 'pending_confirm_new') return { semantic: 'warning', text: '待归档' }
+  if (status === 'pending_confirm_review') return { semantic: 'warning', text: '待归档' }
+  if (status === 'pending_confirm_uncertain') return { semantic: 'warning', text: '待归档' }
+  if (status === 'auto_archived') return { semantic: 'warning', text: '待归档' }
   if (status === 'archived') return { semantic: 'success', text: '已绑定' }
   return null
 }
@@ -1200,7 +1200,7 @@ const FileList = () => {
 
         // 加入轮询（包含 uploaded 状态，持续刷新刚上传文件的状态）
         const parsingIds = items
-          .filter((it) => ['uploaded', 'parsing', 'extracted', 'parsed'].includes(it.task_status))
+          .filter((it) => ['uploaded', 'parsing'].includes(it.task_status))
           .map((it) => it.id)
         if (parsingIds.length)
           setPollingParseIds((prev) => {
@@ -1357,7 +1357,7 @@ const FileList = () => {
               const updated = byId.get(item.id)
               return updated ? { ...item, ...updated } : item
             }))
-            const IN_PROGRESS = new Set(['uploaded', 'parsing', 'extracted', 'parsed', 'ai_matching'])
+            const IN_PROGRESS = new Set(['uploaded', 'parsing', 'ai_matching'])
             const completed = items.filter((it) => it.task_status && !IN_PROGRESS.has(it.task_status))
             if (completed.length) {
               setPollingParseIds((prev) => {

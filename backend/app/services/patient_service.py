@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 
 from app.models import Patient
 from app.repositories import DocumentRepository, PatientRepository, ProjectPatientRepository
+from app.services.document_service import DocumentService
 from app.services.ehr_service import EhrService
 from app.services.schema_service import SchemaService
 from core.db import Transactional
@@ -42,6 +43,7 @@ class PatientService:
                     schema_version=schema_version,
                     created_by=created_by,
                 )
+        await DocumentService().invalidate_archive_tree_cache(created_by)
         return patient
 
     async def get_patient(self, patient_id: str, *, owner_id: str | None = None) -> Patient | None:
@@ -75,7 +77,9 @@ class PatientService:
 
         for key, value in params.items():
             setattr(patient, key, value)
-        return await self.patient_repository.save(patient)
+        patient = await self.patient_repository.save(patient)
+        await DocumentService().invalidate_archive_tree_cache(owner_id)
+        return patient
 
     @Transactional()
     async def delete_patient(self, patient_id: str, *, owner_id: str | None = None) -> None:
@@ -86,6 +90,7 @@ class PatientService:
         await self.document_repository.soft_delete_by_patient(patient_id, uploaded_by=owner_id)
         await self.project_patient_repository.withdraw_by_patient(patient_id)
         await self.patient_repository.soft_delete(patient)
+        await DocumentService().invalidate_archive_tree_cache(owner_id)
 
     async def search_patients(self, name: str, *, limit: int = 20, owner_id: str | None = None) -> list[Patient]:
         return await self.patient_repository.search_by_name(name, limit=limit, owner_id=owner_id)

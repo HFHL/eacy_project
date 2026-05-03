@@ -35,6 +35,10 @@ class DocumentArchiveRequest(BaseModel):
     create_extraction_job: bool = True
 
 
+class DocumentStatusesRequest(BaseModel):
+    document_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
 class DocumentBatchArchiveRequest(BaseModel):
     document_ids: list[str] = Field(..., min_length=1)
     patient_id: str
@@ -51,7 +55,7 @@ class DocumentResponse(BaseModel):
     mime_type: str | None = None
     file_size: int | None = None
     storage_provider: str | None = None
-    storage_path: str
+    storage_path: str | None = None
     file_url: str | None = None
     status: str
     ocr_status: str | None = None
@@ -73,11 +77,42 @@ class DocumentResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class DocumentSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    patient_id: str | None = None
+    original_filename: str
+    file_ext: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+    storage_provider: str | None = None
+    storage_path: str | None = None
+    file_url: str | None = None
+    status: str
+    ocr_status: str | None = None
+    meta_status: str | None = None
+    metadata_json: dict[str, Any] | None = None
+    document_metadata_summary: dict[str, Any] | None = None
+    doc_type: str | None = None
+    doc_subtype: str | None = None
+    doc_title: str | None = None
+    effective_at: datetime | None = None
+    uploaded_by: str | None = None
+    archived_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class DocumentListResponse(BaseModel):
-    items: list[DocumentResponse]
+    items: list[DocumentSummaryResponse]
     total: int
     page: int
     page_size: int
+
+
+class DocumentStatusesResponse(BaseModel):
+    items: list[DocumentSummaryResponse]
 
 
 class DocumentBatchArchiveResponse(BaseModel):
@@ -93,7 +128,7 @@ class DocumentArchiveTreeResponse(BaseModel):
 
 
 class DocumentGroupDocumentsResponse(BaseModel):
-    items: list[DocumentResponse]
+    items: list[DocumentSummaryResponse]
     group: dict[str, Any]
     match_info: dict[str, Any]
     pagination: dict[str, Any]
@@ -166,6 +201,17 @@ def document_response(document) -> DocumentResponse:
             "parsed_content": parsed_content,
             "parsed_data": getattr(document, "parsed_data", None) or payload,
             "content_list": build_content_list(payload),
+        }
+    )
+
+
+def document_summary_response(document) -> DocumentSummaryResponse:
+    metadata_json = document.metadata_json if isinstance(document.metadata_json, dict) else None
+    return DocumentSummaryResponse.model_validate(
+        {
+            **document.__dict__,
+            "metadata_json": metadata_json,
+            "document_metadata_summary": build_document_metadata_summary(metadata_json),
         }
     )
 
@@ -260,7 +306,7 @@ async def list_documents(
         status=status_filter,
         uploaded_by=user_scope_id(current_user),
     )
-    return DocumentListResponse(items=[document_response(document) for document in documents], total=total, page=page, page_size=page_size)
+    return DocumentListResponse(items=[document_summary_response(document) for document in documents], total=total, page=page, page_size=page_size)
 
 
 
@@ -271,7 +317,17 @@ async def get_file_list_tree(
     current_user: CurrentUser = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentArchiveTreeResponse:
-    return DocumentArchiveTreeResponse.model_validate(await service.get_archive_tree(uploaded_by=user_scope_id(current_user)))
+    return DocumentArchiveTreeResponse.model_validate(await service.get_archive_tree(refresh=refresh, uploaded_by=user_scope_id(current_user)))
+
+
+@router.post("/statuses", response_model=DocumentStatusesResponse)
+async def get_document_statuses(
+    payload: DocumentStatusesRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentStatusesResponse:
+    documents = await service.list_documents_by_ids(payload.document_ids, uploaded_by=user_scope_id(current_user))
+    return DocumentStatusesResponse(items=[document_summary_response(document) for document in documents])
 
 
 @router.get("/v2/groups/{group_id}/documents", response_model=DocumentGroupDocumentsResponse)
@@ -283,7 +339,7 @@ async def get_group_documents(
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentGroupDocumentsResponse:
     payload = await service.get_archive_group_documents(group_id, uploaded_by=user_scope_id(current_user))
-    items = [document_response(document) for document in payload["items"]]
+    items = [document_summary_response(document) for document in payload["items"]]
     return DocumentGroupDocumentsResponse(
         items=items,
         group=payload["group"],
