@@ -229,7 +229,7 @@ const applyClientFilters = (items = [], params = {}) => {
 
   const wantedStatuses = toArray(params.status ?? params.task_status ?? params.taskStatus)
   if (wantedStatuses.length > 1) {
-    const statusSet = new Set(wantedStatuses.map((status) => TASK_STATUS_ALIAS[status] || status))
+    const statusSet = new Set(wantedStatuses)
     result = result.filter((item) => statusSet.has(item.task_status))
   }
 
