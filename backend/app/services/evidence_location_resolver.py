@@ -64,7 +64,9 @@ def resolve_evidence_locations(
         if not isinstance(evidence, dict):
             continue
         next_evidence = dict(evidence)
-        location = _match_location_by_quote(next_evidence, index, fallback_text=fallback_text)
+        location = _resolve_location(next_evidence, index)
+        if location is None:
+            location = _match_location_by_quote(next_evidence, index, fallback_text=fallback_text)
 
         if location is not None:
             next_evidence["bbox_json"] = location
@@ -93,7 +95,7 @@ def _match_location_by_quote(
     *,
     fallback_text: Any = None,
 ) -> dict[str, Any] | None:
-    queries = _candidate_queries(fallback_text, evidence.get("quote_text"))
+    queries = _candidate_queries(evidence.get("quote_text"), fallback_text)
     if not queries:
         return None
     best: tuple[float, dict[str, Any], str] | None = None
@@ -154,6 +156,8 @@ def _match_threshold(query: str) -> float:
 def _text_match_score(query: str, text: str) -> float:
     if not query or not text:
         return 0.0
+    if query == text:
+        return 1.0
     wildcard_score = _wildcard_match_score(query, text)
     if wildcard_score > 0:
         return wildcard_score

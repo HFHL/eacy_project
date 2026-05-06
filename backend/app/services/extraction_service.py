@@ -774,7 +774,12 @@ class ExtractionService:
         matched_text = evidence.get("source_text") or evidence.get("text")
         if matched_text:
             return self._coerce_evidence_text(matched_text)
-        if evidence.get("bbox_json"):
+        bbox_json = evidence.get("bbox_json")
+        if isinstance(bbox_json, dict):
+            bbox_text = bbox_json.get("source_text") or bbox_json.get("text")
+            if bbox_text:
+                return self._coerce_evidence_text(bbox_text)
+        if bbox_json:
             return self._coerce_evidence_text(
                 evidence.get("quote_text") or field.get("quote_text") or self._field_display_value(field)
             )

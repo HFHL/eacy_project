@@ -327,13 +327,12 @@ class LlmEhrExtractor:
             if not form_path or self._is_empty(record):
                 continue
             confidence = raw_record.get("confidence")
-            quote_text = self._first_quote(raw_record.get("evidences"))
             evidences = self._normalize_evidences(raw_record.get("evidences"))
             if isinstance(record, list):
                 for index, item in enumerate(record):
-                    output.extend(self._flatten_record_node(f"{form_path}.{index}", item, by_path, confidence, quote_text, evidences))
+                    output.extend(self._flatten_record_node(f"{form_path}.{index}", item, by_path, confidence, evidences))
             else:
-                output.extend(self._flatten_record_node(form_path, record, by_path, confidence, quote_text, evidences))
+                output.extend(self._flatten_record_node(form_path, record, by_path, confidence, evidences))
         return output
 
     def _flatten_record_node(
@@ -342,24 +341,25 @@ class LlmEhrExtractor:
         node: Any,
         by_path: dict[str, dict[str, Any]],
         confidence: Any,
-        quote_text: str | None,
         evidences: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         if isinstance(node, dict):
             output: list[dict[str, Any]] = []
             for key, value in node.items():
-                output.extend(self._flatten_record_node(f"{prefix}.{key}", value, by_path, confidence, quote_text, evidences))
+                output.extend(self._flatten_record_node(f"{prefix}.{key}", value, by_path, confidence, evidences))
             return output
         if isinstance(node, list):
             output = []
             for index, item in enumerate(node):
-                output.extend(self._flatten_record_node(f"{prefix}.{index}", item, by_path, confidence, quote_text, evidences))
+                output.extend(self._flatten_record_node(f"{prefix}.{index}", item, by_path, confidence, evidences))
             return output
         if self._is_empty(node):
             return []
         spec = by_path.get(prefix) or self._spec_for_indexed_path(prefix, by_path)
         if spec is None:
             return []
+        field_evidences = self._select_evidences_for_field(field_path=prefix, spec=spec, value=node, evidences=evidences)
+        quote_text = self._first_quote(field_evidences)
         return [
             self._build_field_output(
                 field_path=prefix,
@@ -368,10 +368,55 @@ class LlmEhrExtractor:
                 value_type=str(spec.get("value_type") or "text"),
                 confidence=confidence,
                 quote_text=quote_text,
-                evidences=evidences,
+                evidences=field_evidences,
                 evidence_type="llm_extract",
             )
         ]
+
+    def _select_evidences_for_field(
+        self,
+        *,
+        field_path: str,
+        spec: dict[str, Any],
+        value: Any,
+        evidences: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not evidences:
+            return []
+        matched = [
+            evidence
+            for evidence in evidences
+            if self._evidence_matches_field(field_path=field_path, spec=spec, value=value, evidence=evidence)
+        ]
+        return matched
+
+    def _evidence_matches_field(
+        self,
+        *,
+        field_path: str,
+        spec: dict[str, Any],
+        value: Any,
+        evidence: dict[str, Any],
+    ) -> bool:
+        quote = self._compact_text(evidence.get("quote_text"))
+        if not quote:
+            return False
+
+        value_text = self._compact_text(value)
+        if value_text and value_text in quote:
+            return True
+
+        field_key = self._compact_text(spec.get("field_key") or field_path.split(".")[-1])
+        field_title = self._compact_text(spec.get("field_title"))
+        if field_key and field_key in quote:
+            return True
+        if field_title and field_title in quote:
+            return True
+
+        return False
+
+    def _compact_text(self, value: Any) -> str:
+        return "".join(str(value or "").split())
 
     def _spec_for_indexed_path(self, field_path: str, by_path: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
         parts = field_path.split(".")

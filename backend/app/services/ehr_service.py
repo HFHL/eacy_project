@@ -99,11 +99,19 @@ class EhrService:
             events = await self.event_repository.list_by_field(context_id=context.id, field_path=query_path)
             if events:
                 evidences = await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
-                evidence_by_event_id: dict[str, FieldValueEvidence] = {}
+                evidences_by_event_id: dict[str, list[FieldValueEvidence]] = {}
                 for evidence in evidences:
-                    evidence_by_event_id.setdefault(evidence.value_event_id, evidence)
+                    evidences_by_event_id.setdefault(evidence.value_event_id, []).append(evidence)
                 for event in events:
-                    evidence = evidence_by_event_id.get(event.id)
+                    event_evidences = evidences_by_event_id.get(event.id, [])
+                    relevant_evidences = self._relevant_evidences_for_field(
+                        event_evidences,
+                        field_path=event.field_path,
+                        field_key=event.field_key,
+                        field_title=event.field_title,
+                        value=self._event_display_value(event),
+                    )
+                    evidence = relevant_evidences[0] if relevant_evidences else None
                     if evidence is not None:
                         setattr(event, "source_page", evidence.page_no)
                         setattr(event, "source_text", evidence.quote_text)
@@ -121,16 +129,24 @@ class EhrService:
         current_values = await self.current_repository.list_by_context(context.id)
         current = next((value for value in current_values if value.field_path == query_path), None)
         evidences = await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
-        evidence_by_event_id: dict[str, FieldValueEvidence] = {}
+        evidences_by_event_id: dict[str, list[FieldValueEvidence]] = {}
         for evidence in evidences:
-            evidence_by_event_id.setdefault(evidence.value_event_id, evidence)
+            evidences_by_event_id.setdefault(evidence.value_event_id, []).append(evidence)
 
         candidates = []
         distinct_values: set[str] = set()
         for event in events:
             value = self._event_display_value(event)
             distinct_values.add(str(value))
-            evidence = evidence_by_event_id.get(event.id)
+            event_evidences = evidences_by_event_id.get(event.id, [])
+            relevant_evidences = self._relevant_evidences_for_field(
+                event_evidences,
+                field_path=event.field_path,
+                field_key=event.field_key,
+                field_title=event.field_title,
+                value=value,
+            )
+            evidence = relevant_evidences[0] if relevant_evidences else None
             candidates.append(
                 {
                     "id": event.id,
@@ -181,6 +197,17 @@ class EhrService:
     async def list_field_evidence(self, *, patient_id: str, field_path: str) -> list[FieldValueEvidence]:
         context = await self._get_patient_context_or_404(patient_id)
         query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
+        current_values = await self.current_repository.list_by_context(context.id)
+        current = next((value for value in current_values if value.field_path == query_path), None)
+        if current is not None and current.selected_event_id:
+            evidences = await self.evidence_repository.list_by_event(current.selected_event_id)
+            return self._relevant_evidences_for_field(
+                evidences,
+                field_path=current.field_path,
+                field_key=current.field_key,
+                field_title=None,
+                value=self._current_display_value(current),
+            )
         return await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
 
     def _source_location_from_evidence(self, evidence: FieldValueEvidence) -> dict[str, Any] | list[Any] | None:
@@ -193,6 +220,51 @@ class EhrService:
                 next_location["position"] = next_location["polygon"]
             return next_location
         return location
+
+    def _relevant_evidences_for_field(
+        self,
+        evidences: list[FieldValueEvidence],
+        *,
+        field_path: str,
+        field_key: str | None,
+        field_title: str | None,
+        value: Any,
+    ) -> list[FieldValueEvidence]:
+        return [
+            evidence
+            for evidence in evidences
+            if self._evidence_matches_field(
+                evidence,
+                field_path=field_path,
+                field_key=field_key,
+                field_title=field_title,
+                value=value,
+            )
+        ]
+
+    def _evidence_matches_field(
+        self,
+        evidence: FieldValueEvidence,
+        *,
+        field_path: str,
+        field_key: str | None,
+        field_title: str | None,
+        value: Any,
+    ) -> bool:
+        quote = self._compact_text(evidence.quote_text)
+        if not quote:
+            return False
+        value_text = self._compact_text(value)
+        if value_text and value_text in quote:
+            return True
+        for candidate in (field_key, field_title, str(field_path or "").split(".")[-1]):
+            text = self._compact_text(candidate)
+            if text and text in quote:
+                return True
+        return False
+
+    def _compact_text(self, value: Any) -> str:
+        return "".join(str(value or "").split())
 
     @Transactional()
     async def manual_update_field(

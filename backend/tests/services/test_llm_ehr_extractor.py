@@ -67,6 +67,57 @@ def test_llm_ehr_extractor_normalizes_records_to_flat_fields():
     ]
 
 
+def test_llm_ehr_extractor_does_not_share_record_evidences_across_unrelated_fields():
+    extractor = LlmEhrExtractor()
+    state = {
+        "document_id": "document-1",
+        "field_specs": [
+            {
+                "field_key": "患者姓名",
+                "field_path": "基本信息.人口学情况.身份信息.患者姓名",
+                "field_title": "患者姓名",
+                "value_type": "text",
+                "record_form_key": "基本信息.人口学情况",
+            },
+            {
+                "field_key": "婚姻状况",
+                "field_path": "基本信息.人口学情况.人口统计学.婚姻状况",
+                "field_title": "婚姻状况",
+                "value_type": "text",
+                "record_form_key": "基本信息.人口学情况",
+            },
+        ],
+        "raw_output": {
+            "records": [
+                {
+                    "form_path": "基本信息.人口学情况",
+                    "record": {
+                        "身份信息": {"患者姓名": "胡世涛"},
+                        "人口统计学": {"婚姻状况": "已婚"},
+                    },
+                    "confidence": 1.0,
+                    "evidences": [
+                        {"source_type": "block", "source_id": "b4", "quote_text": "姓名：胡世涛", "page_no": 1},
+                        {"source_type": "block", "source_id": "b9", "quote_text": "已婚", "page_no": 1},
+                    ],
+                }
+            ]
+        },
+    }
+
+    result = extractor._node_normalize(state)
+    fields_by_path = {field["field_path"]: field for field in result["fields_output"]}
+
+    name_field = fields_by_path["基本信息.人口学情况.身份信息.患者姓名"]
+    marriage_field = fields_by_path["基本信息.人口学情况.人口统计学.婚姻状况"]
+    assert name_field["value_text"] == "胡世涛"
+    assert name_field["quote_text"] == "姓名：胡世涛"
+    assert name_field["evidences"] == [{"source_type": "block", "source_id": "b4", "quote_text": "姓名：胡世涛", "page_no": 1}]
+    assert marriage_field["value_text"] == "已婚"
+    assert marriage_field["quote_text"] == "已婚"
+    assert marriage_field["evidences"] == [{"source_type": "block", "source_id": "b9", "quote_text": "已婚", "page_no": 1}]
+
+
 def test_llm_ehr_extractor_builds_current_design_prompt():
     extractor = LlmEhrExtractor()
     fields = [
