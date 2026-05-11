@@ -229,8 +229,14 @@ const applyClientFilters = (items = [], params = {}) => {
 
   const wantedStatuses = toArray(params.status ?? params.task_status ?? params.taskStatus)
   if (wantedStatuses.length > 1) {
-    const statusSet = new Set(wantedStatuses)
-    result = result.filter((item) => statusSet.has(item.task_status))
+    const statusSet = new Set(
+      wantedStatuses.flatMap((status) => [status, TASK_STATUS_ALIAS[status] || status])
+    )
+    result = result.filter((item) => (
+      [item.task_status, item.taskStatus, item.status]
+        .filter(Boolean)
+        .some((status) => statusSet.has(status) || statusSet.has(TASK_STATUS_ALIAS[status] || status))
+    ))
   }
 
   const documentTypes = toArray(params.document_types ?? params.document_type)

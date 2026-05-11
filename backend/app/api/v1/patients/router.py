@@ -203,6 +203,7 @@ class EhrResponse(BaseModel):
 
 
 class EhrFolderUpdateResponse(BaseModel):
+    batch_id: str | None = None
     patient_id: str
     documents_total: int
     eligible_documents: int

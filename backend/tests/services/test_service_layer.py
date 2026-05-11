@@ -292,6 +292,38 @@ async def test_extraction_service_writes_mock_output_to_structured_values():
 
 
 @pytest.mark.asyncio
+async def test_extraction_service_reuses_sibling_location_for_derived_enum_evidence():
+    service = ExtractionService(value_service=FakeExtractionValueService())
+    record = SimpleNamespace(id="record-1")
+    field_entries = [
+        {
+            "field": {"field_path": "治疗情况.药物治疗.药物名称"},
+            "record": record,
+            "evidences": [
+                {
+                    "quote_text": "左乙拉西坦",
+                    "page_no": 1,
+                    "bbox_json": {"polygon": [10, 20, 110, 20, 110, 50, 10, 50]},
+                }
+            ],
+        },
+        {
+            "field": {"field_path": "治疗情况.药物治疗.药物类型"},
+            "record": record,
+            "evidences": [{"quote_text": "神经系统药物", "page_no": None, "bbox_json": None}],
+        },
+    ]
+
+    service._apply_sibling_evidence_fallback(field_entries)
+
+    evidence = field_entries[1]["evidences"][0]
+    assert evidence["quote_text"] == "神经系统药物"
+    assert evidence["page_no"] == 1
+    assert evidence["bbox_json"]["polygon"] == [10, 20, 110, 20, 110, 50, 10, 50]
+    assert evidence["bbox_json"]["fallback_strategy"] == "sibling_field_location"
+
+
+@pytest.mark.asyncio
 async def test_research_project_service_enrollment_creates_crf_context_and_records():
     project_patient_repository = FakeProjectPatientRepository()
     context_repository = FakeContextRepository()

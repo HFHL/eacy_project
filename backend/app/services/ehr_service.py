@@ -90,7 +90,7 @@ class EhrService:
             "context": context,
             "schema": schema_version.schema_json,
             "records": records,
-            "current_values": {value.field_path: value for value in current_values},
+            "current_values": self._current_values_by_display_path(current_values, schema_version.schema_json),
         }
 
     async def list_field_events(self, *, patient_id: str, field_path: str) -> list[FieldValueEvent]:
@@ -265,6 +265,62 @@ class EhrService:
 
     def _compact_text(self, value: Any) -> str:
         return "".join(str(value or "").split())
+
+    def _current_values_by_display_path(
+        self,
+        current_values: list[FieldCurrentValue],
+        schema_json: dict[str, Any] | None,
+    ) -> dict[str, FieldCurrentValue]:
+        output: dict[str, FieldCurrentValue] = {}
+        original_paths: dict[str, str] = {}
+        for value in current_values:
+            display_path = self._schema_display_path(value.field_path, schema_json)
+            existing_path = original_paths.get(display_path)
+            if existing_path is not None and self._path_has_index(existing_path) and not self._path_has_index(value.field_path):
+                continue
+            output[display_path] = value
+            original_paths[display_path] = value.field_path
+        return output
+
+    def _schema_display_path(self, field_path: str, schema_json: dict[str, Any] | None) -> str:
+        if not isinstance(schema_json, dict):
+            return field_path
+        parts = [part for part in str(field_path or "").split(".") if part]
+        if not parts:
+            return field_path
+        output: list[str] = []
+        schema_node: Any = schema_json
+        index = 0
+        while index < len(parts):
+            if self._is_schema_array_record(schema_node):
+                part = parts[index]
+                if part.isdigit():
+                    output.append(part)
+                    index += 1
+                else:
+                    output.append("0")
+                schema_node = (schema_node.get("items") or {}) if isinstance(schema_node, dict) else {}
+                continue
+
+            part = parts[index]
+            output.append(part)
+            schema_node = (
+                (schema_node.get("properties") or {}).get(part)
+                if isinstance(schema_node, dict) and isinstance(schema_node.get("properties"), dict)
+                else None
+            )
+            index += 1
+        return ".".join(output)
+
+    def _is_schema_array_record(self, schema_node: Any) -> bool:
+        return (
+            isinstance(schema_node, dict)
+            and schema_node.get("type") == "array"
+            and isinstance((schema_node.get("items") or {}).get("properties"), dict)
+        )
+
+    def _path_has_index(self, field_path: str) -> bool:
+        return any(part.isdigit() for part in str(field_path or "").split("."))
 
     @Transactional()
     async def manual_update_field(

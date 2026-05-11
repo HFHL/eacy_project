@@ -6,7 +6,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Row, Col, Button, Space, Empty, Spin, Typography, Modal, List, Avatar, Progress, Alert, Descriptions, Divider, Tag, Input, message, Card } from 'antd'
 import { UploadOutlined, PlayCircleOutlined, FileTextOutlined, TeamOutlined, EyeOutlined, CheckOutlined, UserAddOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons'
 import { getDocumentAiMatchInfo, changeArchivePatient, archiveDocument } from '../../../../api/document'
-import { getPatientList, updatePatientEhrFolder } from '../../../../api/patient'
+import { getPatientList, getTaskBatchProgress, updatePatientEhrFolder } from '../../../../api/patient'
 import { appThemeToken } from '../../../../styles/themeTokens'
 
 // 导入新组件
@@ -47,6 +47,7 @@ const DocumentsTab = ({
   const [archivingLoading, setArchivingLoading] = useState(false)
   const [matchInfoLoading, setMatchInfoLoading] = useState(false)
   const [updatingEhrFolder, setUpdatingEhrFolder] = useState(false)
+  const [ehrFolderBatch, setEhrFolderBatch] = useState(null)
   /** 患者匹配弹窗模式：archive=未绑定文档选择患者归档，change=已归档文档更换患者 */
   const [matchModalMode, setMatchModalMode] = useState('change')
   
@@ -55,6 +56,7 @@ const DocumentsTab = ({
   const searchVersionRef = useRef(0)
   const detailModalRef = useRef(null)
   const listScrollContainerRef = useRef(null) // 列表独立滚动容器，刷新时保留其 scrollTop
+  const ehrFolderPollTimerRef = useRef(null)
   
   // 使用文档筛选Hook
   const {
@@ -228,13 +230,55 @@ const DocumentsTab = ({
     window.open(`/document/ocr-viewer/${documentId}`, '_blank')
   }
 
+  const stopEhrFolderPolling = () => {
+    if (ehrFolderPollTimerRef.current) {
+      clearTimeout(ehrFolderPollTimerRef.current)
+      ehrFolderPollTimerRef.current = null
+    }
+  }
+
+  const isTerminalBatchStatus = (status) => ['succeeded', 'completed', 'completed_with_errors', 'failed', 'cancelled'].includes(status)
+
+  const pollEhrFolderBatch = async (batchId) => {
+    if (!batchId) return
+    stopEhrFolderPolling()
+    try {
+      const response = await getTaskBatchProgress(batchId)
+      const batch = response?.data || response
+      setEhrFolderBatch(batch)
+      localStorage.setItem(`eacy_ehr_folder_batch_${patientId}`, batchId)
+      if (isTerminalBatchStatus(batch?.status)) {
+        setUpdatingEhrFolder(false)
+        if (batch?.status === 'succeeded' || batch?.status === 'completed') {
+          message.success('电子病历夹更新完成')
+        } else if (batch?.status === 'completed_with_errors') {
+          message.warning(`电子病历夹更新完成，失败 ${batch.failed_items || 0} 个任务`)
+        } else if (batch?.status === 'failed') {
+          message.error('电子病历夹更新失败')
+        }
+        onRefresh?.()
+        return
+      }
+      ehrFolderPollTimerRef.current = setTimeout(() => pollEhrFolderBatch(batchId), 2500)
+    } catch (error) {
+      setUpdatingEhrFolder(false)
+      console.error('查询电子病历夹更新进度失败:', error)
+    }
+  }
+
   const handleUpdateEhrFolder = async () => {
     if (!patientId || updatingEhrFolder) return
     setUpdatingEhrFolder(true)
     try {
       const response = await updatePatientEhrFolder(patientId)
       message.success(response?.message || '已提交电子病历夹更新任务')
-      onRefresh?.()
+      const batchId = response?.data?.batch_id || response?.data?.task_id
+      if (batchId) {
+        setEhrFolderBatch({ batch_id: batchId, status: 'queued', progress: 5, message: response?.data?.message })
+        pollEhrFolderBatch(batchId)
+      } else {
+        onRefresh?.()
+      }
     } catch (error) {
       message.error(error?.message || '更新电子病历夹失败')
     } finally {
@@ -429,10 +473,17 @@ const DocumentsTab = ({
 
   // 组件卸载时清理定时器
   useEffect(() => {
+    const savedBatchId = patientId ? localStorage.getItem(`eacy_ehr_folder_batch_${patientId}`) : ''
+    if (savedBatchId) pollEhrFolderBatch(savedBatchId)
+  }, [patientId])
+
+  // 组件卸载时清理定时器
+  useEffect(() => {
     return () => {
       if (searchTimerRef.current) {
         clearTimeout(searchTimerRef.current)
       }
+      stopEhrFolderPolling()
     }
   }, [])
 
@@ -481,6 +532,54 @@ const DocumentsTab = ({
           </Col>
         </Row>
       </div> */}
+
+      {ehrFolderBatch ? (
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Row justify="space-between" align="middle">
+              <Col>
+                <Space>
+                  <Text strong>电子病历夹更新</Text>
+                  <Tag color={isTerminalBatchStatus(ehrFolderBatch.status) ? (ehrFolderBatch.failed_items ? 'orange' : 'green') : 'blue'}>
+                    {ehrFolderBatch.status || 'queued'}
+                  </Tag>
+                </Space>
+              </Col>
+              <Col>
+                <Text type="secondary">
+                  {(ehrFolderBatch.succeeded_items || 0)}/{ehrFolderBatch.total_items || 0}
+                  {ehrFolderBatch.failed_items ? ` · 失败 ${ehrFolderBatch.failed_items}` : ''}
+                </Text>
+              </Col>
+            </Row>
+            <Progress
+              percent={Math.min(100, Math.max(0, Number(ehrFolderBatch.progress || 0)))}
+              status={ehrFolderBatch.failed_items ? 'exception' : (isTerminalBatchStatus(ehrFolderBatch.status) ? 'success' : 'active')}
+            />
+            <Text type="secondary">{ehrFolderBatch.message || '后台正在更新电子病历夹'}</Text>
+            {Array.isArray(ehrFolderBatch.items) && ehrFolderBatch.items.length > 0 ? (
+              <List
+                size="small"
+                dataSource={ehrFolderBatch.items.slice(0, 5)}
+                renderItem={(item) => (
+                  <List.Item>
+                    <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                      <Text ellipsis style={{ maxWidth: 420 }}>
+                        {item.target_form_key || item.document_id || item.extraction_job_id}
+                      </Text>
+                      <Space>
+                        <Text type="secondary">{item.stage_label || item.status}</Text>
+                        <Progress size="small" percent={Math.min(100, Math.max(0, Number(item.progress || 0)))} style={{ width: 120 }} />
+                      </Space>
+                    </Space>
+                    {item.error_message ? <Alert type="error" showIcon message={item.error_message} style={{ marginTop: 8 }} /> : null}
+                  </List.Item>
+                )}
+              />
+            ) : null}
+          </Space>
+        </Card>
+      ) : null}
 
       {/* 搜索筛选和操作按钮区域 */}
       <div className="documents-header" style={{ marginBottom: 24 }}>

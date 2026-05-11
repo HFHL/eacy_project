@@ -1,0 +1,20 @@
+[Unit]
+Description=EACY Celery OCR worker
+After=network-online.target redis-server.service eacy-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/eacy/eacy_project/backend
+EnvironmentFile=/data/eacy/eacy_project/.env
+Environment=ENV=prod
+Environment=DEBUG=false
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/env CELERY_BROKER_URL=redis://127.0.0.1:6379/11 CELERY_BACKEND_URL=redis://127.0.0.1:6379/12 CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/12 /data/eacy/eacy_project/backend/.venv/bin/celery -A app.workers.celery_app.celery_app worker -Q ocr --loglevel=info --concurrency=1 --max-tasks-per-child=20 -n eacy-ocr@%%h
+Restart=always
+RestartSec=10
+TimeoutStopSec=60
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

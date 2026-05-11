@@ -14,6 +14,7 @@ from app.services.llm_ehr_extractor import LlmEhrExtractor
 from app.services.schema_field_planner import plan_schema_fields
 from app.services.simple_ehr_extractor import SimpleEhrExtractor
 from app.services.structured_value_service import StructuredValueService
+from app.services.task_progress_service import TaskProgressService
 from core.config import config
 from core.db import Transactional, session
 
@@ -89,6 +90,7 @@ class ExtractionService:
         ehr_extractor: SimpleEhrExtractor | None = None,
         llm_ehr_extractor: LlmEhrExtractor | None = None,
         extraction_planner: ExtractionPlanner | None = None,
+        task_progress_service: TaskProgressService | None = None,
     ):
         self.job_repository = job_repository or ExtractionJobRepository()
         self.run_repository = run_repository or ExtractionRunRepository()
@@ -100,6 +102,7 @@ class ExtractionService:
         self.ehr_extractor = ehr_extractor or SimpleEhrExtractor()
         self.llm_ehr_extractor = llm_ehr_extractor or LlmEhrExtractor()
         self.extraction_planner = extraction_planner or ExtractionPlanner()
+        self.task_progress_service = task_progress_service or TaskProgressService()
 
     async def create_job(self, *, job_type: str, **params: Any) -> ExtractionJob:
         return await self.job_repository.create({"job_type": job_type, "status": "pending", **params})
@@ -141,7 +144,7 @@ class ExtractionService:
             await self.job_repository.save(job)
             await self._commit_pending_jobs_before_enqueue()
             await session.refresh(job)
-            self._enqueue_extraction_task(job.id)
+            await self._enqueue_extraction_task(job.id)
             return job
         return await self._process_job(job=job, input_snapshot_extra={}, raise_on_failure=True)
 
@@ -196,6 +199,13 @@ class ExtractionService:
         return jobs
 
     async def update_patient_ehr_folder(self, *, patient_id: str, requested_by: str | None = None) -> dict[str, Any]:
+        batch = await self.task_progress_service.create_batch(
+            task_type="patient_ehr_folder_extract",
+            title="更新电子病历夹",
+            scope_type="patient",
+            patient_id=patient_id,
+            requested_by=requested_by,
+        )
         ehr = await self.ehr_service.get_patient_ehr(patient_id, created_by=requested_by)
         context = ehr.get("context")
         schema_json = ehr.get("schema")
@@ -248,11 +258,21 @@ class ExtractionService:
                 )
 
         if jobs:
+            for job in jobs:
+                await self.task_progress_service.create_item_for_job(
+                    batch_id=batch.id,
+                    task_type=self._task_type_for_job(job),
+                    job=job,
+                )
             await self._commit_pending_jobs_before_enqueue()
             for job in jobs:
-                self._enqueue_extraction_task(job.id)
+                await self._enqueue_extraction_task(job.id)
+        else:
+            await self.task_progress_service.aggregate_batch(batch.id)
+            await session.commit()
 
         return {
+            "batch_id": batch.id,
             "patient_id": patient_id,
             "documents_total": len(documents),
             "eligible_documents": len(eligible_documents),
@@ -273,6 +293,14 @@ class ExtractionService:
         project_patient_id: str,
         requested_by: str | None = None,
     ) -> dict[str, Any]:
+        batch = await self.task_progress_service.create_batch(
+            task_type="project_crf_folder_extract",
+            title="更新项目 CRF",
+            scope_type="project_patient",
+            project_id=project_id,
+            project_patient_id=project_patient_id,
+            requested_by=requested_by,
+        )
         from app.services.research_project_service import ResearchProjectConflictError, ResearchProjectNotFoundError, ResearchProjectService
 
         try:
@@ -344,11 +372,27 @@ class ExtractionService:
                 )
 
         if jobs:
+            if batch.patient_id is None:
+                batch.patient_id = patient_id
+                await self.task_progress_service.batch_repository.save(batch)
+            for job in jobs:
+                await self.task_progress_service.create_item_for_job(
+                    batch_id=batch.id,
+                    task_type=self._task_type_for_job(job),
+                    job=job,
+                )
             await self._commit_pending_jobs_before_enqueue()
             for job in jobs:
-                self._enqueue_extraction_task(job.id)
+                await self._enqueue_extraction_task(job.id)
+        else:
+            if batch.patient_id is None:
+                batch.patient_id = patient_id
+                await self.task_progress_service.batch_repository.save(batch)
+            await self.task_progress_service.aggregate_batch(batch.id)
+            await session.commit()
 
         return {
+            "batch_id": batch.id,
             "project_id": project_id,
             "project_patient_id": project_patient_id,
             "patient_id": patient_id,
@@ -375,15 +419,20 @@ class ExtractionService:
         await self.job_repository.save(job)
         return job
 
-    def _enqueue_extraction_task(self, job_id: str) -> None:
+    async def _enqueue_extraction_task(self, job_id: str) -> None:
         from app.workers.celery_app import EXTRACTION_QUEUE, EXTRACTION_TASK_NAME, celery_app
 
-        celery_app.send_task(
+        result = celery_app.send_task(
             EXTRACTION_TASK_NAME,
             args=[job_id],
             queue=EXTRACTION_QUEUE,
             routing_key=EXTRACTION_QUEUE,
         )
+        job = await self.get_job(job_id)
+        if job is not None:
+            job.progress = max(int(job.progress or 0), 5)
+            await self.job_repository.save(job)
+        await self.task_progress_service.mark_job_queued(job_id, celery_task_id=getattr(result, "id", None), commit=True)
 
     async def _commit_pending_jobs_before_enqueue(self) -> None:
         try:
@@ -476,11 +525,21 @@ class ExtractionService:
             prompt_version = "langgraph-ehr-json-v1"
 
         job.status = "running"
-        job.progress = 0
+        job.progress = 10
         job.error_message = None
         job.started_at = datetime.utcnow()
         job.finished_at = None
         await self.job_repository.save(job)
+        await self.task_progress_service.update_job_progress(
+            job,
+            status="running",
+            progress=10,
+            stage="worker_started",
+            stage_label="Worker 已启动",
+            message="后台任务已开始执行",
+            current_step=1,
+            commit=True,
+        )
 
         run = await self.start_run(
             job_id=job.id,
@@ -489,11 +548,67 @@ class ExtractionService:
             prompt_version=prompt_version,
             input_snapshot_json={"job_type": job.job_type, "input_json": job.input_json, **input_snapshot_extra},
         )
+        job.progress = 20
+        await self.job_repository.save(job)
+        await self.task_progress_service.update_job_progress(
+            job,
+            progress=20,
+            stage="load_context",
+            stage_label="读取上下文",
+            message="正在读取患者、项目和模板上下文",
+            extraction_run_id=run.id,
+            current_step=2,
+            commit=True,
+        )
         try:
+            job.progress = 30
+            await self.job_repository.save(job)
+            await self.task_progress_service.update_job_progress(
+                job,
+                progress=30,
+                stage="load_document",
+                stage_label="读取文档内容",
+                message="正在读取文档和抽取输入",
+                current_step=3,
+                commit=True,
+            )
+            job.progress = 45
+            await self.job_repository.save(job)
+            await self.task_progress_service.update_job_progress(
+                job,
+                progress=45,
+                stage="call_extractor",
+                stage_label="AI 抽取中",
+                message="正在执行结构化抽取",
+                current_step=4,
+                commit=True,
+            )
             output = await self._extract(job=job)
+            job.progress = 65
+            await self.job_repository.save(job)
+            await self.task_progress_service.update_job_progress(
+                job,
+                progress=65,
+                stage="validate_output",
+                stage_label="校验抽取结果",
+                message="正在校验和规范化抽取结果",
+                current_step=5,
+                commit=True,
+            )
             run.raw_output_json = output.get("raw_output") if isinstance(output, dict) and "raw_output" in output else output
             run.parsed_output_json = self._build_parsed_output(output)
             run.validation_status = run.parsed_output_json.get("validation_status") or "valid"
+            job.progress = 90
+            await self.job_repository.save(job)
+            await self.task_progress_service.update_job_progress(
+                job,
+                progress=90,
+                stage="persist_values",
+                stage_label="写入候选值",
+                message="正在写入抽取结果和证据",
+                current_step=6,
+                commit=True,
+            )
             await self._write_extracted_values(job=job, run=run, parsed_output=output)
 
             finished_at = datetime.utcnow()
@@ -505,6 +620,7 @@ class ExtractionService:
             job.progress = 100
             job.finished_at = finished_at
             await self.job_repository.save(job)
+            await self.task_progress_service.mark_job_succeeded(job)
             return job
         except Exception as error:
             await session.rollback()
@@ -528,6 +644,7 @@ class ExtractionService:
         job.error_message = error_message
         job.finished_at = finished_at
         await self.job_repository.save(job)
+        await self.task_progress_service.mark_job_failed(job, error_message=error_message)
         await session.commit()
 
     def _build_parsed_output(self, output: dict[str, Any]) -> dict[str, Any]:
@@ -680,6 +797,13 @@ class ExtractionService:
             return [str(item) for item in value if item is not None]
         return [str(value)]
 
+    def _task_type_for_job(self, job: ExtractionJob) -> str:
+        if job.job_type == "project_crf":
+            return "project_crf_targeted_extract" if job.target_form_key else "project_crf_folder_extract"
+        if job.job_type == "targeted_schema":
+            return "patient_ehr_targeted_extract"
+        return "patient_ehr_targeted_extract" if job.target_form_key else "patient_ehr_folder_extract"
+
     def _use_llm_ehr_extractor(self) -> bool:
         return str(config.EACY_EXTRACTION_STRATEGY).lower() in {"llm", "langgraph", "multi_agent"}
 
@@ -705,6 +829,7 @@ class ExtractionService:
         if job.document_id is not None:
             source_document = await self.document_repository.get_visible_by_id(job.document_id)
 
+        field_entries: list[dict[str, Any]] = []
         for field in parsed_output.get("fields", []):
             field_path = field["field_path"]
             field_key = field.get("field_key") or field_path.split(".")[-1]
@@ -713,48 +838,30 @@ class ExtractionService:
                 records_by_form=records_by_form,
                 default_record=default_record,
             )
-            evidences = []
-            if job.document_id is not None:
-                field_evidences = field.get("evidences") if isinstance(field.get("evidences"), list) else []
-                if field_evidences:
-                    resolved_field_evidences = resolve_evidence_locations(source_document, field_evidences, fallback_text=self._field_display_value(field))
-                    for evidence in resolved_field_evidences:
-                        if not isinstance(evidence, dict):
-                            continue
-                        evidences.append(
-                            {
-                                "document_id": job.document_id,
-                                "evidence_type": field.get("evidence_type") or "document_text",
-                                "quote_text": self._resolved_evidence_quote(evidence=evidence, field=field),
-                                "evidence_score": field.get("confidence"),
-                                "page_no": evidence.get("page_no"),
-                                "bbox_json": evidence.get("bbox_json"),
-                                "start_offset": evidence.get("start_offset"),
-                                "end_offset": evidence.get("end_offset"),
-                            }
-                        )
-                else:
-                    resolved_field_evidences = resolve_evidence_locations(
-                        source_document,
-                        [{"quote_text": field.get("quote_text") or self._field_display_value(field)}],
-                        fallback_text=self._field_display_value(field),
-                    )
-                    resolved_evidence = resolved_field_evidences[0] if resolved_field_evidences else {}
-                    evidences.append(
-                        {
-                            "document_id": job.document_id,
-                            "evidence_type": field.get("evidence_type") or "document_text",
-                            "quote_text": self._resolved_evidence_quote(evidence=resolved_evidence, field=field),
-                            "evidence_score": field.get("confidence"),
-                            "page_no": resolved_evidence.get("page_no"),
-                            "bbox_json": resolved_evidence.get("bbox_json"),
-                        }
-                    )
+            evidences = self._build_field_evidences(
+                field=field,
+                document_id=job.document_id,
+                source_document=source_document,
+            )
+            field_entries.append(
+                {
+                    "field": field,
+                    "field_key": field_key,
+                    "record": record,
+                    "evidences": evidences,
+                }
+            )
+
+        self._apply_sibling_evidence_fallback(field_entries)
+
+        for entry in field_entries:
+            field = entry["field"]
+            record = entry["record"]
             await self.value_service.record_ai_extracted_value(
                 context_id=job.context_id,
                 record_instance_id=field.get("record_instance_id") or record.id,
-                field_key=field_key,
-                field_path=field_path,
+                field_key=entry["field_key"],
+                field_path=field["field_path"],
                 field_title=field.get("field_title"),
                 value_type=field.get("value_type", "text"),
                 value_text=field.get("value_text"),
@@ -767,8 +874,112 @@ class ExtractionService:
                 confidence=field.get("confidence"),
                 extraction_run_id=run.id,
                 source_document_id=job.document_id,
-                evidences=evidences,
+                evidences=entry["evidences"],
             )
+
+    def _build_field_evidences(
+        self,
+        *,
+        field: dict[str, Any],
+        document_id: str | None,
+        source_document: Document | None,
+    ) -> list[dict[str, Any]]:
+        if document_id is None:
+            return []
+
+        evidences: list[dict[str, Any]] = []
+        field_evidences = field.get("evidences") if isinstance(field.get("evidences"), list) else []
+        if field_evidences:
+            resolved_field_evidences = resolve_evidence_locations(
+                source_document,
+                field_evidences,
+                fallback_text=self._field_display_value(field),
+            )
+            for evidence in resolved_field_evidences:
+                if not isinstance(evidence, dict):
+                    continue
+                evidences.append(
+                    {
+                        "document_id": document_id,
+                        "evidence_type": field.get("evidence_type") or "document_text",
+                        "quote_text": self._resolved_evidence_quote(evidence=evidence, field=field),
+                        "evidence_score": field.get("confidence"),
+                        "page_no": evidence.get("page_no"),
+                        "bbox_json": evidence.get("bbox_json"),
+                        "start_offset": evidence.get("start_offset"),
+                        "end_offset": evidence.get("end_offset"),
+                    }
+                )
+            return evidences
+
+        resolved_field_evidences = resolve_evidence_locations(
+            source_document,
+            [{"quote_text": field.get("quote_text") or self._field_display_value(field)}],
+            fallback_text=self._field_display_value(field),
+        )
+        resolved_evidence = resolved_field_evidences[0] if resolved_field_evidences else {}
+        return [
+            {
+                "document_id": document_id,
+                "evidence_type": field.get("evidence_type") or "document_text",
+                "quote_text": self._resolved_evidence_quote(evidence=resolved_evidence, field=field),
+                "evidence_score": field.get("confidence"),
+                "page_no": resolved_evidence.get("page_no"),
+                "bbox_json": resolved_evidence.get("bbox_json"),
+            }
+        ]
+
+    def _apply_sibling_evidence_fallback(self, field_entries: list[dict[str, Any]]) -> None:
+        located_by_group: dict[tuple[str, str], dict[str, Any]] = {}
+        for entry in field_entries:
+            group_key = self._field_evidence_group_key(entry)
+            if group_key is None:
+                continue
+            located = self._first_located_evidence(entry.get("evidences") or [])
+            if located is not None:
+                located_by_group.setdefault(group_key, located)
+
+        for entry in field_entries:
+            evidences = entry.get("evidences") or []
+            if not evidences or self._first_located_evidence(evidences) is not None:
+                continue
+            group_key = self._field_evidence_group_key(entry)
+            if group_key is None:
+                continue
+            sibling_evidence = located_by_group.get(group_key)
+            if sibling_evidence is None:
+                continue
+            for evidence in evidences:
+                if self._evidence_has_location(evidence):
+                    continue
+                evidence["page_no"] = sibling_evidence.get("page_no")
+                bbox_json = sibling_evidence.get("bbox_json")
+                if isinstance(bbox_json, dict):
+                    evidence["bbox_json"] = {
+                        **bbox_json,
+                        "fallback_strategy": "sibling_field_location",
+                        "fallback_from_quote_text": sibling_evidence.get("quote_text"),
+                    }
+                else:
+                    evidence["bbox_json"] = bbox_json
+
+    def _field_evidence_group_key(self, entry: dict[str, Any]) -> tuple[str, str] | None:
+        field = entry.get("field")
+        record = entry.get("record")
+        field_path = field.get("field_path") if isinstance(field, dict) else None
+        if not field_path or record is None:
+            return None
+        parent_path = str(field_path).rsplit(".", 1)[0] if "." in str(field_path) else str(field_path)
+        return (str(getattr(record, "id", "")), parent_path)
+
+    def _first_located_evidence(self, evidences: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for evidence in evidences:
+            if isinstance(evidence, dict) and self._evidence_has_location(evidence):
+                return evidence
+        return None
+
+    def _evidence_has_location(self, evidence: dict[str, Any]) -> bool:
+        return evidence.get("page_no") is not None or evidence.get("bbox_json") is not None
 
     def _resolved_evidence_quote(self, *, evidence: dict[str, Any], field: dict[str, Any]) -> str | None:
         matched_text = evidence.get("source_text") or evidence.get("text")

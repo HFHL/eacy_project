@@ -1,3 +1,4 @@
+from .async_task_repository import AsyncTaskBatchRepository, AsyncTaskEventRepository, AsyncTaskItemRepository
 from .data_context_repository import DataContextRepository, RecordInstanceRepository
 from .document_repository import DocumentRepository
 from .extraction_job_repository import ExtractionJobRepository, ExtractionRunRepository
@@ -17,6 +18,9 @@ from .user_repository import UserRepository
 
 __all__ = [
     "DataContextRepository",
+    "AsyncTaskBatchRepository",
+    "AsyncTaskEventRepository",
+    "AsyncTaskItemRepository",
     "DocumentRepository",
     "ExtractionJobRepository",
     "ExtractionRunRepository",

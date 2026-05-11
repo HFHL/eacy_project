@@ -1,3 +1,4 @@
+from .async_task import AsyncTaskBatch, AsyncTaskEvent, AsyncTaskItem
 from .data_context import DataContext
 from .document import Document
 from .extraction_job import ExtractionJob
@@ -16,6 +17,9 @@ from .user import User
 
 __all__ = [
     "DataContext",
+    "AsyncTaskBatch",
+    "AsyncTaskEvent",
+    "AsyncTaskItem",
     "Document",
     "ExtractionJob",
     "ExtractionRun",

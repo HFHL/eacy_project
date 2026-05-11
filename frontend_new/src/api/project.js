@@ -48,79 +48,68 @@ const extractCurrentValue = (current = {}) => {
   return null
 }
 
-const setNestedValue = (target, path, value) => {
+const isIndexedPathPart = (part) => /^\d+$/.test(String(part || ''))
+
+const isSchemaArrayRecord = (schemaNode) => (
+  schemaNode?.type === 'array' &&
+  schemaNode.items?.properties &&
+  typeof schemaNode.items.properties === 'object'
+)
+
+const isSchemaObject = (schemaNode) => (
+  schemaNode?.properties &&
+  typeof schemaNode.properties === 'object'
+)
+
+const setBySchemaPath = (target, schemaNode, parts, value) => {
+  if (!parts.length) return
+
+  if (isSchemaArrayRecord(schemaNode)) {
+    const [firstPart, ...restParts] = parts
+    const hasExplicitIndex = isIndexedPathPart(firstPart)
+    const rowIndex = hasExplicitIndex ? Number(firstPart) : 0
+    const nextParts = hasExplicitIndex ? restParts : parts
+
+    while (target.length <= rowIndex) target.push({})
+    if (target[rowIndex] == null || typeof target[rowIndex] !== 'object' || Array.isArray(target[rowIndex])) {
+      target[rowIndex] = {}
+    }
+    setBySchemaPath(target[rowIndex], schemaNode.items, nextParts, value)
+    return
+  }
+
+  const [part, ...restParts] = parts
+  const isLast = restParts.length === 0
+  const childSchema = isSchemaObject(schemaNode) ? schemaNode.properties[part] : null
+
+  if (isLast) {
+    target[part] = value
+    return
+  }
+
+  if (isSchemaArrayRecord(childSchema)) {
+    if (!Array.isArray(target[part])) target[part] = []
+    setBySchemaPath(target[part], childSchema, restParts, value)
+    return
+  }
+
+  if (target[part] == null || typeof target[part] !== 'object' || Array.isArray(target[part])) {
+    target[part] = {}
+  }
+  setBySchemaPath(target[part], childSchema, restParts, value)
+}
+
+const setNestedValue = (target, path, value, schema = null) => {
   const parts = normalizeFieldPath(path).split('.').filter(Boolean)
   if (parts.length === 0) return
-  let current = target
-  parts.forEach((part, index) => {
-    const isLast = index === parts.length - 1
-    const nextPart = parts[index + 1]
-    const nextIsArray = /^\d+$/.test(nextPart || '')
-    if (isLast) {
-      current[part] = value
-      return
-    }
-    if (current[part] == null || typeof current[part] !== 'object') {
-      current[part] = nextIsArray ? [] : {}
-    }
-    current = current[part]
-  })
-}
-
-const hasAnyCrfValue = (value) => {
-  if (value == null) return false
-  if (Array.isArray(value)) return value.some(hasAnyCrfValue)
-  if (typeof value === 'object') return Object.values(value).some(hasAnyCrfValue)
-  return value !== ''
-}
-
-const getByPathParts = (target, parts) => {
-  let cursor = target
-  for (const part of parts) {
-    if (cursor == null || typeof cursor !== 'object') return undefined
-    cursor = cursor[part]
-  }
-  return cursor
-}
-
-const setByPathParts = (target, parts, value) => {
-  let cursor = target
-  parts.forEach((part, index) => {
-    const isLast = index === parts.length - 1
-    if (isLast) {
-      cursor[part] = value
-      return
-    }
-    if (cursor[part] == null || typeof cursor[part] !== 'object') cursor[part] = {}
-    cursor = cursor[part]
-  })
-}
-
-const wrapRepeatableSchemaForms = (data, schema) => {
-  const folders = schema?.properties && typeof schema.properties === 'object' ? schema.properties : {}
-
-  Object.entries(folders).forEach(([folderName, folderSchema]) => {
-    const forms = folderSchema?.properties && typeof folderSchema.properties === 'object' ? folderSchema.properties : {}
-
-    Object.entries(forms).forEach(([formName, formSchema]) => {
-      if (formSchema?.type !== 'array' || !formSchema.items?.properties) return
-
-      const pathParts = [folderName, formName]
-      const formData = getByPathParts(data, pathParts)
-      if (Array.isArray(formData) || formData == null) return
-      if (typeof formData !== 'object' || !hasAnyCrfValue(formData)) return
-
-      setByPathParts(data, pathParts, [formData])
-    })
-  })
+  setBySchemaPath(target, schema, parts, value)
 }
 
 const currentValuesToData = (currentValues = {}, schema = null) => {
   const data = {}
   Object.entries(currentValues || {}).forEach(([fieldPath, current]) => {
-    setNestedValue(data, fieldPath, extractCurrentValue(current))
+    setNestedValue(data, fieldPath, extractCurrentValue(current), schema)
   })
-  wrapRepeatableSchemaForms(data, schema)
   return data
 }
 
@@ -423,7 +412,7 @@ export const updateProjectCrfFolder = async (projectId = '', projectPatientId = 
   const payload = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/patients/${projectPatientId}/crf/update-folder`)
   return emptySuccess({
     ...payload,
-    task_id: payload.job_ids?.[0] || '',
+    task_id: payload.batch_id || payload.job_ids?.[0] || '',
     message: `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
   })
 }
@@ -461,6 +450,27 @@ export const startCrfExtraction = async ({
 })
 export const getCrfExtractionProgress = async (_projectId = '', taskId = '') => {
   if (!taskId) return emptyTask()
+  try {
+    const batch = await request.get(`/task-batches/${taskId}`)
+    const failedItems = Array.isArray(batch.items) ? batch.items.filter(item => item.status === 'failed') : []
+    const normalizedStatus = batch.status === 'succeeded' ? 'completed' : batch.status
+    return emptySuccess({
+      ...batch,
+      status: normalizedStatus,
+      task_id: batch.batch_id || batch.id,
+      total_patients: batch.total_items || 0,
+      processed_patients: (batch.succeeded_items || 0) + (batch.failed_items || 0) + (batch.cancelled_items || 0),
+      success_count: batch.succeeded_items || 0,
+      error_count: batch.failed_items || 0,
+      current_step: batch.message || batch.items?.find(item => item.status === 'running')?.stage_label || '',
+      errors: failedItems.map(item => ({
+        patient_id: item.patient_id || item.project_patient_id || '',
+        error: item.error_message || item.message || '抽取失败',
+      })),
+    })
+  } catch (error) {
+    if (error?.status && error.status !== 404) throw error
+  }
   const job = await request.get(`/extraction-jobs/${taskId}`)
   return emptySuccess({
     ...job,

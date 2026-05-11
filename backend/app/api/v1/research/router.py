@@ -262,6 +262,7 @@ class ProjectCrfExportRequest(BaseModel):
 
 
 class CrfFolderUpdateResponse(BaseModel):
+    batch_id: str | None = None
     project_id: str
     project_patient_id: str
     patient_id: str

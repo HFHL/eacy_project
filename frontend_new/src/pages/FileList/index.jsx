@@ -1700,7 +1700,14 @@ const FileList = () => {
     return map
   }, [treeData])
 
-  const groupedTodoDocumentIds = useMemo(() => new Set(todoDocumentStatusMap.keys()), [todoDocumentStatusMap])
+  const groupedTodoDocumentIds = useMemo(
+    () => new Set(
+      Array.from(todoDocumentStatusMap.entries())
+        .filter(([, status]) => TODO_STAGE_TASK_STATUSES.includes(status))
+        .map(([id]) => id)
+    ),
+    [todoDocumentStatusMap]
+  )
 
   const normalizedTreeFileList = useMemo(
     () => fileList.map((item) => {

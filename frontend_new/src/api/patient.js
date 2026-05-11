@@ -220,93 +220,61 @@ const getCurrentValuePayload = (currentValue = {}) => {
   return ''
 }
 
-const setByDotPath = (target, path, value) => {
-  const parts = String(path || '').split('.').filter(Boolean)
+const isIndexedPathPart = (part) => /^\d+$/.test(String(part || ''))
+
+const isSchemaArrayRecord = (schemaNode) => (
+  schemaNode?.type === 'array' &&
+  schemaNode.items?.properties &&
+  typeof schemaNode.items.properties === 'object'
+)
+
+const isSchemaObject = (schemaNode) => (
+  schemaNode?.properties &&
+  typeof schemaNode.properties === 'object'
+)
+
+const setBySchemaPath = (target, schemaNode, parts, value) => {
   if (!parts.length) return
 
-  let cursor = target
-  parts.forEach((part, index) => {
-    const isLast = index === parts.length - 1
-    const nextPart = parts[index + 1]
-    const nextIsArrayIndex = /^\d+$/.test(nextPart)
+  if (isSchemaArrayRecord(schemaNode)) {
+    const [firstPart, ...restParts] = parts
+    const hasExplicitIndex = isIndexedPathPart(firstPart)
+    const rowIndex = hasExplicitIndex ? Number(firstPart) : 0
+    const nextParts = hasExplicitIndex ? restParts : parts
 
-    if (/^\d+$/.test(part)) {
-      const arrayIndex = Number(part)
-      if (!Array.isArray(cursor)) return
-      while (cursor.length <= arrayIndex) cursor.push(nextIsArrayIndex ? [] : {})
-      if (isLast) {
-        cursor[arrayIndex] = value
-      } else {
-        if (cursor[arrayIndex] == null || typeof cursor[arrayIndex] !== 'object') {
-          cursor[arrayIndex] = nextIsArrayIndex ? [] : {}
-        }
-        cursor = cursor[arrayIndex]
-      }
-      return
+    while (target.length <= rowIndex) target.push({})
+    if (target[rowIndex] == null || typeof target[rowIndex] !== 'object' || Array.isArray(target[rowIndex])) {
+      target[rowIndex] = {}
     }
-
-    if (isLast) {
-      cursor[part] = value
-      return
-    }
-
-    if (cursor[part] == null || typeof cursor[part] !== 'object') {
-      cursor[part] = nextIsArrayIndex ? [] : {}
-    }
-    cursor = cursor[part]
-  })
-}
-
-const hasAnyEhrValue = (value) => {
-  if (value == null) return false
-  if (Array.isArray(value)) return value.some(hasAnyEhrValue)
-  if (typeof value === 'object') return Object.values(value).some(hasAnyEhrValue)
-  return value !== ''
-}
-
-const getByPathParts = (target, parts) => {
-  let cursor = target
-  for (const part of parts) {
-    if (cursor == null || typeof cursor !== 'object') return undefined
-    cursor = cursor[part]
+    setBySchemaPath(target[rowIndex], schemaNode.items, nextParts, value)
+    return
   }
-  return cursor
+
+  const [part, ...restParts] = parts
+  const isLast = restParts.length === 0
+  const childSchema = isSchemaObject(schemaNode) ? schemaNode.properties[part] : null
+
+  if (isLast) {
+    target[part] = value
+    return
+  }
+
+  if (isSchemaArrayRecord(childSchema)) {
+    if (!Array.isArray(target[part])) target[part] = []
+    setBySchemaPath(target[part], childSchema, restParts, value)
+    return
+  }
+
+  if (target[part] == null || typeof target[part] !== 'object' || Array.isArray(target[part])) {
+    target[part] = {}
+  }
+  setBySchemaPath(target[part], childSchema, restParts, value)
 }
 
-const setByPathParts = (target, parts, value) => {
-  let cursor = target
-  parts.forEach((part, index) => {
-    const isLast = index === parts.length - 1
-    if (isLast) {
-      cursor[part] = value
-      return
-    }
-    if (cursor[part] == null || typeof cursor[part] !== 'object') cursor[part] = {}
-    cursor = cursor[part]
-  })
-}
-
-const wrapRepeatableSchemaForms = (data, schema) => {
-  const folders = schema?.properties && typeof schema.properties === 'object'
-    ? schema.properties
-    : {}
-
-  Object.entries(folders).forEach(([folderName, folderSchema]) => {
-    const forms = folderSchema?.properties && typeof folderSchema.properties === 'object'
-      ? folderSchema.properties
-      : {}
-
-    Object.entries(forms).forEach(([formName, formSchema]) => {
-      if (formSchema?.type !== 'array' || !formSchema.items?.properties) return
-
-      const pathParts = [folderName, formName]
-      const formData = getByPathParts(data, pathParts)
-      if (Array.isArray(formData) || formData == null) return
-      if (typeof formData !== 'object' || !hasAnyEhrValue(formData)) return
-
-      setByPathParts(data, pathParts, [formData])
-    })
-  })
+const setByDotPath = (target, path, value, schema = null) => {
+  const parts = String(path || '').split('.').filter(Boolean)
+  if (!parts.length) return
+  setBySchemaPath(target, schema, parts, value)
 }
 
 const normalizeEhrResponse = (payload = {}) => {
@@ -316,10 +284,8 @@ const normalizeEhrResponse = (payload = {}) => {
   const data = {}
 
   Object.entries(currentValues).forEach(([fieldPath, currentValue]) => {
-    setByDotPath(data, fieldPath, getCurrentValuePayload(currentValue))
+    setByDotPath(data, fieldPath, getCurrentValuePayload(currentValue), payload.schema)
   })
-
-  wrapRepeatableSchemaForms(data, payload.schema)
 
   return {
     context: payload.context || null,
@@ -543,7 +509,20 @@ export const updatePatientEhrFolder = async (patientId = '') => {
   const payload = await request.post(`${PATIENTS_ENDPOINT}/${patientId}/ehr/update-folder`)
   return emptySuccess({
     ...payload,
+    task_id: payload.batch_id || payload.job_ids?.[0] || '',
     message: `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个电子病历夹抽取任务，后台正在抽取`,
+  })
+}
+export const getTaskBatchProgress = async (batchId = '') => {
+  if (!batchId) return emptyTask()
+  const payload = await request.get(`/task-batches/${batchId}`)
+  const normalizedStatus = payload.status === 'succeeded' ? 'completed' : payload.status
+  return emptySuccess({
+    ...payload,
+    status: normalizedStatus,
+    task_id: payload.batch_id || payload.id,
+    success_count: payload.succeeded_items || 0,
+    error_count: payload.failed_items || 0,
   })
 }
 export const updatePatientEhr = async (patientId, data = {}) => updatePatientEhrSchemaData(patientId, data)
@@ -565,6 +544,9 @@ export const startPatientExtraction = async (patientId = '') => {
 }
 export const getExtractionTaskStatus = async (taskId = '') => {
   if (!taskId) return emptyTask()
+  if (String(taskId).startsWith('batch_')) {
+    return getTaskBatchProgress(String(taskId).replace(/^batch_/, ''))
+  }
   const payload = await request.get(`/extraction-jobs/${taskId}`)
   return emptySuccess({
     ...payload,
@@ -653,6 +635,7 @@ export default {
   getPatientEhrSchemaData,
   updatePatientEhrSchemaData,
   updatePatientEhrFolder,
+  getTaskBatchProgress,
   updatePatientEhr,
   getPatientDocuments,
   mergeEhrData,

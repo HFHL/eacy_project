@@ -266,6 +266,7 @@ const MainLayout = () => {
   
   const { siderCollapsed } = useSelector((state) => state.ui.layout)
   const { userInfo, isAuthenticated } = useSelector((state) => state.user)
+  const isAdminUser = userInfo?.role === 'admin' || (Array.isArray(userInfo?.permissions) && userInfo.permissions.includes('*'))
   
   const [searchVisible, setSearchVisible] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -1008,6 +1009,10 @@ const MainLayout = () => {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
+  if (location.pathname.startsWith('/admin') && !isAdminUser) {
+    return <Navigate to="/dashboard" replace />
+  }
+
   const userMenuItems = [
     { key: 'user-profile', icon: <UserOutlined />, label: '个人中心' },
     { key: 'user-settings', icon: <SettingOutlined />, label: '系统设置' },
@@ -1015,10 +1020,12 @@ const MainLayout = () => {
     { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
   ]
 
-  const primaryNavItems = PRIMARY_NAV_ORDER.map((key) => ({
-    key,
-    label: PRIMARY_NAV_CONFIG[key].label,
-  }))
+  const primaryNavItems = PRIMARY_NAV_ORDER
+    .filter((key) => key !== 'admin' || isAdminUser)
+    .map((key) => ({
+      key,
+      label: PRIMARY_NAV_CONFIG[key].label,
+    }))
 
   /**
    * 渲染左侧 rail 的紧凑工具条（三按钮：新建/搜索/排序）。

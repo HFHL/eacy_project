@@ -203,11 +203,20 @@ export function PdfPageWithHighlight({
           position: 'absolute',
           inset: 0,
           pointerEvents: 'none',
+          zIndex: 1000,
+          transform: 'translateZ(0)',
         }}
       >
         {size && visibleList.length > 0 && (
           <svg
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              zIndex: 1000,
+              transform: 'translateZ(0)',
+            }}
             viewBox={`0 0 ${refW} ${refH}`}
             preserveAspectRatio="none"
           >
@@ -303,20 +312,25 @@ export function PdfPageWithHighlight({
                 borderRadius: 4,
                 boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
                 overflow: 'hidden',
+                isolation: 'isolate',
               }}
             >
-              <Page
-                pageNumber={pageNo}
-                width={pageWidth}
-                loading={
-                  <div style={{ minHeight: 160, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Spin size="small" />
-                  </div>
-                }
-                renderTextLayer={false}
-                renderAnnotationLayer={false}
-                onLoadSuccess={onPageLoadSuccess}
-              />
+              <div className="pdf-page-canvas-layer" style={{ position: 'relative', zIndex: 0 }}>
+                <Page
+                  className="pdf-page-react-layer"
+                  pageNumber={pageNo}
+                  width={pageWidth}
+                  canvasBackground="transparent"
+                  loading={
+                    <div style={{ minHeight: 160, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Spin size="small" />
+                    </div>
+                  }
+                  renderTextLayer={false}
+                  renderAnnotationLayer={false}
+                  onLoadSuccess={onPageLoadSuccess}
+                />
+              </div>
               {renderOverlay(pageNo)}
             </div>
           ))}

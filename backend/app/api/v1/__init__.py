@@ -8,6 +8,7 @@ from app.api.v1.ehr.router import router as ehr_router
 from app.api.v1.extraction.router import router as extraction_router
 from app.api.v1.patients.router import router as patients_router
 from app.api.v1.research.router import router as research_router
+from app.api.v1.tasks.router import router as tasks_router
 from app.api.v1.templates.router import router as templates_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -26,4 +27,5 @@ api_router.include_router(extraction_router)
 api_router.include_router(ehr_router)
 api_router.include_router(templates_router)
 api_router.include_router(research_router)
+api_router.include_router(tasks_router)
 api_router.include_router(admin_router)
