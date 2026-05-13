@@ -636,6 +636,13 @@ const DocumentList = ({
   onUploadDocument,
   onViewDocumentDetail
 }) => {
+  // eslint-disable-next-line no-console
+  console.log('[CategoryTree.DocumentList] 渲染:', {
+    count: documents.length,
+    sample: documents.length > 0
+      ? { id: documents[0].id, name: documents[0].name, status: documents[0].status }
+      : null,
+  })
   if (documents.length === 0) {
     return (
       <Empty

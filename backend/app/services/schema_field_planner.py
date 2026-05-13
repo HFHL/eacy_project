@@ -45,6 +45,15 @@ def schema_top_level_forms(schema_json: dict[str, Any]) -> list[dict[str, str | 
     return forms
 
 
+def schema_leaf_paths(schema_json: dict[str, Any]) -> set[str]:
+    """返回 schema 中所有叶子字段的"规范化路径"集合（去除数组下标）。
+
+    与 `plan_schema_fields` 返回的 `field_path` 等价；这里做单独导出是为了让"完整度
+    统计"等调用方避免实例化完整的 SchemaField 列表，且与 `FieldCurrentValue.field_path`
+    的去下标比较直接对齐。"""
+    return {field.field_path for field in plan_schema_fields(schema_json or {})}
+
+
 def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
     fields: list[SchemaField] = []
     definitions = schema_json.get("$defs") or {}

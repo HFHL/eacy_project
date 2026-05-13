@@ -173,8 +173,31 @@ export const normalizeDocument = (document = {}) => {
     patient_info: {
       ...(document.patient_info || {}),
       patient_id: patientId,
+      // 后端 DocumentSummaryResponse.bound_patient 字段（list_documents 等批量回填）
+      // 把姓名/性别/年龄一并塞进 patient_info，方便老调用方按 name/gender/age 读取。
+      ...(document.bound_patient
+        ? {
+            name: document.bound_patient.name,
+            patient_name: document.bound_patient.name,
+            gender: document.bound_patient.gender,
+            patient_gender: document.bound_patient.gender,
+            age: document.bound_patient.age,
+            patient_age: document.bound_patient.age,
+          }
+        : {}),
     },
-    bound_patient_summary: patientId ? { patient_id: patientId } : null,
+    bound_patient_summary: patientId
+      ? {
+          patient_id: patientId,
+          // 当后端返回 bound_patient 时一并透出，给 FileList 的"绑定摘要"列使用
+          name: document.bound_patient?.name || null,
+          patient_name: document.bound_patient?.name || null,
+          gender: document.bound_patient?.gender || null,
+          patient_gender: document.bound_patient?.gender || null,
+          age: document.bound_patient?.age ?? null,
+          patient_age: document.bound_patient?.age ?? null,
+        }
+      : null,
     document_type: documentType,
     documentType,
     document_sub_type: documentSubtype,
@@ -340,14 +363,34 @@ export const uploadDocuments = async (files = [], patientId = null) => {
   return results
 }
 
-export const getDocumentList = async (params = {}) => {
-  const payload = await request.get(DOCUMENTS_ENDPOINT, normalizeListParams(params))
+export const getDocumentList = async (params = {}, options) => {
+  const payload = await request.get(DOCUMENTS_ENDPOINT, normalizeListParams(params), options)
   return normalizeDocumentListResponse(payload, params)
 }
 
 export const deleteDocument = async (documentId = '') => {
   await request.delete(`${DOCUMENTS_ENDPOINT}/${documentId}`)
   return emptySuccess(null)
+}
+
+/**
+ * 查询文档作为字段证据时的影响范围（用于删除前确认弹窗）。
+ *
+ * 返回结构（已扁平化为 success 包装）：
+ *   data = {
+ *     document_id: string,
+ *     evidence_count: number,         // 0 表示未被任何字段证据引用
+ *     fields: [{ code, title }],      // 去重后的被影响字段清单
+ *   }
+ */
+export const getDocumentEvidenceImpact = async (documentId = '') => {
+  if (!documentId) return emptySuccess({ document_id: '', evidence_count: 0, fields: [] })
+  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/${documentId}/evidence-impact`)
+  return emptySuccess({
+    document_id: payload?.document_id || documentId,
+    evidence_count: Number(payload?.evidence_count) || 0,
+    fields: Array.isArray(payload?.fields) ? payload.fields : [],
+  })
 }
 
 export const deleteDocuments = async (documentIds = []) => {
@@ -593,11 +636,10 @@ export const confirmGroupArchive = async (groupId, patientId, autoMergeEhr = tru
 }
 export const createPatientAndArchiveGroup = async () => emptySuccess(null)
 export const moveDocumentToGroup = async () => emptySuccess(null)
-export const uploadAndArchiveToPatient = async (file, patientId) => {
-  const uploadRes = await uploadDocument(file, patientId)
-  const documentId = uploadRes?.data?.id || uploadRes?.data?.document_id
-  if (!documentId || !patientId) return uploadRes
-  return archiveDocument(documentId, patientId, false)
+export const uploadAndArchiveToPatient = async (file, patientId, _options = {}, onProgress) => {
+  // 后端 POST /documents 带 patient_id 时已自动归档（status=archived）并入队
+  // OCR → metadata → patient_ehr extraction 链路，无需再调 archive 接口。
+  return uploadDocument(file, patientId, onProgress)
 }
 export const uploadAndArchiveAsync = uploadAndArchiveToPatient
 export const extractEhrDataAsync = async () => emptyTask()

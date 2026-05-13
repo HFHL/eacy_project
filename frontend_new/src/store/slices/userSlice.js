@@ -1,4 +1,5 @@
 import { createSlice } from '@reduxjs/toolkit'
+import { clearUserSessionStorage } from '../../utils/authCleanup'
 
 /**
  * 从localStorage恢复登录状态
@@ -29,11 +30,8 @@ const getInitialState = () => {
         lastActivity: new Date().toISOString()
       }
     } catch (e) {
-      // JSON解析失败，清除无效数据
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
-      localStorage.removeItem('user_info')
-      localStorage.removeItem('user_settings')
+      // JSON 解析失败，清除所有无效会话与业务缓存
+      clearUserSessionStorage()
     }
   }
   
@@ -86,17 +84,9 @@ const userSlice = createSlice({
      * 登出
      */
     logout: (state) => {
-      // 清除认证相关 localStorage
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
-      localStorage.removeItem('user_info')
-      localStorage.removeItem('user_settings')
-      localStorage.removeItem('login_time')
+      // 清除认证 + 业务缓存（任务列表、通知列表、病历夹去重标记、抽取去重标记）
+      clearUserSessionStorage()
 
-      // 清除业务数据缓存（防止新账号登录看到旧数据）
-      localStorage.removeItem('eacy_task_store_v1')
-      localStorage.removeItem('eacy_ui_notifications_v1')
-      
       // 重置state
       state.isAuthenticated = false
       state.userInfo = null

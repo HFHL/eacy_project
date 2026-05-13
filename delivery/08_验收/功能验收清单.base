@@ -1,0 +1,77 @@
+filters:
+  and:
+    - file.ext == "md"
+    - type == "acceptance"
+formulas: {}
+properties:
+  file.name:
+    displayName: 文档
+  module:
+    displayName: 业务域
+  related_flows:
+    displayName: 关联业务流程
+  api_endpoints:
+    displayName: 关联端点
+  related_tables:
+    displayName: 关联数据表
+  status:
+    displayName: 状态
+  audience:
+    displayName: 受众
+  last_verified_commit:
+    displayName: 上次核对 commit
+  last_verified_date:
+    displayName: 上次核对日期
+  owner:
+    displayName: 负责人
+views:
+  - type: table
+    name: 全部用例
+    order:
+      - file.name
+      - module
+      - status
+      - last_verified_date
+      - owner
+    sort:
+      - property: module
+        direction: ASC
+      - property: file.name
+        direction: ASC
+  - type: table
+    name: 按业务域分组
+    order:
+      - module
+      - file.name
+      - related_flows
+      - api_endpoints
+      - status
+    sort:
+      - property: module
+        direction: ASC
+      - property: file.name
+        direction: ASC
+  - type: table
+    name: 横向验收（性能/安全/范围）
+    filters:
+      and:
+        - module == "验收"
+    order:
+      - file.name
+      - status
+      - last_verified_date
+      - owner
+  - type: table
+    name: 待 re-verify
+    filters:
+      and:
+        - status != "verified"
+    order:
+      - file.name
+      - module
+      - status
+      - last_verified_date
+      - owner
+    sort:
+      - property: last_verified_date
+        direction: ASC

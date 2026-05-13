@@ -94,6 +94,11 @@ class ResearchProjectResponse(BaseModel):
     extra_json: dict[str, Any] | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # 后端聚合的统计字段（前端项目卡 / 概览均依赖这些值）
+    actual_patient_count: int = 0
+    expected_patient_count: int | None = None
+    avg_completeness: float = 0.0
+    principal_investigator_name: str = ""
 
 
 class ResearchProjectListResponse(BaseModel):
@@ -278,6 +283,28 @@ class CrfFolderUpdateResponse(BaseModel):
     skipped: list[dict[str, str]] = Field(default_factory=list)
 
 
+class ProjectCrfFolderBatchRequest(BaseModel):
+    project_patient_ids: list[str] | None = None
+
+
+class ProjectCrfFolderBatchResponse(BaseModel):
+    batch_id: str | None = None
+    project_id: str
+    total_project_patients: int
+    processed_patients: int
+    documents_total: int
+    eligible_documents: int
+    already_extracted_documents: int
+    planned_documents: int
+    created_jobs: int
+    submitted_jobs: int = 0
+    completed_jobs: int = 0
+    failed_jobs: int = 0
+    job_ids: list[str]
+    skipped_patients: list[dict[str, str]] = Field(default_factory=list)
+    skipped_documents: list[dict[str, str]] = Field(default_factory=list)
+
+
 def get_research_project_service() -> ResearchProjectService:
     return ResearchProjectService()
 
@@ -300,6 +327,17 @@ def _raise_research_error(error: ResearchProjectNotFoundError | ResearchProjectC
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
 
 
+def _project_response(project, stats: dict[str, Any] | None) -> ResearchProjectResponse:
+    """从 ORM 项目 + 聚合 stats 构造响应；stats 为 None 时使用默认 0 值。"""
+    response = ResearchProjectResponse.model_validate(project)
+    stats = stats or {}
+    response.actual_patient_count = int(stats.get("actual_patient_count", 0) or 0)
+    response.expected_patient_count = stats.get("expected_patient_count")
+    response.avg_completeness = float(stats.get("avg_completeness", 0.0) or 0.0)
+    response.principal_investigator_name = str(stats.get("principal_investigator_name", "") or "")
+    return response
+
+
 @router.get("", response_model=ResearchProjectListResponse)
 @router.get("/", response_model=ResearchProjectListResponse, include_in_schema=False)
 async def list_projects(
@@ -309,8 +347,14 @@ async def list_projects(
     current_user: CurrentUser = Depends(get_current_user),
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> ResearchProjectListResponse:
-    projects, total = await service.list_projects(page=page, page_size=page_size, status=status_filter, owner_id=user_scope_id(current_user))
-    return ResearchProjectListResponse(items=projects, total=total, page=page, page_size=page_size)
+    projects, total, stats_by_id = await service.list_projects_with_stats(
+        page=page,
+        page_size=page_size,
+        status=status_filter,
+        owner_id=user_scope_id(current_user),
+    )
+    items = [_project_response(project, stats_by_id.get(project.id)) for project in projects]
+    return ResearchProjectListResponse(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.post("", response_model=ResearchProjectResponse, status_code=status.HTTP_201_CREATED)
@@ -326,7 +370,8 @@ async def create_project(
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
-    return ResearchProjectResponse.model_validate(project)
+    stats = await service.get_project_stats(project)
+    return _project_response(project, stats)
 
 
 @router.get("/{project_id}", response_model=ResearchProjectResponse)
@@ -338,7 +383,8 @@ async def get_project(
     project = await service.get_project(project_id, owner_id=user_scope_id(current_user))
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research project not found")
-    return ResearchProjectResponse.model_validate(project)
+    stats = await service.get_project_stats(project)
+    return _project_response(project, stats)
 
 
 @router.patch("/{project_id}", response_model=ResearchProjectResponse)
@@ -352,7 +398,8 @@ async def update_project(
         project = await service.update_project(project_id, owner_id=user_scope_id(current_user), **payload.model_dump(exclude_unset=True))
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
-    return ResearchProjectResponse.model_validate(project)
+    stats = await service.get_project_stats(project)
+    return _project_response(project, stats)
 
 
 @router.delete("/{project_id}", response_model=ResearchProjectResponse)
@@ -365,7 +412,8 @@ async def archive_project(
         project = await service.archive_project(project_id, owner_id=user_scope_id(current_user))
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
-    return ResearchProjectResponse.model_validate(project)
+    stats = await service.get_project_stats(project)
+    return _project_response(project, stats)
 
 
 @router.post("/{project_id}/export")
@@ -399,6 +447,22 @@ async def export_project_crf_file(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
     )
+
+
+@router.get("/{project_id}/template-bindings", response_model=list[TemplateBindingResponse])
+async def list_project_template_bindings(
+    project_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: ResearchProjectService = Depends(get_research_project_service),
+) -> list[TemplateBindingResponse]:
+    try:
+        bindings = await service.list_template_bindings(
+            project_id=project_id,
+            owner_id=user_scope_id(current_user),
+        )
+    except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
+        _raise_research_error(error)
+    return [TemplateBindingResponse.model_validate(binding) for binding in bindings]
 
 
 @router.post("/{project_id}/template-bindings", response_model=TemplateBindingResponse, status_code=status.HTTP_201_CREATED)
@@ -500,6 +564,36 @@ async def update_project_patient_crf_folder(
     except ExtractionConflictError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     return CrfFolderUpdateResponse.model_validate(
+        {
+            **result,
+            "job_ids": [job.id for job in result.get("jobs", [])],
+        }
+    )
+
+
+@router.post(
+    "/{project_id}/crf/update-folder",
+    response_model=ProjectCrfFolderBatchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def update_project_crf_folder_batch(
+    project_id: str,
+    payload: ProjectCrfFolderBatchRequest | None = None,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: ExtractionService = Depends(get_extraction_service),
+) -> ProjectCrfFolderBatchResponse:
+    project_patient_ids = payload.project_patient_ids if payload is not None else None
+    try:
+        result = await service.update_project_crf_folder_batch(
+            project_id=project_id,
+            project_patient_ids=project_patient_ids,
+            requested_by=uuid_user_id_or_none(current_user),
+        )
+    except ExtractionNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    except ExtractionConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    return ProjectCrfFolderBatchResponse.model_validate(
         {
             **result,
             "job_ids": [job.id for job in result.get("jobs", [])],

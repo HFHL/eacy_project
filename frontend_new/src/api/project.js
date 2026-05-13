@@ -160,6 +160,24 @@ const normalizeProjectPayload = (data = {}, { create = false } = {}) => {
 const withProjectAliases = (project = {}) => {
   const extra = isPlainObject(project.extra_json) ? project.extra_json : {}
   const templateConfig = extra.template_scope_config || {}
+  // 后端聚合字段（actual_patient_count / avg_completeness /
+  // principal_investigator_name / expected_patient_count）已在 /projects 响应中提供，
+  // extra_json 仅作为兼容旧数据时的兜底来源
+  const actualPatientCount = Number(
+    project.actual_patient_count ?? extra.actual_patient_count ?? extra.patient_count ?? 0,
+  ) || 0
+  const expectedPatientCount = (
+    project.expected_patient_count
+    ?? extra.expected_patient_count
+    ?? extra.target_patient_count
+    ?? null
+  )
+  const avgCompleteness = Number(project.avg_completeness ?? extra.avg_completeness ?? 0) || 0
+  const principalInvestigatorName = (
+    project.principal_investigator_name
+    || extra.principal_investigator_name
+    || ''
+  )
   return {
     ...extra,
     ...project,
@@ -167,11 +185,12 @@ const withProjectAliases = (project = {}) => {
     project_code: project.project_code,
     project_name: project.project_name,
     status_key: project.status,
-    actual_patient_count: extra.actual_patient_count ?? extra.patient_count ?? 0,
-    avg_completeness: extra.avg_completeness ?? 0,
+    actual_patient_count: actualPatientCount,
+    expected_patient_count: expectedPatientCount,
+    avg_completeness: avgCompleteness,
     crf_template_id: extra.crf_template_id || templateConfig.template_id || null,
     template_scope_config: templateConfig,
-    principal_investigator_name: extra.principal_investigator_name || project.owner_id || '',
+    principal_investigator_name: principalInvestigatorName,
   }
 }
 
@@ -282,7 +301,46 @@ export const getProjects = async (params = {}) => {
 export const getProject = async (projectId = '') => {
   if (!projectId) return emptySuccess(null)
   const project = await request.get(`${PROJECTS_ENDPOINT}/${projectId}`)
-  return emptySuccess(withProjectAliases(project))
+  const aliased = withProjectAliases(project)
+  // 若页面读取的 template_info / template_scope_config.template_id 尚未填充，
+  // 则通过 template-bindings 接口补齐。注意：extra_json.crf_template_id 可能已有值，
+  // 但这两个字段才是 ProjectDatasetView "模板 · {name}" 按钮真正读取的来源。
+  const needTemplateInfo = !aliased.template_info?.template_id
+    && !aliased.template_scope_config?.template_id
+  if (needTemplateInfo) {
+    try {
+      const bindings = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings`)
+      const list = Array.isArray(bindings) ? bindings : []
+      const primary = list.find((b) => b?.status === 'active' && b?.binding_type === 'primary_crf')
+        || list.find((b) => b?.status === 'active')
+      const templateId = primary?.template_id || aliased.crf_template_id
+      if (templateId) {
+        let templateName = ''
+        try {
+          const template = await request.get(`/schema-templates/${templateId}`)
+          templateName = template?.template_name || template?.name || ''
+        } catch (error) {
+          console.warn('[project] 解析模板名称失败:', error)
+        }
+        aliased.crf_template_id = templateId
+        aliased.template_scope_config = {
+          ...(aliased.template_scope_config || {}),
+          template_id: templateId,
+          template_name: templateName || aliased.template_scope_config?.template_name || '',
+          schema_version_id: primary?.schema_version_id,
+        }
+        aliased.template_info = {
+          ...(aliased.template_info || {}),
+          template_id: templateId,
+          template_name: templateName,
+          schema_version_id: primary?.schema_version_id,
+        }
+      }
+    } catch (error) {
+      console.warn('[project] 获取项目模板绑定失败:', error)
+    }
+  }
+  return emptySuccess(aliased)
 }
 export const createProject = async (data = {}) => {
   const project = await request.post(PROJECTS_ENDPOINT, normalizeProjectPayload(data, { create: true }))
@@ -416,6 +474,18 @@ export const updateProjectCrfFolder = async (projectId = '', projectPatientId = 
     message: `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
   })
 }
+export const updateProjectCrfFolderBatch = async (projectId = '', projectPatientIds = null) => {
+  if (!projectId) return emptySuccess({ created_jobs: 0, job_ids: [] })
+  const body = Array.isArray(projectPatientIds) && projectPatientIds.length > 0
+    ? { project_patient_ids: projectPatientIds.filter(Boolean) }
+    : {}
+  const payload = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/crf/update-folder`, body)
+  return emptySuccess({
+    ...payload,
+    task_id: payload.batch_id || payload.job_ids?.[0] || '',
+    message: `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
+  })
+}
 export const enrollPatient = async (projectId = '', data = {}) => {
   if (!projectId || !data?.patient_id) return emptySuccess(null)
   const projectPatient = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/patients`, data)
@@ -480,8 +550,145 @@ export const getCrfExtractionProgress = async (_projectId = '', taskId = '') => 
     error_count: job.status === 'failed' ? 1 : 0,
   })
 }
-export const getProjectTemplateDesigner = async () => emptySuccess(null)
-export const saveProjectTemplateDesigner = async (_projectId, data = {}) => emptySuccess(data)
+const fetchActiveProjectBinding = async (projectId = '') => {
+  if (!projectId) return null
+  try {
+    const bindings = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings`)
+    const list = Array.isArray(bindings) ? bindings : []
+    // 优先取激活的 primary_crf
+    const primary = list.find(
+      (b) => b?.status === 'active' && b?.binding_type === 'primary_crf',
+    )
+    if (primary) return primary
+    return list.find((b) => b?.status === 'active') || null
+  } catch (error) {
+    console.warn('[project] 获取模板绑定失败:', error)
+    return null
+  }
+}
+
+const pickSchemaVersionFromTemplate = (template = {}, schemaVersionId = '') => {
+  const versions = Array.isArray(template?.versions) ? template.versions : []
+  if (schemaVersionId) {
+    const matched = versions.find((v) => String(v?.id) === String(schemaVersionId))
+    if (matched) return matched
+  }
+  return (
+    versions.find((v) => v?.status === 'published')
+    || versions.find((v) => v?.status === 'active')
+    || versions[0]
+    || null
+  )
+}
+
+export const getProjectTemplateDesigner = async (projectId = '') => {
+  if (!projectId) return emptySuccess(null)
+  const binding = await fetchActiveProjectBinding(projectId)
+  if (!binding?.template_id) {
+    return emptySuccess(null, { message: '项目尚未关联 CRF 模板' })
+  }
+  try {
+    const template = await request.get(`/schema-templates/${binding.template_id}`)
+    const version = pickSchemaVersionFromTemplate(template, binding.schema_version_id)
+    const schemaJson = version?.schema_json || version?.schema || template?.schema_json || {}
+    const layoutConfig = (schemaJson && typeof schemaJson === 'object' && schemaJson.layout_config) || {}
+    const designer = schemaJson?.designer || layoutConfig.designer || null
+    const fieldGroups = schemaJson?.fieldGroups || layoutConfig.fieldGroups || version?.field_groups || []
+    return emptySuccess({
+      template_id: template?.id || binding.template_id,
+      template_name: template?.template_name || template?.name || '项目模板',
+      schema_version: version?.version_no ? `v${version.version_no}` : (version?.version_name || ''),
+      schema_version_id: version?.id || binding.schema_version_id,
+      binding_id: binding.id,
+      schema_json: schemaJson,
+      schema: schemaJson,
+      designer,
+      field_groups: fieldGroups,
+    })
+  } catch (error) {
+    console.error('[project] 加载项目模板失败:', error)
+    return { success: false, message: error?.message || '加载项目模板失败', data: null }
+  }
+}
+
+export const saveProjectTemplateDesigner = async (projectId = '', payload = {}) => {
+  if (!projectId) return emptySuccess(null)
+  const designer = payload.designer || {}
+  const fieldGroups = Array.isArray(designer.fieldGroups)
+    ? designer.fieldGroups
+    : (Array.isArray(payload.field_groups) ? payload.field_groups : [])
+
+  const binding = await fetchActiveProjectBinding(projectId)
+  if (!binding?.template_id) {
+    return { success: false, message: '项目尚未关联 CRF 模板，无法保存', data: null }
+  }
+
+  // 1) 在原模板上创建新版本（草稿）并发布，使其成为最新活动版本
+  const detail = await request.get(`/schema-templates/${binding.template_id}`)
+  const versions = Array.isArray(detail?.versions) ? detail.versions : []
+  const nextVersionNo = versions.reduce(
+    (max, v) => Math.max(max, Number(v?.version_no || 0)),
+    0,
+  ) + 1
+  const exportedSchema = payload.schema_json || payload.schema || {}
+  const schemaJson = {
+    ...exportedSchema,
+    title: exportedSchema.title
+      || payload.template_name
+      || detail?.template_name
+      || designer?.meta?.title
+      || 'CRF模版',
+    $schema: exportedSchema.$schema
+      || designer?.meta?.$schema
+      || 'https://json-schema.org/draft/2020-12/schema',
+    layout_config: {
+      ...(exportedSchema.layout_config || {}),
+      designer,
+      fieldGroups,
+      category: payload.category || '',
+    },
+    designer,
+    fieldGroups,
+  }
+  const newVersion = await request.post(`/schema-templates/${binding.template_id}/versions`, {
+    version_no: nextVersionNo,
+    version_name: `v${nextVersionNo} project-save`,
+    schema_json: schemaJson,
+    status: 'draft',
+  })
+  const publishedVersion = await request.post(
+    `/schema-template-versions/${newVersion.id}/publish`,
+  )
+
+  // 2) 把项目绑定切换到新版本：先停用旧绑定，再创建新绑定
+  try {
+    if (binding?.id) {
+      await request.delete(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings/${binding.id}`)
+    }
+  } catch (error) {
+    console.warn('[project] 停用旧模板绑定失败:', error)
+  }
+
+  let nextBinding = null
+  try {
+    nextBinding = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings`, {
+      template_id: binding.template_id,
+      schema_version_id: publishedVersion?.id || newVersion?.id,
+      binding_type: binding.binding_type || 'primary_crf',
+    })
+  } catch (error) {
+    console.error('[project] 创建新模板绑定失败:', error)
+    return { success: false, message: error?.message || '保存成功但绑定切换失败', data: null }
+  }
+
+  return emptySuccess({
+    template_id: binding.template_id,
+    schema_version_id: publishedVersion?.id || newVersion?.id,
+    binding_id: nextBinding?.id || null,
+    migrated: 0,
+    skipped: 0,
+  })
+}
 export const getProjectExtractionTasks = async () => emptyList()
 export const getActiveExtractionTask = async () => emptySuccess(null)
 export const cancelCrfExtraction = async () => emptySuccess(null)
@@ -529,6 +736,7 @@ export default {
   deleteProjectCrfRecordInstance,
   selectProjectCrfFieldCandidate,
   updateProjectCrfFolder,
+  updateProjectCrfFolderBatch,
   enrollPatient,
   removeProjectPatient,
   startCrfExtraction,

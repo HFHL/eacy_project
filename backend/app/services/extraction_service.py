@@ -107,6 +107,47 @@ class ExtractionService:
     async def create_job(self, *, job_type: str, **params: Any) -> ExtractionJob:
         return await self.job_repository.create({"job_type": job_type, "status": "pending", **params})
 
+    async def list_active_ehr_status_by_patients(
+        self,
+        patient_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """批量返回若干患者当前 patient_ehr 任务的活跃状态。
+
+        返回值: {patient_id: {active: bool, job_count: int, latest_started_at: datetime | None,
+                              latest_updated_at: datetime | None, latest_status: str | None}}
+        缺失的 patient_id 也会被填充为 active=False 的默认对象。
+        """
+        result: dict[str, dict[str, Any]] = {
+            pid: {
+                "active": False,
+                "job_count": 0,
+                "latest_started_at": None,
+                "latest_updated_at": None,
+                "latest_status": None,
+            }
+            for pid in patient_ids
+        }
+        if not patient_ids:
+            return result
+        jobs = await self.job_repository.list_active_by_patient_ids(
+            patient_ids, job_type="patient_ehr"
+        )
+        for job in jobs:
+            pid = str(job.patient_id) if job.patient_id is not None else None
+            if not pid or pid not in result:
+                continue
+            entry = result[pid]
+            entry["active"] = True
+            entry["job_count"] += 1
+            started = getattr(job, "started_at", None) or getattr(job, "created_at", None)
+            updated = getattr(job, "updated_at", None) or started
+            if started and (entry["latest_started_at"] is None or started > entry["latest_started_at"]):
+                entry["latest_started_at"] = started
+                entry["latest_status"] = job.status
+            if updated and (entry["latest_updated_at"] is None or updated > entry["latest_updated_at"]):
+                entry["latest_updated_at"] = updated
+        return result
+
     async def start_run(self, *, job_id: str, run_no: int, **params: Any) -> ExtractionRun:
         return await self.run_repository.create(
             {
@@ -139,14 +180,26 @@ class ExtractionService:
         await self._prepare_job(job=job, created_by=requested_by)
         if await self._should_wait_for_document_ready(job):
             await self.job_repository.save(job)
+            # 同上：避免路由层访问 updated_at 时触发懒加载导致 MissingGreenlet。
+            await session.refresh(job)
             return job
         if isinstance(job.input_json, dict) and job.input_json.get("enqueue_async") is True:
             await self.job_repository.save(job)
             await self._commit_pending_jobs_before_enqueue()
             await session.refresh(job)
             await self._enqueue_extraction_task(job.id)
+            # _enqueue_extraction_task 内部又会触发一次 UPDATE+commit（progress=5、mark_job_queued），
+            # 之后 job.updated_at（server-side onupdate）被标记为 expired。
+            # 必须再 refresh 一次，否则路由层 ExtractionJobResponse.model_validate(job)
+            # 在 @Transactional 收尾后访问 updated_at 会触发懒加载，
+            # 此时 greenlet 上下文已结束 → MissingGreenlet → 500。
+            await session.refresh(job)
             return job
-        return await self._process_job(job=job, input_snapshot_extra={}, raise_on_failure=True)
+        job = await self._process_job(job=job, input_snapshot_extra={}, raise_on_failure=True)
+        # 同样的原因：_process_job 内部多次 commit=True 后 updated_at 被 expire，
+        # 在事务收尾前刷新一下，保证返回给路由的 ORM 对象所有属性都已加载。
+        await session.refresh(job)
+        return job
 
     async def create_planned_jobs(self, *, requested_by: str | None = None, **params: Any) -> list[ExtractionJob]:
         document_id = params.get("document_id")
@@ -406,6 +459,171 @@ class ExtractionService:
             "completed_jobs": 0,
             "failed_jobs": 0,
             "skipped": skipped,
+        }
+
+    async def update_project_crf_folder_batch(
+        self,
+        *,
+        project_id: str,
+        project_patient_ids: list[str] | None = None,
+        requested_by: str | None = None,
+    ) -> dict[str, Any]:
+        from app.services.research_project_service import (
+            ResearchProjectConflictError,
+            ResearchProjectNotFoundError,
+            ResearchProjectService,
+        )
+
+        research_service = ResearchProjectService()
+
+        if project_patient_ids:
+            target_ids = [pid for pid in project_patient_ids if pid]
+        else:
+            try:
+                project_patients = await research_service.list_project_patients(
+                    project_id, owner_id=requested_by
+                )
+            except ResearchProjectNotFoundError as error:
+                raise ExtractionNotFoundError(str(error)) from error
+            except ResearchProjectConflictError as error:
+                raise ExtractionConflictError(str(error)) from error
+            target_ids = [pp.id for pp in project_patients]
+
+        batch = await self.task_progress_service.create_batch(
+            task_type="project_crf_folder_extract",
+            title="批量更新项目 CRF",
+            scope_type="project",
+            project_id=project_id,
+            requested_by=requested_by,
+        )
+
+        all_jobs: list[ExtractionJob] = []
+        processed_patients = 0
+        skipped_patients: list[dict[str, str]] = []
+        skipped_documents: list[dict[str, str]] = []
+        agg_documents_total = 0
+        agg_eligible_documents = 0
+        agg_already_extracted_documents = 0
+        agg_planned_documents = 0
+
+        for project_patient_id in target_ids:
+            try:
+                crf = await research_service.get_project_crf(
+                    project_id=project_id,
+                    project_patient_id=project_patient_id,
+                    created_by=requested_by,
+                )
+            except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
+                skipped_patients.append(
+                    {"project_patient_id": project_patient_id, "reason": str(error)}
+                )
+                continue
+
+            context = crf.get("context")
+            schema_json = crf.get("schema")
+            if context is None or not isinstance(schema_json, dict):
+                skipped_patients.append(
+                    {
+                        "project_patient_id": project_patient_id,
+                        "reason": "Project CRF schema context not found",
+                    }
+                )
+                continue
+
+            patient_id = context.patient_id
+            documents = await self.document_repository.list_by_patient(patient_id, limit=1000)
+            eligible_documents = [d for d in documents if self._document_ready_for_extraction(d)]
+            existing_jobs = await self.job_repository.list_by_patient_documents(
+                patient_id=patient_id,
+                document_ids=[d.id for d in eligible_documents],
+            )
+            extracted_document_ids = {
+                job.document_id
+                for job in existing_jobs
+                if job.job_type == "project_crf"
+                and job.project_id == project_id
+                and job.project_patient_id == project_patient_id
+                and job.status in {"pending", "running", "completed"}
+            }
+            pending_documents = [
+                d for d in eligible_documents if d.id not in extracted_document_ids
+            ]
+
+            agg_documents_total += len(documents)
+            agg_eligible_documents += len(eligible_documents)
+            agg_already_extracted_documents += len(extracted_document_ids)
+            agg_planned_documents += len(pending_documents)
+
+            for document in pending_documents:
+                plan_items = self.extraction_planner.plan(
+                    document=document,
+                    schema_json=schema_json,
+                    input_json={"source": "project_crf_folder_update"},
+                    source_roles={"primary"},
+                )
+                if not plan_items:
+                    skipped_documents.append(
+                        {
+                            "project_patient_id": project_patient_id,
+                            "document_id": document.id,
+                            "reason": "no primary source matched",
+                        }
+                    )
+                    continue
+                for item in plan_items:
+                    all_jobs.append(
+                        await self._create_pending_planned_job(
+                            job_type="project_crf",
+                            requested_by=requested_by,
+                            priority=0,
+                            patient_id=patient_id,
+                            document_id=document.id,
+                            project_id=project_id,
+                            project_patient_id=project_patient_id,
+                            context_id=context.id,
+                            schema_version_id=context.schema_version_id,
+                            target_form_key=item.target_form_key,
+                            input_json={
+                                "source": "project_crf_folder_update",
+                                "form_keys": [item.target_form_key],
+                                "planned_reason": item.reason,
+                                "match_role": item.match_role,
+                                "enqueue_async": True,
+                            },
+                        )
+                    )
+            processed_patients += 1
+
+        if all_jobs:
+            for job in all_jobs:
+                await self.task_progress_service.create_item_for_job(
+                    batch_id=batch.id,
+                    task_type=self._task_type_for_job(job),
+                    job=job,
+                )
+            await self._commit_pending_jobs_before_enqueue()
+            for job in all_jobs:
+                await self._enqueue_extraction_task(job.id)
+        else:
+            await self.task_progress_service.aggregate_batch(batch.id)
+            await session.commit()
+
+        return {
+            "batch_id": batch.id,
+            "project_id": project_id,
+            "total_project_patients": len(target_ids),
+            "processed_patients": processed_patients,
+            "documents_total": agg_documents_total,
+            "eligible_documents": agg_eligible_documents,
+            "already_extracted_documents": agg_already_extracted_documents,
+            "planned_documents": agg_planned_documents,
+            "created_jobs": len(all_jobs),
+            "jobs": all_jobs,
+            "submitted_jobs": len(all_jobs),
+            "completed_jobs": 0,
+            "failed_jobs": 0,
+            "skipped_patients": skipped_patients,
+            "skipped_documents": skipped_documents,
         }
 
     async def _create_pending_planned_job(self, *, job_type: str, requested_by: str | None = None, **params: Any) -> ExtractionJob:

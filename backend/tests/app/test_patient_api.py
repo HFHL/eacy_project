@@ -37,17 +37,30 @@ class FakePatientService:
     async def list_patients(self, **kwargs):
         return list(self.patients.values()), len(self.patients)
 
-    async def get_patient(self, patient_id):
+    async def list_patients_with_stats(self, **kwargs):
+        patients = list(self.patients.values())
+        stats = {patient.id: {"document_count": 0, "data_completeness": 0.0} for patient in patients}
+        page_statistics = {"total_documents": 0, "average_completeness": 0.0, "recently_added_today": 0}
+        return patients, len(patients), stats, page_statistics
+
+    async def list_patient_projects(self, patient_id):
+        return []
+
+    async def get_patient(self, patient_id, **kwargs):
         return self.patients.get(patient_id)
+
+    async def get_patient_stats(self, patient, **kwargs):
+        return {"document_count": 0, "data_completeness": 0.0}
 
     async def update_patient(self, patient_id, **params):
         patient = self.patients[patient_id]
+        params.pop("owner_id", None)
         for key, value in params.items():
             setattr(patient, key, value)
         patient.updated_at = datetime(2026, 1, 2)
         return patient
 
-    async def delete_patient(self, patient_id):
+    async def delete_patient(self, patient_id, **kwargs):
         self.patients.pop(patient_id, None)
 
 

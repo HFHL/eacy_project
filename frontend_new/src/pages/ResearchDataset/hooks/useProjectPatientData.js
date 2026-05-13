@@ -163,6 +163,20 @@ export const useProjectPatientData = (projectId, patientId) => {
 
         // 设置关联文档
         setDocuments(data.documents || [])
+        // eslint-disable-next-line no-console
+        console.log('[useProjectPatientData] documents 详情:', {
+          count: Array.isArray(data.documents) ? data.documents.length : 'not-array',
+          patientGlobalId: data.patient_id,
+          sample: Array.isArray(data.documents) && data.documents.length > 0
+            ? {
+                id: data.documents[0].id,
+                name: data.documents[0].name,
+                status: data.documents[0].status,
+                patient_id: data.documents[0].patient_id,
+                document_type: data.documents[0].document_type,
+              }
+            : null,
+        })
 
         console.log('获取项目患者详情成功:', data)
       } else {

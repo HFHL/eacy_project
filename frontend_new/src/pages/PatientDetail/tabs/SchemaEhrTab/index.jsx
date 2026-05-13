@@ -168,7 +168,24 @@ const SchemaEhrTab = ({
   useEffect(() => {
     loadSchema()
   }, [schemaPath, patientId])
-  
+
+  /**
+   * 监听全局 `patient-detail-refresh` 事件（来源：
+   *  - globalBackgroundTaskPoller 在 ehr_targeted_extract / patient_extract / ehr_folder_batch 终态时派发）
+   * 仅当事件 patientId 与当前 Tab 一致时重新拉取 Schema 数据，
+   * 让靶向抽取 / 病历夹更新完成后 EHR 表单内容自动刷新。
+   */
+  useEffect(() => {
+    if (!patientId) return undefined
+    const handleRefresh = (event) => {
+      const targetPatientId = String(event?.detail?.patientId || '')
+      if (!targetPatientId || String(patientId) !== targetPatientId) return
+      loadSchema()
+    }
+    window.addEventListener('patient-detail-refresh', handleRefresh)
+    return () => window.removeEventListener('patient-detail-refresh', handleRefresh)
+  }, [patientId, loadSchema])
+
   // 当外部patientData变化时更新本地数据
   useEffect(() => {
     if (patientData) {

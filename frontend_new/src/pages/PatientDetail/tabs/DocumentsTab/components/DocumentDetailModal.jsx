@@ -75,6 +75,7 @@ import StatusIndicator from './StatusIndicator'
 import ConflictDetailModal from './ConflictDetailModal'
 import { DOC_TYPE_CATEGORIES } from '../../../../../components/FormDesigner/core/docTypes'
 import { extractEhrDataAsync, extractDocumentMetadata, getDocumentDetail, getDocumentOperationHistory, getDocumentTempUrl, getDocumentPdfStreamUrl, getFreshDocumentPdfStreamUrl, reparseDocumentSync, unarchiveDocument, updateDocumentMetadata, deleteDocument } from '../../../../../api/document'
+import { buildDeleteContent, fetchEvidenceImpactSafe } from '../../../../../utils/documentDeleteConfirm'
 import { mergeEhrData } from '../../../../../api/patient'
 import { getFieldLabel, isArrayField, isEmptyValue, normalizeDisplayValue, EHR_FIELD_GROUPS } from './ehrFieldLabels'
 import './DocumentDetailModal.css'
@@ -518,7 +519,7 @@ const DocumentDetailModal = forwardRef(({
     // 从 editedFields 中提取元数据字段
     const metadata = {}
     let hasMetadataChanges = false
-    
+
     metadataFields.forEach(fieldId => {
       if (editedFields[fieldId] !== undefined) {
         const value = editedFields[fieldId]?.value ?? editedFields[fieldId]
@@ -527,7 +528,15 @@ const DocumentDetailModal = forwardRef(({
         hasMetadataChanges = true
       }
     })
-    
+
+    // 关键：携带当前文档完整的 metadata_json 作为基底，避免 normalizeUpdatePayload
+    // 仅基于本次改动的几个字段重建 metadata_json，从而把 patientName/gender/age/
+    // identifiers/organizationName 等未触动的字段清空。
+    const baseMetadataJson = documentDetail?.metadata_json
+      || document?.metadata_json
+      || {}
+    metadata.metadata_json = baseMetadataJson
+
     // 如果有元数据修改，调用更新接口
     if (hasMetadataChanges) {
       setSavingMetadata(true)
@@ -713,17 +722,15 @@ const DocumentDetailModal = forwardRef(({
   }
 
   // 处理删除文档
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!document?.id) return
+    // 弹确认前先查证据影响，若 evidence_count>0 把字段清单放进 content
+    const impact = await fetchEvidenceImpactSafe(document.id)
+    const fileName = document.fileName || document.file_name || document.id
     Modal.confirm({
       title: '确认删除文档',
       icon: <DeleteOutlined style={{ color: appThemeToken.colorError }} />,
-      content: (
-        <div>
-          <p>确定要删除文档 <Text strong>{document.fileName || document.file_name || document.id}</Text> 吗？</p>
-          <p style={{ color: appThemeToken.colorError }}>删除操作不可撤销</p>
-        </div>
-      ),
+      content: buildDeleteContent(fileName, impact, { errorColor: appThemeToken.colorError }),
       okText: '确认删除',
       okType: 'danger',
       cancelText: '取消',
@@ -741,7 +748,9 @@ const DocumentDetailModal = forwardRef(({
           }
         } catch (error) {
           console.error('删除文档失败:', error)
-          message.error(error.response?.data?.message || '删除文档失败')
+          // request.js 抛 ApiRequestError：.message 已是后端 detail，.data 是原始 body
+          // 注意不要写成 error.response?.data?.message（那是 axios 的结构，本项目用 fetch）
+          message.error(error?.data?.detail || error?.message || '删除文档失败')
         } finally {
           setDeleting(false)
         }
@@ -1123,9 +1132,14 @@ const DocumentDetailModal = forwardRef(({
     const meta = documentDetail?.metadata || document?.metadata || {}
     
     // 对于 effectiveDate，优先使用详情数据，避免列表数据的闪烁
-    const effectiveDateValue = detailLoading 
-      ? '加载中...' 
-      : (documentDetail?.metadata?.effectiveDate || document?.metadata?.effectiveDate || '')
+    // 不要在加载中放“加载中…”这种字符串作为值——DatePicker 解析失败会让用户
+    // 误以为字段无法编辑。加载中直接给空串，由顶部 Spin/编辑器自身的禁用控制即可。
+    const rawEffectiveDate = documentDetail?.metadata?.effectiveDate || document?.metadata?.effectiveDate || ''
+    const effectiveDateValue = detailLoading ? '' : (
+      typeof rawEffectiveDate === 'string' && rawEffectiveDate.length > 10
+        ? rawEffectiveDate.slice(0, 10)   // 把 ISO datetime 截到 YYYY-MM-DD
+        : rawEffectiveDate
+    )
     
     // 处理多唯一标识符的本地编辑状态
     const currentIdentifiers = editedFields.identifiers?.value || meta.identifiers || []

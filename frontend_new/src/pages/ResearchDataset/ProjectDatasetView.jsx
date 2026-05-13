@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { getProject, getProjectPatients, enrollPatient, removeProjectPatient, updateProjectCrfFolder, getCrfExtractionProgress, getProjectExtractionTasks, getActiveExtractionTask, cancelCrfExtraction, resetCrfExtraction, exportProjectCrfFile, getProjectTemplateDesigner, updateProject } from '../../api/project'
+import { getProject, getProjectPatients, enrollPatient, removeProjectPatient, updateProjectCrfFolderBatch, getCrfExtractionProgress, getProjectExtractionTasks, getActiveExtractionTask, cancelCrfExtraction, resetCrfExtraction, exportProjectCrfFile, getProjectTemplateDesigner, updateProject } from '../../api/project'
 import { getProjectTemplate } from '../../api/crfTemplate'
 import { getPatientList } from '../../api/patient'
 import { maskName } from '../../utils/sensitiveUtils'
@@ -499,30 +499,30 @@ const ProjectDatasetView = () => {
     }
   }, [checkActiveTask])
   
-  // 启动抽取任务
+  // 启动抽取任务（项目级一次性批量入队）
   const handleStartExtraction = async (patientIds = null, mode = 'incremental', targetGroups = null) => {
     try {
       setIsExtracting(true)
       const normalizedIds = Array.isArray(patientIds) && patientIds.length > 0 ? patientIds.filter(Boolean) : null
-      const targetPatients = normalizedIds
-        ? patientDataset.filter((patient) => normalizedIds.includes(patient.patient_id) || normalizedIds.includes(patient.id))
-        : patientDataset
-      const responses = []
-      for (const patient of targetPatients) {
-        const projectPatientId = patient.id || patient.project_patient_id
-        if (!projectPatientId) continue
-        responses.push(await updateProjectCrfFolder(projectId, projectPatientId))
-      }
-      const createdJobs = responses.reduce((sum, item) => sum + Number(item.data?.submitted_jobs || item.data?.created_jobs || 0), 0)
-      const response = responses[0] || { success: true, data: { task_id: '' } }
-      
+      // 将选中的 patient_id 映射为 project_patient_id；为空（全部）时不传，由后端解析项目内所有患者
+      const projectPatientIds = normalizedIds
+        ? patientDataset
+            .filter((patient) => normalizedIds.includes(patient.patient_id) || normalizedIds.includes(patient.id))
+            .map((patient) => patient.id || patient.project_patient_id)
+            .filter(Boolean)
+        : null
+
+      const response = await updateProjectCrfFolderBatch(projectId, projectPatientIds)
+
       if (response.success) {
-        const taskId = response.data.task_id || response.data.job_ids?.[0] || ''
+        const data = response.data || {}
+        const createdJobs = Number(data.submitted_jobs || data.created_jobs || 0)
+        const taskId = data.task_id || data.batch_id || data.job_ids?.[0] || ''
         setExtractionTaskId(taskId)
         setIsExtractionProgressCardDismissed(false)
         setSelectedPatients([])
         message.success(createdJobs > 0 ? `已提交 ${createdJobs} 个项目 CRF 抽取任务` : '暂无可提交的项目 CRF 抽取任务')
-        
+
         // 开始轮询进度
         if (taskId) pollExtractionProgress(taskId)
         if (!taskId) setIsExtracting(false)
@@ -534,8 +534,8 @@ const ProjectDatasetView = () => {
           setExtractionProgress(activeTask)
           setIsExtractionProgressCardDismissed(false)
           setSelectedPatients([])
-          message.warning(response.message || '该患者已有正在进行的抽取任务')
-          
+          message.warning(response.message || '该项目已有正在进行的抽取任务')
+
           // 恢复轮询
           pollExtractionProgress(activeTask.task_id)
         } else {

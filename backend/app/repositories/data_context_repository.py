@@ -40,6 +40,40 @@ class DataContextRepository(BaseRepo[DataContext]):
         result = await session.execute(query)
         return result.scalars().first()
 
+    async def list_project_crfs_by_project_patients(
+        self,
+        project_patient_ids: list[str],
+    ) -> list[DataContext]:
+        """批量按 project_patient_id 列出 project_crf 类型的上下文。"""
+        if not project_patient_ids:
+            return []
+        query = (
+            select(DataContext)
+            .where(DataContext.context_type == "project_crf")
+            .where(DataContext.project_patient_id.in_(project_patient_ids))
+        )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_latest_patient_ehrs_by_patients(
+        self,
+        patient_ids: list[str],
+    ) -> list[DataContext]:
+        """批量按 patient_id 列出 patient_ehr 上下文。
+
+        当同一患者存在多个 schema 版本的上下文时全部返回，由调用方按 patient_id 取最新。
+        """
+        if not patient_ids:
+            return []
+        query = (
+            select(DataContext)
+            .where(DataContext.context_type == "patient_ehr")
+            .where(DataContext.patient_id.in_(patient_ids))
+            .order_by(DataContext.created_at.desc())
+        )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
 
 class RecordInstanceRepository(BaseRepo[RecordInstance]):
     def __init__(self):

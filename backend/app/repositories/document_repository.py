@@ -163,6 +163,26 @@ class DocumentRepository(BaseRepo[Document]):
         order = {document_id: index for index, document_id in enumerate(document_ids)}
         return sorted(documents, key=lambda document: order.get(str(document.id), len(order)))
 
+    async def count_by_patients(
+        self,
+        patient_ids: list[str],
+        *,
+        uploaded_by: str | None = None,
+    ) -> dict[str, int]:
+        """批量按 patient_id 统计各患者的可见文档数量（排除已删除）。"""
+        if not patient_ids:
+            return {}
+        query = (
+            select(Document.patient_id, func.count(Document.id))
+            .where(Document.patient_id.in_(patient_ids))
+            .where(Document.status != "deleted")
+        )
+        if uploaded_by is not None:
+            query = query.where(Document.uploaded_by == uploaded_by)
+        query = query.group_by(Document.patient_id)
+        result = await session.execute(query)
+        return {str(patient_id): int(count) for patient_id, count in result.all()}
+
     async def count_documents(
         self,
         *,

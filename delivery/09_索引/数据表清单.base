@@ -1,0 +1,46 @@
+filters:
+  and:
+    - file.ext == "md"
+    - type == "data-model"
+formulas: {}
+properties:
+  file.name:
+    displayName: 文档
+  table_name:
+    displayName: 表名
+  module:
+    displayName: 业务域
+  related_tables:
+    displayName: 关联表
+  status:
+    displayName: 状态
+  last_verified_commit:
+    displayName: 上次核对 commit
+  last_verified_date:
+    displayName: 上次核对日期
+  owner:
+    displayName: 负责人
+views:
+  - type: table
+    name: 全部数据表
+    order:
+      - table_name
+      - file.name
+      - module
+      - status
+      - last_verified_date
+    sort:
+      - property: table_name
+        direction: ASC
+  - type: table
+    name: 按业务域分组
+    order:
+      - module
+      - table_name
+      - file.name
+      - status
+    sort:
+      - property: module
+        direction: ASC
+      - property: table_name
+        direction: ASC

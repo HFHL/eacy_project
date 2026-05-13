@@ -67,3 +67,13 @@ export function getTasksByScope(patientId, targetSection, context) {
   })
 }
 
+/** 同一抽取任务仅提示一次（避免全局轮询与详情页轮询重复 toast） */
+export function claimExtractionNotifyOnce(taskId) {
+  const id = String(taskId || '')
+  if (!id) return true
+  const k = `eacy_extraction_notified_${id}`
+  if (sessionStorage.getItem(k)) return false
+  sessionStorage.setItem(k, '1')
+  return true
+}
+

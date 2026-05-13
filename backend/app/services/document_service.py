@@ -12,7 +12,7 @@ from app.core.auth import CurrentUser, uuid_user_id_or_none
 from app.models import Document
 from app.repositories import DocumentRepository, ExtractionJobRepository, PatientRepository
 from app.services.ocr_payload_normalizer import normalize_textin_ocr_payload
-from app.services.archive_grouping_service import ArchiveGroupingService
+from app.services.archive_grouping_service import ArchiveGroupingService, is_pending_process_document
 from app.services.ehr_service import EhrService
 from app.services.schema_service import SchemaService
 from app.storage.document_storage import AliyunOssDocumentStorage, DocumentStorage, build_document_storage
@@ -427,14 +427,16 @@ class DocumentService:
 
         todo_groups = []
         for group in groups:
+            # `pending_process` 表示"OCR / 元数据抽取尚未完成"，应归入"待解析"统计，
+            # 不应出现在"待归档" todo_groups 里（与 parse_total 重复计数、视觉错位）。
+            if group.get("status") == "pending_process":
+                continue
             active_documents = [document for document in group["documents"] if document.get("status") != "archived"]
             if not active_documents:
                 continue
             status_set = []
             group_status = group["status"]
-            if group_status == "pending_process":
-                status_set = ["parsing"]
-            elif group_status == "matched_existing":
+            if group_status == "matched_existing":
                 status_set = ["auto_archived"]
             elif group_status == "needs_confirmation":
                 status_set = ["pending_confirm_review"]
@@ -482,7 +484,12 @@ class DocumentService:
                 }
             )
 
-        parse_total = len([document for document in documents if document.status != "archived" and document.meta_status != "completed"])
+        # parse_total / todo_total / archived_total 三者互斥：
+        #  · parse_total: 文档尚未完成 OCR 或元数据抽取（is_pending_process_document）
+        #  · todo_total : 已完成解析、等待人工归档的文档数（todo_groups 已去除 pending_process）
+        #  · archived_total: 已归档
+        # 这样左侧目录栏的三档徽标加起来 = total，避免同一份文档同时计入"待解析"+"待归档"。
+        parse_total = len([document for document in documents if is_pending_process_document(document)])
         todo_total = sum(group["count"] for group in todo_groups)
         archived_total = len([document for document in documents if document.status == "archived"])
         payload = {
@@ -692,14 +699,12 @@ class DocumentService:
     async def delete_document(self, document_id: str, *, requested_by: str | None = None) -> None:
         document = await self.get_document(document_id, uploaded_by=requested_by)
         if document is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
-        if await self.document_repository.has_evidence(document_id):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Document is used as field evidence and cannot be deleted",
-            )
-
+        # 允许软删除已被字段证据引用的文档：
+        # - 文档行保留（仅 status='deleted'），文件 blob 保留 → 证据仍可解析查看
+        # - 病历字段值不变，仅来源标注为"已删除文档"
+        # - 永久清理（含 evidence 链）应走单独的管理员入口，不在这里
         document.status = "deleted"
         document.updated_at = datetime.utcnow()
         await self.document_repository.save(document)

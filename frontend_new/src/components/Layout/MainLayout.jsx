@@ -56,7 +56,7 @@ import {
 import { toggleSider, setActiveMenuKey, setBreadcrumbs, setSiderCollapsed } from '../../store/slices/uiSlice'
 import { logout } from '../../store/slices/userSlice'
 import { logout as logoutApi } from '../../api/auth'
-import { batchDeletePatients, getPatientList } from '../../api/patient'
+import { batchDeletePatients, getPatientList, getEhrExtractionStatusBatch } from '../../api/patient'
 import { getDocumentList, getFileListV2Tree } from '../../api/document'
 import { deleteProject, getProjects } from '../../api/project'
 import { getCRFTemplate, getCRFTemplates, deleteCrfTemplate } from '../../api/crfTemplate'
@@ -302,6 +302,9 @@ const MainLayout = () => {
   const searchInputRef = useRef(null)
   const researchRailContainerRef = useRef(null)
   const [deletingPatientId, setDeletingPatientId] = useState('')
+  // 左侧 rail "电子病历夹更新中"指示：{[patientId]: true}
+  const [ehrExtractingMap, setEhrExtractingMap] = useState({})
+  const ehrPollTimerRef = useRef(null)
   const activePatientId = useMemo(() => {
     const match = location.pathname.match(/^\/patient\/detail\/([^/]+)/)
     return match?.[1] || null
@@ -780,6 +783,62 @@ const MainLayout = () => {
   }, [activePrimaryNavKey, refreshPatientRail])
 
   /**
+   * 轮询左侧 rail 中可见患者的"电子病历夹更新中"状态：
+   * - 每 5 秒一次调用 /patients/ehr-extraction-status 批量接口
+   * - 返回 active=true 的患者，其卡片刷新按钮显示 loading 转圈
+   * - 仅在患者主导航激活、且 rail 列表非空时运行
+   * - 任一活跃患者由 active→inactive 时，触发一次 rail 刷新让 documentCount 等数据跟上
+   */
+  useEffect(() => {
+    if (activePrimaryNavKey !== 'patient') return undefined
+    if (!patientRailItems.length) {
+      setEhrExtractingMap({})
+      return undefined
+    }
+    let cancelled = false
+    const ids = patientRailItems.map((it) => String(it.id)).filter(Boolean)
+
+    const tick = async () => {
+      if (cancelled) return
+      try {
+        const resp = await getEhrExtractionStatusBatch(ids)
+        if (cancelled) return
+        const items = resp?.data?.items || []
+        const next = {}
+        for (const it of items) {
+          if (it.active) next[String(it.patient_id)] = true
+        }
+        setEhrExtractingMap((prev) => {
+          // 检测有患者由活跃变为非活跃：触发一次 rail 列表刷新
+          const wasActiveIds = Object.keys(prev)
+          const justFinished = wasActiveIds.filter((pid) => !next[pid])
+          if (justFinished.length > 0) {
+            // 异步调用，不阻塞当前 tick
+            refreshPatientRail()
+          }
+          return next
+        })
+      } catch (err) {
+        // 静默失败，下个 tick 重试
+        if (!cancelled) console.warn('EHR 抽取状态查询失败:', err?.message)
+      }
+    }
+
+    tick() // 立即跑一次
+    ehrPollTimerRef.current = setInterval(tick, 5000)
+
+    return () => {
+      cancelled = true
+      if (ehrPollTimerRef.current) {
+        clearInterval(ehrPollTimerRef.current)
+        ehrPollTimerRef.current = null
+      }
+    }
+    // 用 ids.join 作为依赖避免引用变化导致频繁重建
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePrimaryNavKey, patientRailItems.map((it) => it.id).join(',')])
+
+  /**
    * 监听患者侧栏刷新事件（由患者相关页面在新增/更新后触发）。
    * 仅在当前处于患者主导航时刷新，避免无关页面额外请求。
    */
@@ -1255,10 +1314,11 @@ const MainLayout = () => {
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getPatientRailDisplayName(item.name)}</div>
-                <Tooltip title="刷新患者信息">
+                <Tooltip title={ehrExtractingMap[String(item.id)] ? '电子病历夹更新中…' : '刷新患者信息'}>
                   <Button
                     type="text"
                     size="small"
+                    loading={!!ehrExtractingMap[String(item.id)]}
                     icon={<ReloadOutlined />}
                     onClick={(event) => {
                       event.stopPropagation()

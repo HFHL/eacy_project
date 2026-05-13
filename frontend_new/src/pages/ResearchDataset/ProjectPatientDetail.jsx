@@ -13,7 +13,6 @@ import {
   Form,
   Input,
   Checkbox,
-  Spin,
   Alert,
   Radio,
 } from 'antd'
@@ -727,6 +726,24 @@ const ProjectPatientDetail = () => {
   const [isDragging, setIsDragging] = useState(false)
   const [schemaHistoryRefreshTick, setSchemaHistoryRefreshTick] = useState(0)
 
+  useEffect(() => {
+    const onProjectCrfRefresh = (ev) => {
+      const d = ev.detail || {}
+      if (d.projectId && projectId && String(d.projectId) !== String(projectId)) return
+      if (
+        d.projectPatientId &&
+        resolvedProjectPatientId &&
+        String(d.projectPatientId) !== String(resolvedProjectPatientId)
+      ) {
+        return
+      }
+      if (typeof refresh === 'function') refresh()
+      setSchemaHistoryRefreshTick((t) => t + 1)
+    }
+    window.addEventListener('eacy:project-crf-refresh', onProjectCrfRefresh)
+    return () => window.removeEventListener('eacy:project-crf-refresh', onProjectCrfRefresh)
+  }, [projectId, resolvedProjectPatientId, refresh])
+
   const [projectSchema, setProjectSchema] = useState(null)
   const [projectTemplateFieldGroups, setProjectTemplateFieldGroups] = useState([])
 
@@ -1044,23 +1061,8 @@ const ProjectPatientDetail = () => {
     setAiChatHistory([])
   }
 
-  // 加载状态
-  const shouldShowBlockingLoading = (loading || projectLoading) && !patientInfo?.patientId
-  if (shouldShowBlockingLoading) {
-    return (
-      <div className="page-container fade-in" style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        minHeight: 400 
-      }}>
-        <Spin 
-          indicator={<LoadingOutlined style={{ fontSize: 16 }} spin />}
-          tip="正在加载患者数据..."
-        />
-      </div>
-    )
-  }
+  // 是否仍在初次加载患者基础信息（仅作内联指示，不再阻塞整页）
+  const initialPatientLoading = (loading || projectLoading) && !patientInfo?.patientId
 
   const handleOpenExtractionModal = () => {
     setExtractionModalGroups([])
@@ -1139,7 +1141,14 @@ const ProjectPatientDetail = () => {
                 )
               },
               {
-                title: `${maskPatientDisplayName(patientInfo.name)} (${patientInfo.subjectId || patientInfo.patientCode || patientInfo.patientId})`
+                title: initialPatientLoading
+                  ? (
+                    <span>
+                      <LoadingOutlined spin style={{ marginRight: 6 }} />
+                      正在加载患者数据…
+                    </span>
+                  )
+                  : `${maskPatientDisplayName(patientInfo.name)} (${patientInfo.subjectId || patientInfo.patientCode || patientInfo.patientId || '-'})`
               }
             ]}
           />

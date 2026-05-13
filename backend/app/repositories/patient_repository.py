@@ -80,6 +80,21 @@ class PatientRepository(BaseRepo[Patient]):
         result = await session.execute(query)
         return int(result.scalar_one())
 
+    async def list_by_ids(self, patient_ids: list[str]) -> list[Patient]:
+        """批量按 id 列出患者（含已软删，但软删数据上层一般不再展示）。
+
+        用于"文档列表回填患者摘要"等批量场景；调用方需要保留输入与返回的对应关系
+        时，请自行用 patient_id 索引返回结果。
+        """
+        if not patient_ids:
+            return []
+        unique_ids = list({str(pid) for pid in patient_ids if pid})
+        if not unique_ids:
+            return []
+        query = select(Patient).where(Patient.id.in_(unique_ids))
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
     async def get_active_by_id(self, patient_id: str, *, owner_id: str | None = None) -> Patient | None:
         query = select(Patient).where(Patient.id == patient_id).where(Patient.deleted_at.is_(None))
         if owner_id is not None:

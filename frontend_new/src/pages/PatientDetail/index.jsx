@@ -64,7 +64,8 @@ import {
   RobotOutlined,
   SendOutlined,
   ClearOutlined,
-  DatabaseOutlined
+  DatabaseOutlined,
+  LoadingOutlined
 } from '@ant-design/icons'
 
 // 导入外置的配置数据
@@ -89,9 +90,9 @@ import AiSummaryTab from './tabs/AiSummaryTab'
 import SchemaEhrTab from './tabs/SchemaEhrTab'
 // 导入布局图标组件
 // 导入API
-import { extractEhrData, uploadAndArchiveAsync, getDocumentTaskProgress, deleteDocument } from '@/api/document'
+import { extractEhrData, uploadAndArchiveAsync, getFileStatusesByIds, deleteDocument } from '@/api/document'
 import { startPatientExtraction, getExtractionTaskStatus, getFieldConflicts, resolveFieldConflict } from '@/api/patient'
-import { getTasksByPatient, upsertTask, removeTask } from '@/utils/taskStore'
+import { getTasksByPatient, upsertTask, removeTask, claimExtractionNotifyOnce } from '@/utils/taskStore'
 import { maskPhone, maskIdCard, maskAddress, maskName } from '@/utils/sensitiveUtils'
 
 const { Title, Text } = Typography
@@ -1038,7 +1039,8 @@ const PatientDetail = () => {
       }
     } catch (error) {
       console.error('删除文档失败:', error)
-      message.error(error.response?.data?.message || '删除文档失败')
+      // request.js 抛 ApiRequestError：.message 已是后端 detail，.data 是原始 body
+      message.error(error?.data?.detail || error?.message || '删除文档失败')
     }
   }
 
@@ -1164,19 +1166,23 @@ const PatientDetail = () => {
               successMsg += `，更新 ${mergeStats.updated_count || 0} 个字段，新增 ${mergeStats.added_count || 0} 个字段`
             }
             
-            if (failCount > 0) {
-              message.warning({ content: `${successMsg}（${failCount} 个失败）`, key: 'extraction', duration: 5 })
-            } else {
-              message.success({ content: successMsg, key: 'extraction', duration: 5 })
+            if (claimExtractionNotifyOnce(taskId)) {
+              if (failCount > 0) {
+                message.warning({ content: `${successMsg}（${failCount} 个失败）`, key: 'extraction', duration: 5 })
+              } else {
+                message.success({ content: successMsg, key: 'extraction', duration: 5 })
+              }
             }
-            
+
             // 刷新数据
             fetchPatientDocuments?.()
             setReExtracting(false)
             
           } else if (status === 'failed') {
             // 任务失败
-            message.error({ content: taskData.message || '抽取任务失败', key: 'extraction', duration: 5 })
+            if (claimExtractionNotifyOnce(taskId)) {
+              message.error({ content: taskData.message || '抽取任务失败', key: 'extraction', duration: 5 })
+            }
             setReExtracting(false)
             
           } else {
@@ -1282,94 +1288,97 @@ const PatientDetail = () => {
     setTaskItems(list)
   }
 
-  // 后台轮询上传归档任务（不阻塞上传弹窗关闭）
-  const pollUploadArchiveTask = async ({ taskId, documentId, fileName }) => {
-    if (!taskId) return
+  // 后台轮询上传归档任务（基于 document_id 轮询 ocr_status / meta_status）
+  // 后端流程：POST /documents (带 patient_id) 自动 archived → OCR → metadata → patient_ehr extraction
+  // 完成条件：meta_status === 'completed'（OCR 必定已 completed）
+  const pollUploadArchiveTask = async ({ documentId, fileName, fileKey }) => {
+    if (!documentId) return
     const maxWaitMs = 15 * 60 * 1000
     const intervalMs = 2000
     const startAt = Date.now()
 
+    // 阶段进度映射：OCR 30-70%，metadata 70-95%，完成 100%
+    const computeStage = (ocrStatus, metaStatus) => {
+      const ocr = String(ocrStatus || '').toLowerCase()
+      const meta = String(metaStatus || '').toLowerCase()
+      if (ocr === 'failed') return { kind: 'error', percent: 100, message: 'OCR 失败' }
+      if (meta === 'failed') return { kind: 'error', percent: 100, message: '元数据抽取失败' }
+      if (meta === 'completed') {
+        return { kind: 'success', percent: 100, message: '已归档完成（电子病历夹后台更新中）' }
+      }
+      if (ocr === 'completed') {
+        // 进入 metadata 阶段
+        return { kind: 'progress', percent: 85, message: '正在抽取元数据…' }
+      }
+      if (ocr === 'processing') {
+        return { kind: 'progress', percent: 50, message: '正在进行 OCR…' }
+      }
+      // queued / pending / 未知
+      return { kind: 'progress', percent: 35, message: 'OCR 排队中…' }
+    }
+
+    const writeProgress = (stage) => {
+      const status = stage.kind === 'error' ? 'error' : stage.kind === 'success' ? 'success' : 'uploading'
+      setUploadProgress(prev => ({
+        ...prev,
+        [fileKey]: { status, percent: stage.percent, message: stage.message }
+      }))
+    }
+
+    const writeTask = (stage, extra = {}) => {
+      const taskStatus = stage.kind === 'success' ? 'completed' : stage.kind === 'error' ? 'failed' : 'processing'
+      upsertTask({
+        task_id: documentId,
+        patient_id: patientId,
+        document_id: documentId,
+        file_name: fileName,
+        type: 'upload_archive',
+        status: taskStatus,
+        percentage: stage.percent,
+        message: stage.message,
+        updated_at: new Date().toISOString(),
+        ...extra
+      })
+      loadTaskItems()
+    }
+
     try {
       while (Date.now() - startAt < maxWaitMs) {
         await new Promise(resolve => setTimeout(resolve, intervalMs))
-        const taskProgressRes = await getDocumentTaskProgress(taskId, { silent: true })
-        if (!taskProgressRes?.success || !taskProgressRes?.data) continue
+        let res
+        try {
+          res = await getFileStatusesByIds([documentId])
+        } catch (err) {
+          // 查询失败时不立即结束，等下一轮重试
+          console.warn('查询文档状态失败，将重试:', err?.message)
+          continue
+        }
+        const item = res?.data?.items?.[0] || res?.items?.[0]
+        if (!item) continue
 
-        const task = taskProgressRes.data
-        const backendProgress = typeof task.progress === 'number' ? task.progress : 0
-        const taskMessage = task.current_step || task.message || '后台处理中...'
+        const stage = computeStage(item.ocr_status, item.meta_status)
+        writeProgress(stage)
+        writeTask(stage)
 
-        upsertTask({
-          task_id: taskId,
-          patient_id: patientId,
-          document_id: documentId,
-          file_name: fileName,
-          type: 'upload_archive',
-          status: task.status || 'processing',
-          percentage: backendProgress,
-          message: taskMessage,
-          updated_at: task.updated_at || new Date().toISOString()
-        })
-        loadTaskItems()
-
-        if (task.status === 'completed') {
-          upsertTask({
-            task_id: taskId,
-            patient_id: patientId,
-            document_id: documentId,
-            file_name: fileName,
-            type: 'upload_archive',
-            status: 'completed',
-            percentage: 100,
-            message: '上传并归档成功',
-            updated_at: task.updated_at || new Date().toISOString()
-          })
-          loadTaskItems()
+        if (stage.kind === 'success') {
+          // 触发文档列表与统计刷新
           await syncPatientStatsAfterDocumentChange?.()
+          fetchPatientDocuments?.()
           return
         }
-
-        if (task.status === 'failed') {
-          upsertTask({
-            task_id: taskId,
-            patient_id: patientId,
-            document_id: documentId,
-            file_name: fileName,
-            type: 'upload_archive',
-            status: 'failed',
-            percentage: backendProgress,
-            message: task.message || '后台处理失败',
-            updated_at: task.updated_at || new Date().toISOString()
-          })
-          loadTaskItems()
+        if (stage.kind === 'error') {
           return
         }
       }
 
-      upsertTask({
-        task_id: taskId,
-        patient_id: patientId,
-        document_id: documentId,
-        file_name: fileName,
-        type: 'upload_archive',
-        status: 'failed',
-        percentage: 99,
-        message: '后台处理超时，请稍后在任务中心查看结果',
-        updated_at: new Date().toISOString()
-      })
-      loadTaskItems()
+      // 超时
+      const timeoutStage = { kind: 'error', percent: 99, message: '后台处理超时，请稍后在任务中心查看结果' }
+      writeProgress(timeoutStage)
+      writeTask(timeoutStage)
     } catch (e) {
-      upsertTask({
-        task_id: taskId,
-        patient_id: patientId,
-        document_id: documentId,
-        file_name: fileName,
-        type: 'upload_archive',
-        status: 'failed',
-        message: e?.message || '任务状态查询失败',
-        updated_at: new Date().toISOString()
-      })
-      loadTaskItems()
+      const errStage = { kind: 'error', percent: 100, message: e?.message || '任务状态查询失败' }
+      writeProgress(errStage)
+      writeTask(errStage)
     }
   }
 
@@ -1388,6 +1397,7 @@ const PatientDetail = () => {
       if (!targetPatientId || String(patientId) !== targetPatientId) return
       fetchPatientDetail?.()
       fetchPatientDocuments?.()
+      syncPatientStatsAfterDocumentChange?.()
     }
     window.addEventListener('patient-detail-refresh', handleRefreshFromRail)
     return () => window.removeEventListener('patient-detail-refresh', handleRefreshFromRail)
@@ -1519,8 +1529,7 @@ const PatientDetail = () => {
       {/**
        * 患者详情主容器固定高度，确保概览区与内容区合并后铺满主体背景。
        */}
-      <Spin spinning={loading} tip="加载中...">
-        <Card
+      <Card
           size="small"
           style={{ marginBottom: 16 }}
           bodyStyle={{
@@ -1542,6 +1551,9 @@ const PatientDetail = () => {
                   <div>
                     <Text type="secondary">姓名:</Text>
                     <Text strong style={{ marginLeft: 8, fontSize: 16 }}>{patientInfo.name ? maskName(patientInfo.name) : '-'}</Text>
+                    {loading && (
+                      <LoadingOutlined spin style={{ marginLeft: 8, color: token.colorPrimary }} />
+                    )}
                   </div>
                 </Col>
                 <Col span={6}>
@@ -1719,7 +1731,6 @@ const PatientDetail = () => {
             />
           </div>
         </Card>
-      </Spin>
 
       {/* 编辑患者信息弹窗 */}
       <Modal
@@ -2023,41 +2034,43 @@ const PatientDetail = () => {
                         ...prev,
                         [fileKey]: {
                           status: 'uploading',
-                          percent: Math.min(percent, 30), // 文件传输阶段占 30%
-                          message: '正在上传文件...'
+                          percent: Math.min(percent * 0.3, 30), // 文件传输阶段占 0-30%
+                          message: '正在上传文件…'
                         }
                       }))
                     }
                   )
 
-                  const taskId = result?.data?.task_id
-                  if (!taskId) {
-                    throw new Error('未获取到后台任务ID')
+                  const documentId = result?.data?.document_id || result?.data?.id
+                  if (!documentId) {
+                    throw new Error('未获取到文档 ID')
                   }
 
+                  // 写入任务中心（用 document_id 作为 task_id）
                   upsertTask({
-                    task_id: taskId,
+                    task_id: documentId,
                     patient_id: patientId,
-                    document_id: result?.data?.document_id,
+                    document_id: documentId,
                     file_name: file.name,
                     type: 'upload_archive',
-                    status: 'pending',
-                    percentage: 0,
-                    message: '文档上传成功，后台任务已启动',
+                    status: 'processing',
+                    percentage: 30,
+                    message: '上传完成，等待 OCR…',
                     created_at: new Date().toISOString()
                   })
                   loadTaskItems()
 
+                  // 切换到 OCR 阶段提示
                   setUploadProgress(prev => ({
                     ...prev,
-                    [fileKey]: { status: 'success', percent: 100, message: '上传成功，后台处理中' }
+                    [fileKey]: { status: 'uploading', percent: 32, message: '等待 OCR…' }
                   }))
 
-                  // 异步轮询后台任务，不阻塞本次上传流程
+                  // 异步轮询后台 OCR/metadata 状态，不阻塞本次上传流程
                   pollUploadArchiveTask({
-                    taskId,
-                    documentId: result?.data?.document_id,
-                    fileName: file.name
+                    documentId,
+                    fileName: file.name,
+                    fileKey
                   })
                   queuedCount++
                 } catch (error) {
@@ -2074,11 +2087,8 @@ const PatientDetail = () => {
               
               if (failCount === 0) {
                 message.success(`已上传 ${queuedCount} 个文档，后台正在解析归档（可在任务中心查看）`)
-                setTimeout(() => {
-                  setUploadVisible(false)
-                  setUploadFileList([])
-                  setUploadProgress({})
-                }, 1500)
+                // 不再自动关闭弹窗，让用户在进度条里观察 OCR / 元数据各阶段
+                // 用户可手动关闭，关闭后任务中心继续追踪
               } else {
                 message.warning(`上传完成：成功 ${queuedCount} 个，失败 ${failCount} 个（成功项后台继续处理）`)
               }

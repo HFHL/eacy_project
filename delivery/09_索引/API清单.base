@@ -1,0 +1,55 @@
+filters:
+  and:
+    - file.ext == "md"
+    - type == "api"
+formulas: {}
+properties:
+  file.name:
+    displayName: 文档
+  module:
+    displayName: 业务域
+  api_endpoints:
+    displayName: 端点
+  status:
+    displayName: 状态
+  audience:
+    displayName: 受众
+  last_verified_commit:
+    displayName: 上次核对 commit
+  last_verified_date:
+    displayName: 上次核对日期
+  owner:
+    displayName: 负责人
+views:
+  - type: table
+    name: 全部 API
+    order:
+      - file.name
+      - module
+      - api_endpoints
+      - status
+      - last_verified_date
+      - owner
+  - type: table
+    name: 按业务域分组
+    order:
+      - module
+      - file.name
+      - api_endpoints
+      - status
+    sort:
+      - property: module
+        direction: ASC
+      - property: file.name
+        direction: ASC
+  - type: table
+    name: 待 re-verify
+    filters:
+      and:
+        - status != "verified"
+    order:
+      - file.name
+      - module
+      - status
+      - last_verified_date
+      - owner

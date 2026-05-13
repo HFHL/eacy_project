@@ -39,11 +39,14 @@ const normalizePatient = (patient = {}) => {
     admission_date: extra.admission_date || patient.admission_date || '',
     notes: extra.notes || patient.notes || '',
     tags: Array.isArray(extra.tags) ? extra.tags : [],
-    projects: Array.isArray(extra.projects) ? extra.projects : [],
-    document_count: Number(extra.document_count || patient.document_count || 0),
+    projects: Array.isArray(patient.projects)
+      ? patient.projects
+      : (Array.isArray(extra.projects) ? extra.projects : []),
+    // 后端已聚合返回 document_count / data_completeness；extra_json 仅作兼容兜底
+    document_count: Number(patient.document_count ?? extra.document_count ?? 0) || 0,
     pending_field_conflict_count: Number(extra.pending_field_conflict_count || 0),
     has_pending_field_conflicts: !!extra.has_pending_field_conflicts,
-    data_completeness: Number(extra.data_completeness || 0),
+    data_completeness: Number(patient.data_completeness ?? extra.data_completeness ?? 0) || 0,
     status: patient.deleted_at ? 'deleted' : (extra.status || patient.status || 'active'),
     merged_data: {
       ...(extra.merged_data || {}),
@@ -66,18 +69,28 @@ const normalizeListPayload = (payload = {}) => {
   items.page = page
   items.page_size = pageSize
 
+  // 优先使用后端 statistics（针对当前查询条件下整页的聚合）；旧后端未返回时回退到
+  // 仅当前页前端累计（不准确但有兜底）。
+  const backendStats = (payload.statistics && typeof payload.statistics === 'object') ? payload.statistics : null
+  const fallbackStats = {
+    total_documents: items.reduce((sum, item) => sum + Number(item.document_count || 0), 0),
+    average_completeness: items.length
+      ? items.reduce((sum, item) => sum + Number(item.data_completeness || 0), 0) / items.length
+      : 0,
+    recently_added: 0,
+  }
+  const statistics = backendStats ? {
+    total_documents: Number(backendStats.total_documents ?? fallbackStats.total_documents) || 0,
+    average_completeness: Number(backendStats.average_completeness ?? fallbackStats.average_completeness) || 0,
+    recently_added: Number(backendStats.recently_added_today ?? backendStats.recently_added ?? 0) || 0,
+  } : fallbackStats
+
   return emptySuccess(items, {
     pagination: { total, page, page_size: pageSize },
     total,
     page,
     page_size: pageSize,
-    statistics: {
-      total_documents: items.reduce((sum, item) => sum + Number(item.document_count || 0), 0),
-      average_completeness: items.length
-        ? items.reduce((sum, item) => sum + Number(item.data_completeness || 0), 0) / items.length
-        : 0,
-      recently_added: items.length,
-    },
+    statistics,
   })
 }
 
@@ -147,8 +160,8 @@ export const createPatient = async (data = {}) => {
   return emptySuccess(normalizePatient(payload))
 }
 
-export const getPatientDetail = async (patientId = '') => {
-  const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}`)
+export const getPatientDetail = async (patientId = '', options) => {
+  const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}`, undefined, options)
   return emptySuccess(normalizePatient(payload))
 }
 
@@ -504,6 +517,19 @@ export const updatePatientEhrSchemaData = async (patientId = '', data = {}, opti
     deleted_count: deleted.length,
   })
 }
+/**
+ * 批量查询若干患者当前是否有活跃 (pending/running) 的 patient_ehr 抽取任务。
+ * 用于左侧患者 rail 的"病历夹更新中"指示器，前端定期轮询此端点。
+ * @param {string[]} patientIds
+ * @returns {Promise<{success: boolean, data: {items: Array<{patient_id: string, active: boolean, job_count: number, latest_started_at: string|null, latest_updated_at: string|null, latest_status: string|null}>}}>}
+ */
+export const getEhrExtractionStatusBatch = async (patientIds = []) => {
+  const ids = Array.from(new Set((Array.isArray(patientIds) ? patientIds : []).filter(Boolean).map(String)))
+  if (!ids.length) return emptySuccess({ items: [] })
+  const payload = await request.post(`${PATIENTS_ENDPOINT}/ehr-extraction-status`, { patient_ids: ids })
+  return emptySuccess({ items: payload.items || [] })
+}
+
 export const updatePatientEhrFolder = async (patientId = '') => {
   if (!patientId) return emptySuccess({ created_jobs: 0, job_ids: [] })
   const payload = await request.post(`${PATIENTS_ENDPOINT}/${patientId}/ehr/update-folder`)
@@ -526,8 +552,8 @@ export const getTaskBatchProgress = async (batchId = '') => {
   })
 }
 export const updatePatientEhr = async (patientId, data = {}) => updatePatientEhrSchemaData(patientId, data)
-export const getPatientDocuments = async (patientId = '') => {
-  const response = await getDocumentList({ patient_id: patientId, page: 1, page_size: 100 })
+export const getPatientDocuments = async (patientId = '', options) => {
+  const response = await getDocumentList({ patient_id: patientId, page: 1, page_size: 100 }, options)
   return emptySuccess(response.data || [])
 }
 export const mergeEhrData = async () => emptySuccess(null)

@@ -21,21 +21,14 @@ from app.models import (
     SchemaTemplateVersion,
     User,
 )
-from app.services.extraction_service import ExtractionService
 from core.db import session
 
 
 ADMIN_TASK_STALE_AFTER = timedelta(minutes=15)
 ACTIVE_STATUSES = {"pending", "queued", "running", "stale"}
-TERMINAL_JOB_STATUSES = {"completed", "cancelled"}
-RETRYABLE_STATUSES = {"pending", "queued", "failed", "cancelled", "stale"}
 
 
 class AdminTaskNotFoundError(ValueError):
-    pass
-
-
-class AdminTaskConflictError(ValueError):
     pass
 
 
@@ -151,9 +144,7 @@ class AdminTaskService:
         offset: int = 0,
     ) -> dict[str, Any]:
         batches = await self._list_batch_task_summaries()
-        batch_job_ids = await self._batch_job_ids()
-        jobs = await self._list_history_job_summaries(excluded_job_ids=batch_job_ids)
-        rows = batches + jobs
+        rows = batches
 
         if task_type and task_type != "all":
             rows = [row for row in rows if row["task_type"] == task_type]
@@ -177,9 +168,6 @@ class AdminTaskService:
         batch = await session.get(AsyncTaskBatch, task_id)
         if batch is not None:
             return await self._batch_detail(batch)
-        job = await session.get(ExtractionJob, task_id)
-        if job is not None:
-            return await self._history_job_detail(job)
         raise AdminTaskNotFoundError("Admin extraction task not found")
 
     async def list_extraction_task_events(self, task_id: str, *, after_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
@@ -200,39 +188,7 @@ class AdminTaskService:
             result = await session.execute(query)
             return [self._event_payload(event, task_id=task_id) for event in result.scalars().all()]
 
-        job = await session.get(ExtractionJob, task_id)
-        if job is not None:
-            return [self._synthetic_job_event(job)]
         raise AdminTaskNotFoundError("Admin extraction task not found")
-
-    async def resubmit_extraction_task(self, task_id: str, *, source: str = "auto", only_failed: bool = True) -> dict[str, Any]:
-        jobs = await self._resubmittable_jobs(task_id, source=source, only_failed=only_failed)
-        if not jobs:
-            return {"task_id": task_id, "resubmitted_job_ids": [], "skipped_job_ids": [], "message": "没有可重新提交的任务"}
-
-        service = ExtractionService()
-        resubmitted: list[str] = []
-        skipped: list[str] = []
-        for job in jobs:
-            normalized = self._normalize_job_status(job)
-            if normalized not in RETRYABLE_STATUSES:
-                skipped.append(job.id)
-                continue
-            job.status = "pending"
-            job.progress = max(int(job.progress or 0), 0)
-            job.error_message = None
-            job.finished_at = None
-            await service.job_repository.save(job)
-            await session.commit()
-            await service._enqueue_extraction_task(job.id)
-            resubmitted.append(job.id)
-
-        return {
-            "task_id": task_id,
-            "resubmitted_job_ids": resubmitted,
-            "skipped_job_ids": skipped,
-            "message": f"已重新提交 {len(resubmitted)} 个任务",
-        }
 
     async def _count(self, model: Any, *conditions: Any) -> int:
         query = select(func.count()).select_from(model)
@@ -283,51 +239,6 @@ class AdminTaskService:
             )
         return rows
 
-    async def _list_history_job_summaries(self, *, excluded_job_ids: set[str]) -> list[dict[str, Any]]:
-        result = await session.execute(
-            select(ExtractionJob, Patient.name, Document.original_filename, ResearchProject.project_name, SchemaTemplate.template_name)
-            .outerjoin(Patient, Patient.id == ExtractionJob.patient_id)
-            .outerjoin(Document, Document.id == ExtractionJob.document_id)
-            .outerjoin(ResearchProject, ResearchProject.id == ExtractionJob.project_id)
-            .outerjoin(SchemaTemplateVersion, SchemaTemplateVersion.id == ExtractionJob.schema_version_id)
-            .outerjoin(SchemaTemplate, SchemaTemplate.id == SchemaTemplateVersion.template_id)
-            .order_by(ExtractionJob.updated_at.desc())
-            .limit(1000)
-        )
-        rows: list[dict[str, Any]] = []
-        for job, patient_name, document_name, project_name, schema_name in result.all():
-            if job.id in excluded_job_ids:
-                continue
-            status = self._normalize_job_status(job)
-            rows.append(
-                {
-                    "id": job.id,
-                    "source_table": "extraction_jobs",
-                    "task_type": self._admin_task_type(job.job_type, []),
-                    "status": status,
-                    "progress": int(job.progress or 0),
-                    "project_id": job.project_id,
-                    "project_name": project_name,
-                    "patient_id": job.patient_id,
-                    "patient_name": patient_name,
-                    "schema_name": schema_name,
-                    "target_section": job.target_form_key,
-                    "document_count": 1 if job.document_id else 0,
-                    "completed_count": 1 if status == "completed" else 0,
-                    "failed_count": 1 if status == "failed" else 0,
-                    "running_count": 1 if status == "running" else 0,
-                    "pending_count": 1 if status in {"pending", "queued"} else 0,
-                    "started_at": job.started_at,
-                    "finished_at": job.finished_at,
-                    "created_at": job.created_at,
-                    "updated_at": job.updated_at,
-                    "error_message": job.error_message,
-                    "primary_job_id": job.id,
-                    "document_name": document_name,
-                }
-            )
-        return rows
-
     async def _batch_detail(self, batch: AsyncTaskBatch) -> dict[str, Any]:
         items = await self._items_for_batch(batch.id)
         jobs = []
@@ -337,28 +248,6 @@ class AdminTaskService:
 
         summary = await self._batch_summary(batch, items)
         return {"summary": summary, "jobs": jobs, "llm_source": "run", "llm_calls": self._llm_calls_from_jobs(jobs)}
-
-    async def _history_job_detail(self, job: ExtractionJob) -> dict[str, Any]:
-        job_payload = await self._job_detail_payload(job, item=None)
-        summary = {
-            "id": job.id,
-            "source_table": "extraction_jobs",
-            "task_type": self._admin_task_type(job.job_type, []),
-            "status": self._normalize_job_status(job),
-            "progress": int(job.progress or 0),
-            "project_id": job.project_id,
-            "patient_id": job.patient_id,
-            "schema_name": job_payload.get("schema_name"),
-            "target_section": job.target_form_key,
-            "completed_count": 1 if job.status == "completed" else 0,
-            "failed_count": 1 if job.status == "failed" else 0,
-            "running_count": 1 if job.status == "running" else 0,
-            "pending_count": 1 if job.status == "pending" else 0,
-            "started_at": job.started_at,
-            "finished_at": job.finished_at,
-            "error_message": job.error_message,
-        }
-        return {"summary": summary, "jobs": [job_payload], "llm_source": "run", "llm_calls": self._llm_calls_from_jobs([job_payload])}
 
     async def _batch_summary(self, batch: AsyncTaskBatch, items: list[AsyncTaskItem]) -> dict[str, Any]:
         first_job = await self._first_job_for_items(items)
@@ -483,27 +372,6 @@ class AdminTaskService:
             )
         return fields
 
-    async def _resubmittable_jobs(self, task_id: str, *, source: str, only_failed: bool) -> list[ExtractionJob]:
-        batch = await session.get(AsyncTaskBatch, task_id)
-        if batch is not None and source in {"auto", "batch", "project"}:
-            items = await self._items_for_batch(batch.id)
-            jobs: list[ExtractionJob] = []
-            for item in items:
-                if not item.extraction_job_id:
-                    continue
-                normalized = self._normalize_item_status(item)
-                if only_failed and normalized not in {"failed", "pending", "queued", "stale"}:
-                    continue
-                job = await session.get(ExtractionJob, item.extraction_job_id)
-                if job is not None:
-                    jobs.append(job)
-            return jobs
-
-        job = await session.get(ExtractionJob, task_id)
-        if job is not None and source in {"auto", "job"}:
-            return [job]
-        raise AdminTaskNotFoundError("Admin extraction task not found")
-
     async def _items_for_batch(self, batch_id: str) -> list[AsyncTaskItem]:
         result = await session.execute(select(AsyncTaskItem).where(AsyncTaskItem.batch_id == batch_id).order_by(AsyncTaskItem.created_at))
         return list(result.scalars().all())
@@ -516,10 +384,6 @@ class AdminTaskService:
             if job is not None:
                 return job
         return None
-
-    async def _batch_job_ids(self) -> set[str]:
-        result = await session.execute(select(AsyncTaskItem.extraction_job_id).where(AsyncTaskItem.extraction_job_id.is_not(None)))
-        return {str(value) for value in result.scalars().all() if value}
 
     async def _names_for_scope(
         self,
@@ -630,22 +494,6 @@ class AdminTaskService:
             "payload_json": event.payload_json,
             "ts": event.created_at,
             "created_at": event.created_at,
-        }
-
-    def _synthetic_job_event(self, job: ExtractionJob) -> dict[str, Any]:
-        return {
-            "id": f"job:{job.id}:{job.updated_at.isoformat() if job.updated_at else ''}",
-            "task_id": job.id,
-            "batch_id": None,
-            "item_id": None,
-            "type": "state_changed",
-            "status": self._normalize_job_status(job),
-            "progress": job.progress,
-            "node": job.status,
-            "message": job.error_message or f"任务状态：{job.status}",
-            "payload_json": None,
-            "ts": job.updated_at or job.created_at,
-            "created_at": job.updated_at or job.created_at,
         }
 
     def _event_value(self, event: FieldValueEvent) -> Any:

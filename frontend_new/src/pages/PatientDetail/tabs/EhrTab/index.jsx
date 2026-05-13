@@ -16,6 +16,7 @@ import { useEhrFieldEdit } from './hooks/useEhrFieldEdit'
 // 导入API
 import { extractEhrData, extractEhrDataTargeted, getFreshDocumentPdfStreamUrl, getDocumentTempUrl, uploadDocument } from '@/api/document'
 import { getEhrFieldEvidence, getEhrFieldHistory, getPatientEhr } from '@/api/patient'
+import { upsertTask } from '@/utils/taskStore'
 import { appThemeToken } from '@/styles/themeTokens'
 
 const isPdfFileLike = ({ fileType, fileName, fileUrl } = {}) => {
@@ -424,6 +425,19 @@ const EhrTab = ({
       })
       if (response.success) {
         message.success(waitForDocumentReady ? '文档已上传，OCR 完成后将自动专项抽取' : '专项抽取已完成')
+        const taskId = response.data?.task_id || response.data?.id
+        if (taskId) {
+          upsertTask({
+            task_id: taskId,
+            patient_id: patientId,
+            document_id: documentId,
+            type: 'ehr_targeted_extract',
+            status: 'pending',
+            target_form_key: selectedEhrGroup,
+            message: waitForDocumentReady ? '等待 OCR 与后台专项抽取' : '专项抽取进行中',
+            created_at: new Date().toISOString(),
+          })
+        }
         setTargetModalOpen(false)
         onEhrRefresh?.()
       } else {

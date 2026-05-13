@@ -55,12 +55,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "EACY开发计划.md",
+                "file": "EACY开发计划 7.1 管理后台任务监控与实时进度验收方案.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "EACY开发计划"
+              "title": "EACY开发计划 7.1 管理后台任务监控与实时进度验收方案"
             }
           },
           {
@@ -170,12 +170,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "EACY开发计划.md",
+                "file": "EACY开发计划 7.1 管理后台任务监控与实时进度验收方案.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "EACY开发计划 的出链列表"
+              "title": "EACY开发计划 7.1 管理后台任务监控与实时进度验收方案 的出链列表"
             }
           },
           {
@@ -240,15 +240,15 @@
       "bases:新建数据库": false
     }
   },
-  "active": "fd5b098b9a25d98d",
+  "active": "059f31a48873d18d",
   "lastOpenFiles": [
+    "EACY开发计划.md",
     "EACY开发计划 1.1 后端目录落位实施路径.md",
     "EACY 后端接口文档/EACY 后端接口文档.md",
     "EACY 后端接口文档/EACY 后端接口文档 - Documents.md",
     "api key.md",
     "前端可视化，获取精准坐标.md",
     "EACY开发计划 6.3.5 Extraction Worker - 抽取任务与落库实施计划.md",
-    "EACY开发计划.md",
     "EHR-CRF 数据库与抽取落库设计.md",
     "Eacy后端开发文档.md",
     "EACY 后端接口文档/EACY 后端接口文档 - Projects 与 CRF.md",

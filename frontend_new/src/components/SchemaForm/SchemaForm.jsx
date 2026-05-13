@@ -53,6 +53,7 @@ import { getDocumentDetail, getDocumentTempUrl, getDocumentPdfStreamUrl, getFres
 import { getEhrFieldHistoryV3, getEhrFieldCandidatesV3, selectEhrFieldCandidateV3 } from '../../api/patient'
 import PdfPageWithHighlight from '../PdfPageWithHighlight'
 import { getProjectCrfFieldHistory, getProjectCrfFieldCandidates, selectProjectCrfFieldCandidate, startCrfExtraction } from '../../api/project'
+import { upsertTask } from '../../utils/taskStore'
 import { maskSensitiveField } from '../../utils/sensitiveUtils'
 import {
   toAuditPath as _toAuditPath,
@@ -377,8 +378,40 @@ const ModificationHistory = ({
   onViewSource,
   onHistoryLoaded,
   onCandidateApplied,
-  isSensitive = false
+  isSensitive = false,
+  candidateDocuments = []
 }) => {
+  // 文档 id → 可读名称的映射，用于把候选值列表里的 source_document_id 解析为文件名
+  const candidateDocumentNameById = useMemo(() => {
+    const map = new Map()
+    for (const doc of candidateDocuments || []) {
+      const id = doc?.id ?? doc?.document_id ?? doc?.documentId
+      if (id == null) continue
+      const name =
+        doc?.file_name ||
+        doc?.fileName ||
+        doc?.name ||
+        doc?.document_name ||
+        doc?.documentName ||
+        ''
+      map.set(String(id), name)
+    }
+    return map
+  }, [candidateDocuments])
+  const resolveCandidateSourceDocName = useCallback((candidate) => {
+    if (!candidate) return ''
+    const direct =
+      candidate.source_document_name ||
+      candidate.sourceDocumentName ||
+      candidate.document_name ||
+      candidate.documentName
+    if (direct) return String(direct)
+    const id = candidate.source_document_id ?? candidate.sourceDocumentId
+    if (id == null) return ''
+    const mapped = candidateDocumentNameById.get(String(id))
+    if (mapped) return mapped
+    return ''
+  }, [candidateDocumentNameById])
   const [history, setHistory] = useState([])
   const [fieldMeta, setFieldMeta] = useState({
     candidates: [],
@@ -499,6 +532,10 @@ const ModificationHistory = ({
     if (arrayIdx === null) return null
     const oldArr = Array.isArray(item.old_value) ? item.old_value : null
     const newArr = Array.isArray(item.new_value) ? item.new_value : null
+    // V3 历史接口里 old_value / new_value 已经是该字段的叶子值，
+    // 仅当后端返回的是「整个数组」时才需要再按下标拆解；否则保持叶子值原样，
+    // 避免可重复行嵌套字段的差异被误判为「未变更」。
+    if (!oldArr && !newArr) return null
     if (subFieldPath) {
       const oldSub = oldArr?.[arrayIdx] != null ? _getNestedValue(oldArr[arrayIdx], subFieldPath) : undefined
       const newSub = newArr?.[arrayIdx] != null ? _getNestedValue(newArr[arrayIdx], subFieldPath) : undefined
@@ -718,7 +755,7 @@ const ModificationHistory = ({
                       </Button>
                     </div>
                     <div style={{ marginTop: 6, fontSize: 12, color: appThemeToken.colorTextSecondary }}>
-                      <div>来源文档: {candidate?.source_document_id || '—'}</div>
+                      <div>来源文档: {resolveCandidateSourceDocName(candidate) || (candidate?.source_document_id ? `文档 ${String(candidate.source_document_id).slice(0, 8)}` : '—')}</div>
                       <div>页码: {candidate?.source_page ?? '—'}</div>
                       {candidate?.source_text ? <div>原文片段: {candidate.source_text}</div> : null}
                       {candidate?.confidence != null ? <div>置信度: {candidate.confidence}</div> : null}
@@ -734,33 +771,60 @@ const ModificationHistory = ({
   )
 }
 
-const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 480, loading = false }) => {
+const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 480, loading = false, initialRotation = 0 }) => {
   const containerRef = useRef(null)
   const imgRef = useRef(null)
   const [imageLoaded, setImageLoaded] = useState(false)
   const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 })
   const [displayDimensions, setDisplayDimensions] = useState({ width: 0, height: 0 })
   const [scale, setScale] = useState(100)
-  const [rotation, setRotation] = useState(0)
+  const [rotation, setRotation] = useState(((Number(initialRotation) || 0) % 360 + 360) % 360)
+  // 当 initialRotation（来自 OCR 检测到的页面角度）变化时，同步到 rotation 初始值；
+  // 用户随后通过工具栏旋转按钮仍可继续叠加旋转。
+  useEffect(() => {
+    const next = ((Number(initialRotation) || 0) % 360 + 360) % 360
+    setRotation(next)
+  }, [initialRotation])
   const [imgOffset, setImgOffset] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const isPdf = isPdfFileLike(documentInfo)
-  const effectiveMaxW = Math.max(panelWidth - 32, 200)
+  // 通过 ResizeObserver 跟踪外层容器宽度，浏览器窗口或分栏变化时即时响应；
+  // panelWidth 仅作为初始/兜底值，避免预览区拒绝缩放。
+  const [containerWidth, setContainerWidth] = useState(0)
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    const node = containerRef.current
+    if (!node) return undefined
+    const measure = () => {
+      const next = node.clientWidth || 0
+      if (next > 0) setContainerWidth(next)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure)
+      return () => window.removeEventListener('resize', measure)
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+  // 容器内已有 padding:8，需要从可用宽度里减去左右内边距
+  const measuredMaxW = containerWidth > 0 ? Math.max(containerWidth - 16, 200) : 0
+  const fallbackMaxW = Math.max(panelWidth - 32, 200)
+  const effectiveMaxW = measuredMaxW || fallbackMaxW
   const [pdfPage, setPdfPage] = useState(1)
   const [pdfPageCount, setPdfPageCount] = useState(null)
   const handleImageLoad = useCallback((e) => {
     const { naturalWidth, naturalHeight } = e.target
     setImageDimensions({ width: naturalWidth, height: naturalHeight })
-    const displayW = Math.min(naturalWidth, effectiveMaxW)
-    const displayH = Math.round(displayW * (naturalHeight / naturalWidth))
-    setDisplayDimensions({ width: displayW, height: displayH })
     setImageLoaded(true)
     setScale(100)
-  }, [effectiveMaxW])
+  }, [])
   useEffect(() => {
     if (!imageLoaded || !imageDimensions.width || !imageDimensions.height) return
     const { width: nw, height: nh } = imageDimensions
+    if (!effectiveMaxW) return
     const displayW = Math.min(nw, effectiveMaxW)
     const displayH = Math.round(displayW * (nh / nw))
     setDisplayDimensions({ width: displayW, height: displayH })
@@ -969,22 +1033,26 @@ const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 4
                 transition: isDragging ? 'none' : 'transform 0.2s',
               }}
             >
-              <img 
+              <img
                 ref={imgRef}
-                src={documentInfo.fileUrl} 
-                alt={documentInfo.fileName} 
-                style={{ 
+                src={documentInfo.fileUrl}
+                alt={documentInfo.fileName}
+                style={{
                   display: 'block',
                   width: displayDimensions.width || 'auto',
                   height: displayDimensions.height || 'auto',
                   maxWidth: effectiveMaxW,
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.1)', 
-                  borderRadius: 4, 
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                  borderRadius: 4,
                   opacity: imageLoaded ? 1 : 0.3,
                   pointerEvents: 'none',
-                  userSelect: 'none'
-                }} 
-                onLoad={handleImageLoad} 
+                  userSelect: 'none',
+                  // 提示浏览器在缩放时使用更高质量的重采样算法，缓解 hi-DPI 屏上的模糊
+                  imageRendering: 'high-quality',
+                  WebkitBackfaceVisibility: 'hidden',
+                  backfaceVisibility: 'hidden',
+                }}
+                onLoad={handleImageLoad}
                 draggable={false}
               />
               {renderHighlight({ requireImageLoaded: true, applyTransform: false })}
@@ -1021,6 +1089,9 @@ const SourcePanel = ({
   const [previewFileType, setPreviewFileType] = useState(null)
   const [previewPdfUrl, setPreviewPdfUrl] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  // OCR 解析时检测到的页面角度（从 documents.ocr_payload_json.pages[i].angle 读取）。
+  // 用作图片/PDF 初始旋转值，使 bbox 与图像方向对齐（用户仍可通过工具栏继续旋转）。
+  const [ocrPageAngles, setOcrPageAngles] = useState([])
   const [docModalOpen, setDocModalOpen] = useState(false)
   const [docModalDoc, setDocModalDoc] = useState(null)
   // 从修改历史中选中的一条记录，用于展示该条对应的文档预览与 bbox（有 source_document_id 即可溯源）
@@ -1336,6 +1407,7 @@ const SourcePanel = ({
       setPreviewUrl(null)
       setPreviewFileType(null)
       setPreviewPdfUrl(null)
+      setOcrPageAngles([])
       if (!sourceDocId) return
       setPreviewLoading(true)
       try {
@@ -1349,6 +1421,17 @@ const SourcePanel = ({
         if (cancelled) return
         const ft = (detailRes?.data?.file_type || '').toLowerCase()
         setPreviewFileType(ft || null)
+        // 提取每页 OCR 检测到的角度（TextIn 在 ocr_payload_json.pages[i].angle 返回）。
+        // 用于让预览图按 OCR 视角呈现，从而让基于 OCR 坐标系生成的 bbox 落在正确位置。
+        const pages = detailRes?.data?.ocr_payload_json?.pages
+        if (Array.isArray(pages)) {
+          setOcrPageAngles(
+            pages.map((p) => {
+              const a = Number(p?.angle)
+              return Number.isFinite(a) ? ((a % 360) + 360) % 360 : 0
+            })
+          )
+        }
         if (ft === 'pdf') {
           setPreviewUrl(null)
           setPreviewPdfUrl(await getFreshDocumentPdfStreamUrl(sourceDocId))
@@ -1505,7 +1588,14 @@ const SourcePanel = ({
         </Space>
       </div>
       <div className="schema-form-scrollable hover-scrollbar scroll-edge-hint" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-        <SourceDocumentPreview documentInfo={previewDocument} activeCoordinates={effectiveCoordinates} panelWidth={effectivePanelWidth} loading={previewLoading} />
+        <SourceDocumentPreview
+          documentInfo={previewDocument}
+          activeCoordinates={effectiveCoordinates}
+          panelWidth={effectivePanelWidth}
+          loading={previewLoading}
+          // OCR 角度按当前选中页索引取（0-based），无 angle 时回退 0
+          initialRotation={ocrPageAngles[sourcePageIdx] || 0}
+        />
         <div style={{ padding: 12 }}>
           {selectedField ? (
             <>
@@ -1549,6 +1639,7 @@ const SourcePanel = ({
                 }
                 onHistoryLoaded={patientId ? handleHistoryLoaded : undefined}
                 isSensitive={isCurrentFieldSensitive}
+                candidateDocuments={candidateDocuments}
               />
             </>
           ) : (
@@ -1822,6 +1913,20 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
           )
       if (response.success) {
         message.success('文档抽取任务已提交，请稍候...')
+        const taskId = response.data?.task_id || response.data?.id
+        if (taskId) {
+          upsertTask({
+            task_id: taskId,
+            patient_id: projectId ? (sourcePatientId || patientId) : patientId,
+            project_id: projectId || undefined,
+            project_patient_id: projectId ? patientId : undefined,
+            type: projectId ? 'project_crf_targeted' : 'ehr_targeted_extract',
+            status: 'pending',
+            target_form_key: targetFormKey,
+            message: projectId ? '科研 CRF 靶向抽取已排队' : '病历靶向抽取已排队',
+            created_at: new Date().toISOString(),
+          })
+        }
         setUploadExtractModalOpen(false)
         onDataChange && onDataChange(draftData)
       } else {
@@ -1857,6 +1962,7 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     }
 
     message.loading({ content: '正在上传文件并触发 OCR 流水线...', key: 'uploadExtract' })
+    try {
       const uploadPatientId = projectId ? sourcePatientId : patientId
       if (!uploadPatientId) {
         message.error({ content: '缺少原始患者信息，无法上传', key: 'uploadExtract' })
@@ -1895,11 +2001,31 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
           )
       if (extractResult.success) {
         message.success({ content: '文件上传成功，OCR 完成后将自动专项抽取', key: 'uploadExtract' })
+        const taskId = extractResult.data?.task_id || extractResult.data?.id
+        if (taskId) {
+          upsertTask({
+            task_id: taskId,
+            patient_id: projectId ? (sourcePatientId || uploadPatientId) : patientId,
+            project_id: projectId || undefined,
+            project_patient_id: projectId ? patientId : undefined,
+            type: projectId ? 'project_crf_targeted' : 'ehr_targeted_extract',
+            status: 'pending',
+            target_form_key: targetFormKey,
+            message: '等待 OCR 与靶向抽取',
+            created_at: new Date().toISOString(),
+          })
+        }
         setUploadExtractModalOpen(false)
         onDataChange && onDataChange(draftData)
       } else {
         message.error({ content: extractResult.message || '抽取任务提交失败', key: 'uploadExtract' })
       }
+    } catch (err) {
+      // 兜底：任一接口抛错（如后端 500）时给用户一个明确提示，不再让 unhandledrejection 吞掉
+      const detail = err?.data?.message || err?.data?.detail || err?.message || '上传或抽取过程中发生未知错误'
+      message.error({ content: `操作失败：${detail}`, key: 'uploadExtract', duration: 6 })
+      console.error('handleUploadExtractFile 失败:', err)
+    }
   }, [patientId, projectId, sourcePatientId, targetFormKey, targetSection])
   const handleSave = useCallback(async (type = 'manual') => {
     if (!isDirty && type === 'manual') { message.info('没有需要保存的修改'); return }

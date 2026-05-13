@@ -1,0 +1,49 @@
+filters:
+  and:
+    - file.ext == "md"
+    - type != "index"
+    - type != "reference"
+formulas:
+  stale_days:
+    formula: (date(now()) - date(last_verified_date))
+properties:
+  file.name:
+    displayName: 文档
+  type:
+    displayName: 类型
+  module:
+    displayName: 业务域
+  status:
+    displayName: 状态
+  last_verified_commit:
+    displayName: 上次核对 commit
+  last_verified_date:
+    displayName: 上次核对日期
+  formula.stale_days:
+    displayName: 距上次核对（天）
+  owner:
+    displayName: 负责人
+views:
+  - type: table
+    name: 健康度总览
+    order:
+      - file.name
+      - type
+      - module
+      - status
+      - last_verified_date
+      - formula.stale_days
+      - owner
+    sort:
+      - property: formula.stale_days
+        direction: DESC
+  - type: table
+    name: 草稿与待核对
+    filters:
+      and:
+        - status != "verified"
+    order:
+      - file.name
+      - type
+      - status
+      - owner

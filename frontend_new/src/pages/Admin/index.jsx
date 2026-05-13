@@ -13,9 +13,8 @@ import {
 } from '@ant-design/icons'
 import {
   getAdminUsers, getAdminProjects, getAdminTemplates,
-  getAdminDocuments, getAdminStats, getAdminActiveTasks,
-  getProjectExtractionTasks, getAdminExtractionTasks,
-  getAdminExtractionTaskDetail, resubmitAdminExtractionTask
+  getAdminDocuments, getAdminStats, getAdminExtractionTasks,
+  getAdminExtractionTaskDetail
 } from '../../api/admin'
 import { appThemeToken } from '../../styles/themeTokens'
 import { useExtractionProgressSSE } from '../../hooks'
@@ -210,6 +209,7 @@ const extractionStatusMeta = {
   completed_with_errors:   { color: 'warning',    label: '部分成功', progressStatus: 'exception'},
   failed:                  { color: 'error',      label: '失败',    progressStatus: 'exception'},
   cancelled:               { color: 'warning',    label: '已取消',  progressStatus: 'normal'  },
+  stale:                   { color: 'warning',    label: '已停滞',  progressStatus: 'exception'},
   idle:                    { color: 'default',    label: '空闲',    progressStatus: 'normal'  },
 }
 
@@ -776,7 +776,6 @@ const ExtractionTasksTab = () => {
   const [statusFilter, setStatusFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [detailId, setDetailId] = useState(null)
-  const [resubmittingId, setResubmittingId] = useState(null)
 
   const fetchTasks = useCallback(async () => {
     setLoading(true)
@@ -827,6 +826,7 @@ const ExtractionTasksTab = () => {
       case 'completed_with_errors': return <WarningOutlined style={{ color: appThemeToken.colorWarning }} />
       case 'failed': return <CloseCircleOutlined style={{ color: appThemeToken.colorError }} />
       case 'cancelled': return <CloseCircleOutlined style={{ color: appThemeToken.colorTextTertiary }} />
+      case 'stale': return <WarningOutlined style={{ color: appThemeToken.colorWarning }} />
       default: return <ClockCircleOutlined style={{ color: appThemeToken.colorTextTertiary }} />
     }
   }
@@ -838,27 +838,6 @@ const ExtractionTasksTab = () => {
         {meta.label}
       </Tag>
     )
-  }
-
-  const handleResubmit = (record) => {
-    Modal.confirm({
-      title: '确认重新提交抽取任务？',
-      content: '系统会重新投递该任务到 CRF Worker。若旧任务是假等待/失败，可用此操作恢复执行。',
-      okText: '重新提交',
-      cancelText: '取消',
-      onOk: async () => {
-        setResubmittingId(record.id)
-        try {
-          const res = await resubmitAdminExtractionTask(record.id, {
-            source: record.source_table === 'project_extraction_tasks' ? 'project' : 'job',
-          })
-          message.success(res?.message || '已重新提交抽取任务')
-          await fetchTasks()
-        } finally {
-          setResubmittingId(null)
-        }
-      },
-    })
   }
 
   const columns = [
@@ -994,27 +973,13 @@ const ExtractionTasksTab = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 90,
       fixed: 'right',
-      render: (_, r) => {
-        const canResubmit = ['pending', 'failed', 'cancelled'].includes(r.status)
-        return (
-          <Space size={4}>
-            <Button size="small" type="link" onClick={() => setDetailId(r.id)}>
-              详情
-            </Button>
-            <Button
-              size="small"
-              type="link"
-              disabled={!canResubmit}
-              loading={resubmittingId === r.id}
-              onClick={() => handleResubmit(r)}
-            >
-              重新提交
-            </Button>
-          </Space>
-        )
-      },
+      render: (_, r) => (
+        <Button size="small" type="link" onClick={() => setDetailId(r.id)}>
+          详情
+        </Button>
+      ),
     },
   ]
 
@@ -1046,6 +1011,7 @@ const ExtractionTasksTab = () => {
             { label: `等待中 (${statusCounts.pending ?? 0})`, value: 'pending' },
             { label: `已完成 (${statusCounts.completed ?? 0})`, value: 'completed' },
             { label: `失败 (${statusCounts.failed ?? 0})`, value: 'failed' },
+            { label: `已停滞 (${statusCounts.stale ?? 0})`, value: 'stale' },
             { label: `已取消 (${statusCounts.cancelled ?? 0})`, value: 'cancelled' },
           ]}
         />

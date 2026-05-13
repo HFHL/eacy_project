@@ -20,6 +20,22 @@ class FakeResearchProjectService:
     async def list_projects(self, **kwargs):
         return list(self.projects.values()), len(self.projects)
 
+    async def list_projects_with_stats(self, **kwargs):
+        projects = list(self.projects.values())
+        stats = {project.id: self._empty_stats(project) for project in projects}
+        return projects, len(projects), stats
+
+    def _empty_stats(self, project):
+        return {
+            "actual_patient_count": 0,
+            "expected_patient_count": None,
+            "avg_completeness": 0.0,
+            "principal_investigator_name": "",
+        }
+
+    async def get_project_stats(self, project, **kwargs):
+        return self._empty_stats(project)
+
     async def create_project(self, **params):
         project = SimpleNamespace(
             id="project-1",
@@ -30,17 +46,18 @@ class FakeResearchProjectService:
         self.projects[project.id] = project
         return project
 
-    async def get_project(self, project_id):
+    async def get_project(self, project_id, **kwargs):
         return self.projects.get(project_id)
 
     async def update_project(self, project_id, **params):
         project = self.projects[project_id]
+        params.pop("owner_id", None)
         for key, value in params.items():
             setattr(project, key, value)
         project.updated_at = datetime(2026, 1, 2)
         return project
 
-    async def archive_project(self, project_id):
+    async def archive_project(self, project_id, **kwargs):
         project = self.projects[project_id]
         project.status = "archived"
         return project
@@ -62,7 +79,7 @@ class FakeResearchProjectService:
         binding.status = "disabled"
         return binding
 
-    async def list_project_patients(self, project_id):
+    async def list_project_patients(self, project_id, **kwargs):
         return [patient for patient in self.project_patients.values() if patient.project_id == project_id]
 
     async def enroll_patient(self, **params):

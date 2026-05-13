@@ -1,0 +1,311 @@
+{
+  "nodes": [
+    {
+      "id": "g-user",
+      "type": "group",
+      "label": "用户系统",
+      "x": -1200,
+      "y": -900,
+      "width": 360,
+      "height": 220,
+      "color": "6"
+    },
+    {
+      "id": "t-user",
+      "type": "text",
+      "text": "## 表-user\n\n`users`\n\n• id\n• email / username\n• role · permissions\n• is_active",
+      "x": -1180,
+      "y": -860,
+      "width": 320,
+      "height": 170,
+      "color": "6"
+    },
+
+    {
+      "id": "g-patient",
+      "type": "group",
+      "label": "病例管理",
+      "x": -750,
+      "y": -900,
+      "width": 360,
+      "height": 220,
+      "color": "4"
+    },
+    {
+      "id": "t-patient",
+      "type": "text",
+      "text": "## 表-patient\n\n`patients`\n\n• id\n• name · gender · age\n• owner_id (→ users)\n• deleted_at (软删)",
+      "x": -730,
+      "y": -860,
+      "width": 320,
+      "height": 170,
+      "color": "4"
+    },
+
+    {
+      "id": "g-document",
+      "type": "group",
+      "label": "文档与 OCR",
+      "x": -300,
+      "y": -900,
+      "width": 360,
+      "height": 220,
+      "color": "5"
+    },
+    {
+      "id": "t-document",
+      "type": "text",
+      "text": "## 表-document\n\n`documents`\n\n• id · patient_id\n• status / ocr_status / meta_status\n• doc_type · effective_at\n• storage_path",
+      "x": -280,
+      "y": -860,
+      "width": 320,
+      "height": 170,
+      "color": "5"
+    },
+
+    {
+      "id": "g-schema",
+      "type": "group",
+      "label": "Schema 模板",
+      "x": 150,
+      "y": -900,
+      "width": 760,
+      "height": 220,
+      "color": "5"
+    },
+    {
+      "id": "t-schema-template",
+      "type": "text",
+      "text": "## 表-schema_template\n\n`schema_templates`\n\n• template_code (uk)\n• template_type\n• status (draft/active/archived)",
+      "x": 170,
+      "y": -860,
+      "width": 340,
+      "height": 170,
+      "color": "5"
+    },
+    {
+      "id": "t-schema-version",
+      "type": "text",
+      "text": "## 表-schema_template_version\n\n`schema_template_versions`\n\n• template_id · version_no\n• schema_json\n• status (draft/published/deprecated)",
+      "x": 540,
+      "y": -860,
+      "width": 350,
+      "height": 170,
+      "color": "5"
+    },
+
+    {
+      "id": "g-research",
+      "type": "group",
+      "label": "科研项目与数据集",
+      "x": -750,
+      "y": -600,
+      "width": 1200,
+      "height": 240,
+      "color": "2"
+    },
+    {
+      "id": "t-research-project",
+      "type": "text",
+      "text": "## 表-research_project\n\n`research_projects`\n\n• project_code (uk)\n• owner_id\n• status (含 deleted 软删)",
+      "x": -730,
+      "y": -560,
+      "width": 340,
+      "height": 180,
+      "color": "2"
+    },
+    {
+      "id": "t-project-patient",
+      "type": "text",
+      "text": "## 表-project_patient\n\n`project_patients`\n\n• project_id · patient_id (uk)\n• enroll_no\n• status (enrolled / withdrawn)",
+      "x": -370,
+      "y": -560,
+      "width": 350,
+      "height": 180,
+      "color": "2"
+    },
+    {
+      "id": "t-project-binding",
+      "type": "text",
+      "text": "## 表-project_template_binding\n\n`project_template_bindings`\n\n• project_id · schema_version_id\n• binding_type (primary_crf...)\n• status · locked_at",
+      "x": 10,
+      "y": -560,
+      "width": 360,
+      "height": 180,
+      "color": "2"
+    },
+
+    {
+      "id": "g-extract",
+      "type": "group",
+      "label": "AI 抽取（任务侧）",
+      "x": -750,
+      "y": -310,
+      "width": 760,
+      "height": 240,
+      "color": "3"
+    },
+    {
+      "id": "t-extraction-job",
+      "type": "text",
+      "text": "## 表-extraction_job\n\n`extraction_jobs`\n\n• job_type · status\n• patient_id · document_id\n• context_id · schema_version_id\n• target_form_key",
+      "x": -730,
+      "y": -270,
+      "width": 360,
+      "height": 180,
+      "color": "3"
+    },
+    {
+      "id": "t-extraction-run",
+      "type": "text",
+      "text": "## 表-extraction_run\n\n`extraction_runs`\n\n• job_id · run_no (uk)\n• model_name · prompt_version\n• raw_output / parsed_output\n• validation_status",
+      "x": -360,
+      "y": -270,
+      "width": 350,
+      "height": 180,
+      "color": "3"
+    },
+
+    {
+      "id": "g-data",
+      "type": "group",
+      "label": "AI 抽取（数据侧 · 上下文/字段值）",
+      "x": 50,
+      "y": -310,
+      "width": 1140,
+      "height": 540,
+      "color": "3"
+    },
+    {
+      "id": "t-data-context",
+      "type": "text",
+      "text": "## 表-data_context\n\n`data_contexts`\n\n• context_type (patient_ehr / project_crf)\n• patient_id · project_patient_id\n• schema_version_id",
+      "x": 70,
+      "y": -270,
+      "width": 360,
+      "height": 180,
+      "color": "3"
+    },
+    {
+      "id": "t-record-instance",
+      "type": "text",
+      "text": "## 表-record_instance\n\n`record_instances`\n\n• context_id · form_key · repeat_index (uk)\n• instance_label\n• source_document_id\n• created_by_run_id",
+      "x": 450,
+      "y": -270,
+      "width": 360,
+      "height": 180,
+      "color": "3"
+    },
+    {
+      "id": "t-field-current",
+      "type": "text",
+      "text": "## 表-field_current_value\n\n`field_current_values`\n\n• context_id · record_instance_id · field_path (uk)\n• selected_event_id\n• value_type / typed value\n• review_status",
+      "x": 830,
+      "y": -270,
+      "width": 340,
+      "height": 180,
+      "color": "3"
+    },
+    {
+      "id": "t-field-event",
+      "type": "text",
+      "text": "## 表-field_value_event\n\n`field_value_events` (append-only)\n\n• context_id · record_instance_id · field_path\n• event_type (ai_extracted / manual_edit)\n• extraction_run_id · source_document_id\n• review_status (candidate / accepted / rejected / conflict)",
+      "x": 70,
+      "y": -60,
+      "width": 540,
+      "height": 200,
+      "color": "3"
+    },
+    {
+      "id": "t-field-evidence",
+      "type": "text",
+      "text": "## 表-field_value_evidence\n\n`field_value_evidence`\n\n• value_event_id · document_id\n• page_no · bbox_json · quote_text\n• row_key / cell_key\n• evidence_score",
+      "x": 650,
+      "y": -60,
+      "width": 520,
+      "height": 200,
+      "color": "3"
+    },
+
+    {
+      "id": "g-async",
+      "type": "group",
+      "label": "异步任务进度",
+      "x": -1200,
+      "y": -310,
+      "width": 380,
+      "height": 540,
+      "color": "1"
+    },
+    {
+      "id": "t-async-batch",
+      "type": "text",
+      "text": "## async_task_batches\n\n• task_type · status · progress\n• scope_type\n• patient_id / project_id / document_id\n• heartbeat_at",
+      "x": -1180,
+      "y": -270,
+      "width": 340,
+      "height": 160,
+      "color": "1"
+    },
+    {
+      "id": "t-async-item",
+      "type": "text",
+      "text": "## async_task_items\n\n• batch_id · status · stage\n• celery_task_id\n• extraction_job_id / extraction_run_id\n• document_id / context_id",
+      "x": -1180,
+      "y": -90,
+      "width": 340,
+      "height": 160,
+      "color": "1"
+    },
+    {
+      "id": "t-async-event",
+      "type": "text",
+      "text": "## async_task_events\n\n(append-only)\n\n• batch_id / item_id\n• event_type · status · progress\n• payload_json",
+      "x": -1180,
+      "y": 90,
+      "width": 340,
+      "height": 140,
+      "color": "1"
+    }
+  ],
+  "edges": [
+    { "id": "e-user-patient",   "fromNode": "t-user",     "fromSide": "right",  "toNode": "t-patient",          "toSide": "left",   "label": "1:N owner_id (soft FK)" },
+    { "id": "e-user-doc",       "fromNode": "t-user",     "fromSide": "right",  "toNode": "t-document",         "toSide": "left",   "label": "uploaded_by (soft)" },
+    { "id": "e-user-proj",      "fromNode": "t-user",     "fromSide": "bottom", "toNode": "t-research-project", "toSide": "left",   "label": "owner_id (soft)" },
+
+    { "id": "e-patient-doc",    "fromNode": "t-patient",  "fromSide": "right",  "toNode": "t-document",         "toSide": "left",   "label": "1:N patient_id" },
+    { "id": "e-patient-ctx",    "fromNode": "t-patient",  "fromSide": "bottom", "toNode": "t-data-context",     "toSide": "top",    "label": "1:N patient_id" },
+    { "id": "e-patient-pp",     "fromNode": "t-patient",  "fromSide": "bottom", "toNode": "t-project-patient",  "toSide": "top",    "label": "1:N patient_id" },
+
+    { "id": "e-tmpl-ver",       "fromNode": "t-schema-template", "fromSide": "right", "toNode": "t-schema-version", "toSide": "left", "label": "1:N template_id" },
+    { "id": "e-ver-ctx",        "fromNode": "t-schema-version",  "fromSide": "bottom","toNode": "t-data-context",   "toSide": "top", "label": "1:N schema_version_id" },
+    { "id": "e-ver-binding",    "fromNode": "t-schema-version",  "fromSide": "bottom","toNode": "t-project-binding","toSide": "top", "label": "1:N schema_version_id" },
+    { "id": "e-ver-job",        "fromNode": "t-schema-version",  "fromSide": "bottom","toNode": "t-extraction-job", "toSide": "top", "label": "1:N schema_version_id" },
+
+    { "id": "e-proj-pp",        "fromNode": "t-research-project","fromSide": "right","toNode": "t-project-patient",   "toSide": "left", "label": "1:N project_id" },
+    { "id": "e-proj-binding",   "fromNode": "t-research-project","fromSide": "right","toNode": "t-project-binding",   "toSide": "left", "label": "1:N project_id" },
+    { "id": "e-pp-ctx",         "fromNode": "t-project-patient", "fromSide": "right","toNode": "t-data-context",      "toSide": "top",  "label": "1:N project_patient_id (CRF)" },
+
+    { "id": "e-job-run",        "fromNode": "t-extraction-job",  "fromSide": "right","toNode": "t-extraction-run",    "toSide": "left", "label": "1:N job_id (uk run_no)" },
+    { "id": "e-job-ctx",        "fromNode": "t-extraction-job",  "fromSide": "right","toNode": "t-data-context",      "toSide": "left", "label": "N:1 context_id" },
+    { "id": "e-job-doc",        "fromNode": "t-document",        "fromSide": "bottom","toNode": "t-extraction-job",    "toSide": "top",  "label": "1:N document_id" },
+    { "id": "e-job-patient",    "fromNode": "t-patient",         "fromSide": "bottom","toNode": "t-extraction-job",    "toSide": "top",  "label": "1:N patient_id" },
+
+    { "id": "e-ctx-record",     "fromNode": "t-data-context",    "fromSide": "right","toNode": "t-record-instance",   "toSide": "left", "label": "1:N context_id (uk form/idx)" },
+    { "id": "e-ctx-current",    "fromNode": "t-data-context",    "fromSide": "right","toNode": "t-field-current",     "toSide": "left", "label": "1:N context_id" },
+    { "id": "e-record-current", "fromNode": "t-record-instance", "fromSide": "right","toNode": "t-field-current",     "toSide": "left", "label": "1:N record_instance_id" },
+    { "id": "e-ctx-event",      "fromNode": "t-data-context",    "fromSide": "bottom","toNode": "t-field-event",       "toSide": "top",  "label": "1:N context_id" },
+    { "id": "e-record-event",   "fromNode": "t-record-instance", "fromSide": "bottom","toNode": "t-field-event",       "toSide": "top",  "label": "1:N record_instance_id" },
+    { "id": "e-current-event",  "fromNode": "t-field-current",   "fromSide": "bottom","toNode": "t-field-event",       "toSide": "right","label": "N:1 selected_event_id" },
+    { "id": "e-run-event",      "fromNode": "t-extraction-run",  "fromSide": "bottom","toNode": "t-field-event",       "toSide": "left", "label": "1:N extraction_run_id" },
+    { "id": "e-doc-event",      "fromNode": "t-document",        "fromSide": "bottom","toNode": "t-field-event",       "toSide": "top",  "label": "1:N source_document_id" },
+    { "id": "e-event-evidence", "fromNode": "t-field-event",     "fromSide": "right","toNode": "t-field-evidence",    "toSide": "left", "label": "1:N value_event_id" },
+    { "id": "e-doc-evidence",   "fromNode": "t-document",        "fromSide": "bottom","toNode": "t-field-evidence",    "toSide": "top",  "label": "1:N document_id" },
+
+    { "id": "e-batch-item",     "fromNode": "t-async-batch",     "fromSide": "bottom","toNode": "t-async-item",        "toSide": "top",  "label": "1:N batch_id" },
+    { "id": "e-item-event",     "fromNode": "t-async-item",      "fromSide": "bottom","toNode": "t-async-event",       "toSide": "top",  "label": "1:N item_id" },
+    { "id": "e-item-job",       "fromNode": "t-async-item",      "fromSide": "right","toNode": "t-extraction-job",    "toSide": "left", "label": "N:1 extraction_job_id" },
+    { "id": "e-item-run",       "fromNode": "t-async-item",      "fromSide": "right","toNode": "t-extraction-run",    "toSide": "left", "label": "N:1 extraction_run_id" }
+  ],
+  "metadata": {}
+}

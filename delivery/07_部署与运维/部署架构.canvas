@@ -1,0 +1,43 @@
+{
+	"nodes":[
+		{"id":"g-worker","type":"group","x":-800,"y":-360,"width":1600,"height":240,"color":"4","label":"Celery Workers · backend/app/workers/"},
+		{"id":"g-edge","type":"group","x":-800,"y":-800,"width":1600,"height":180,"color":"5","label":"边缘层 · CDN / 反向代理"},
+		{"id":"g-data","type":"group","x":-800,"y":-80,"width":1100,"height":220,"color":"1","label":"数据层"},
+		{"id":"g-ext","type":"group","x":340,"y":-80,"width":460,"height":380,"color":"6","label":"外部依赖"},
+		{"id":"g-api","type":"group","x":0,"y":-600,"width":800,"height":200,"color":"4","label":"后端 API · Gunicorn + Uvicorn Worker"},
+		{"id":"g-static","type":"group","x":-800,"y":-600,"width":760,"height":200,"color":"5","label":"前端静态层 · React 18 + Vite"},
+		{"id":"user-browser","type":"text","text":"## 浏览器\n\n临床研究员 / 科研管理员 / 运维\nHTTPS · JWT","x":-200,"y":-960,"width":420,"height":120,"color":"6"},
+		{"id":"edge-cdn","type":"text","text":"**CDN（可选）**\n\n静态资源加速\n生产部署是否启用由 ops 决定 (TBD)","x":-780,"y":-760,"width":480,"height":130},
+		{"id":"edge-nginx","type":"text","text":"**Nginx 反向代理**\n\ndeploy/production/nginx/eacy.conf\n- `/` → 静态前端\n- `/api/` → 后端 API\n- `client_max_body_size 200m`\n- `proxy_read_timeout 300s`","x":-260,"y":-760,"width":520,"height":130},
+		{"id":"edge-tls","type":"text","text":"**TLS 终止**\n\n证书发放与续期由 ops 负责\n(TBD: 当前 deploy/production 内的样例为 HTTP)","x":280,"y":-760,"width":480,"height":130},
+		{"id":"static-dist","type":"text","text":"**`frontend_new/dist`**\n\n`npm run build` 产物\n由 Nginx 托管\nbase 路径：`/`\n手工模式部署，不强依赖 CDN","x":-780,"y":-560,"width":720,"height":150},
+		{"id":"api-gunicorn","type":"text","text":"**eacy-backend.service**\n\nGunicorn `-k uvicorn.workers.UvicornWorker`\n监听 `127.0.0.1:8000`\n默认 `--workers 2 --timeout 180`\nEnvironmentFile=/opt/eacy_project/.env","x":20,"y":-560,"width":760,"height":150},
+		{"id":"w-ocr","type":"text","text":"**eacy-celery-ocr.service**\n\nqueue: `ocr`\n`--concurrency=1`\n`eacy.ocr.process_document_ocr`","x":-780,"y":-320,"width":500,"height":180},
+		{"id":"w-meta","type":"text","text":"**eacy-celery-metadata.service**\n\nqueue: `metadata`\n`--concurrency=1`\n`eacy.metadata.extract_document_metadata`","x":-260,"y":-320,"width":500,"height":180},
+		{"id":"w-ext","type":"text","text":"**eacy-celery-extraction.service**\n\nqueue: `extraction`\n`--concurrency=2`\n`eacy.extraction.process_extraction_job`\n自动重试 ×3","x":260,"y":-320,"width":520,"height":180},
+		{"id":"data-redis","type":"text","text":"## Redis\n\nBroker: `CELERY_BROKER_URL`（DB 1 / 11）\nBackend: `CELERY_BACKEND_URL`（DB 2 / 12）\n业务缓存（archive tree 等）","x":-200,"y":-40,"width":480,"height":170},
+		{"id":"ext-textin","type":"text","text":"## TextIn OCR\n\n`TEXTIN_API_URL`\n`TEXTIN_TIMEOUT_SECONDS=120`\nOCR worker 调用","x":360,"y":-40,"width":420,"height":100},
+		{"id":"ext-llm","type":"text","text":"## LLM Provider\n\nOpenAI 兼容协议\n`OPENAI_API_BASE_URL` · `OPENAI_MODEL`\nmetadata / extraction worker 调用","x":360,"y":70,"width":420,"height":100},
+		{"id":"ext-oss","type":"text","text":"## 阿里云 OSS\n\n`DOCUMENT_STORAGE_PROVIDER=oss`\n原始文档 + 临时签名 URL\nAPI 通过 StreamingResponse 反代","x":360,"y":180,"width":420,"height":110},
+		{"id":"data-db","type":"text","text":"## PostgreSQL\n\nasyncpg / aiomysql 二选一\n`DATABASE_URL` 指向独立数据库实例\n连接池：`DB_POOL_SIZE` · `DB_MAX_OVERFLOW`\nAlembic migrations: `backend/migrations/`","x":-760,"y":-75,"width":560,"height":170}
+	],
+	"edges":[
+		{"id":"e-user-edge","fromNode":"user-browser","fromSide":"bottom","toNode":"g-edge","toSide":"top","label":"HTTPS"},
+		{"id":"e-edge-static","fromNode":"edge-nginx","fromSide":"bottom","toNode":"g-static","toSide":"top","label":"/ → dist"},
+		{"id":"e-edge-api","fromNode":"edge-nginx","fromSide":"bottom","toNode":"g-api","toSide":"top","label":"/api/ → 127.0.0.1:8000"},
+		{"id":"e-api-db","fromNode":"api-gunicorn","fromSide":"bottom","toNode":"data-db","toSide":"top","label":"asyncpg"},
+		{"id":"e-api-redis","fromNode":"api-gunicorn","fromSide":"bottom","toNode":"data-redis","toSide":"top","label":"enqueue / cache"},
+		{"id":"e-redis-ocr","fromNode":"data-redis","fromSide":"top","toNode":"w-ocr","toSide":"bottom","label":"consume ocr"},
+		{"id":"e-redis-meta","fromNode":"data-redis","fromSide":"top","toNode":"w-meta","toSide":"bottom","label":"consume metadata"},
+		{"id":"e-redis-ext","fromNode":"data-redis","fromSide":"top","toNode":"w-ext","toSide":"bottom","label":"consume extraction"},
+		{"id":"e-ocr-db","fromNode":"w-ocr","fromSide":"bottom","toNode":"data-db","toSide":"top","label":"写回结果"},
+		{"id":"e-meta-db","fromNode":"w-meta","fromSide":"bottom","toNode":"data-db","toSide":"top","label":"写回结果"},
+		{"id":"e-ext-db","fromNode":"w-ext","fromSide":"bottom","toNode":"data-db","toSide":"top","label":"写回结果"},
+		{"id":"e-ocr-textin","fromNode":"w-ocr","fromSide":"right","toNode":"ext-textin","toSide":"left","label":"OCR API"},
+		{"id":"e-meta-llm","fromNode":"w-meta","fromSide":"right","toNode":"ext-llm","toSide":"left","label":"LLM"},
+		{"id":"e-ext-llm","fromNode":"w-ext","fromSide":"right","toNode":"ext-llm","toSide":"left","label":"LLM 抽取"},
+		{"id":"e-api-oss","fromNode":"api-gunicorn","fromSide":"right","toNode":"ext-oss","toSide":"left","label":"上传 / 签名 / stream"},
+		{"id":"e-ocr-oss","fromNode":"w-ocr","fromSide":"right","toNode":"ext-oss","toSide":"left","label":"读取原件"}
+	],
+	"metadata":{}
+}

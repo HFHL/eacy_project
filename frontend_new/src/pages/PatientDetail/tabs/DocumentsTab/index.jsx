@@ -249,12 +249,26 @@ const DocumentsTab = ({
       localStorage.setItem(`eacy_ehr_folder_batch_${patientId}`, batchId)
       if (isTerminalBatchStatus(batch?.status)) {
         setUpdatingEhrFolder(false)
+        const effectiveBatchId = batch?.batch_id || batchId
+        const notifyBatchOnce = (id) => {
+          const sid = String(id || '')
+          if (!sid) return true
+          const k = `eacy_ehr_batch_notified_${sid}`
+          if (sessionStorage.getItem(k)) return false
+          sessionStorage.setItem(k, '1')
+          return true
+        }
         if (batch?.status === 'succeeded' || batch?.status === 'completed') {
-          message.success('电子病历夹更新完成')
+          if (notifyBatchOnce(effectiveBatchId)) message.success('电子病历夹更新完成')
         } else if (batch?.status === 'completed_with_errors') {
-          message.warning(`电子病历夹更新完成，失败 ${batch.failed_items || 0} 个任务`)
+          if (notifyBatchOnce(effectiveBatchId)) message.warning(`电子病历夹更新完成，失败 ${batch.failed_items || 0} 个任务`)
         } else if (batch?.status === 'failed') {
-          message.error('电子病历夹更新失败')
+          if (notifyBatchOnce(effectiveBatchId)) message.error('电子病历夹更新失败')
+        }
+        try {
+          localStorage.removeItem(`eacy_ehr_folder_batch_${patientId}`)
+        } catch {
+          // ignore
         }
         onRefresh?.()
         return

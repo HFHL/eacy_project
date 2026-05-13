@@ -56,13 +56,17 @@ const ProjectTemplateDesigner = () => {
     try {
       const fieldGroups = buildFieldGroupsForBackend(designData)
       const designer = { ...designData, fieldGroups }
-      const res = await saveProjectTemplateDesigner(projectId, { designer })
+      const schemaJson = formDesignerRef.current?.exportSchema?.() || {}
+      const res = await saveProjectTemplateDesigner(projectId, {
+        designer,
+        schema_json: schemaJson,
+        template_name: templateName,
+      })
       if (!res?.success) {
         message.error(res?.message || '保存失败')
         return
       }
-      const data = res?.data || {}
-      message.success(`保存成功：已迁移 ${data.migrated || 0} 个患者（跳过 ${data.skipped || 0}）`)
+      message.success('保存成功')
       // 保存后回到项目页，让表头立即刷新
       navigate(`${researchProjectDetail(projectId)}?refresh=${Date.now()}`, { replace: true })
     } catch (e) {
@@ -70,7 +74,7 @@ const ProjectTemplateDesigner = () => {
     } finally {
       setLoading(false)
     }
-  }, [navigate, projectId])
+  }, [navigate, projectId, templateName])
 
   useEffect(() => {
     if (!projectId) return
@@ -81,6 +85,19 @@ const ProjectTemplateDesigner = () => {
       try {
         const res = await getProjectTemplateDesigner(projectId)
         if (cancelled) return
+        // eslint-disable-next-line no-console
+        console.log('[ProjectTemplateDesigner] getProjectTemplateDesigner response:', {
+          success: res?.success,
+          message: res?.message,
+          dataKeys: res?.data ? Object.keys(res.data) : null,
+          template_id: res?.data?.template_id,
+          schema_version: res?.data?.schema_version,
+          hasDesigner: !!res?.data?.designer,
+          designerFolders: Array.isArray(res?.data?.designer?.folders) ? res.data.designer.folders.length : null,
+          hasSchemaJson: !!res?.data?.schema_json,
+          schemaJsonTopKeys: res?.data?.schema_json && typeof res.data.schema_json === 'object'
+            ? Object.keys(res.data.schema_json).slice(0, 10) : null,
+        })
         if (!res?.success) {
           message.error(res?.message || '加载失败')
           return
@@ -88,18 +105,33 @@ const ProjectTemplateDesigner = () => {
         const data = res?.data || {}
         setTemplateName(data.template_name || '项目模板')
         setSchemaVersion(data.schema_version || '')
-        const { designer, schema } = resolveTemplateAssets(data)
+        const assets = resolveTemplateAssets(data)
+        const { designer, schema } = assets
+        // eslint-disable-next-line no-console
+        console.log('[ProjectTemplateDesigner] resolveTemplateAssets:', {
+          designerSource: assets.sources?.designer,
+          schemaSource: assets.sources?.schema,
+          designerFolders: Array.isArray(designer?.folders) ? designer.folders.length : null,
+          schemaHasProperties: !!schema?.properties,
+          warnings: assets.warnings,
+        })
         // 与全局 CRF 设计器共用同一套自动判断逻辑：
         // 如果 designer 明显不完整或 schema 含有更多复杂结构，则自动优先 schema。
         const { loadedFrom, reason } = await loadTemplateIntoDesignerDetailed(formDesignerRef, { designer, schema, mode: 'auto' })
         if (cancelled) return
+        // eslint-disable-next-line no-console
+        console.log('[ProjectTemplateDesigner] loadTemplateIntoDesignerDetailed:', { loadedFrom, reason })
         if (!loadedFrom) {
           if (reason === 'missing-assets' || reason === 'designer-schema-empty') {
             message.warning('未找到项目模板快照（designer/schema）')
+          } else if (reason === 'schema-parse-failed') {
+            message.warning('模板 schema 解析失败，设计器已清空（请查看控制台日志）')
           }
         }
       } catch (e) {
         if (cancelled) return
+        // eslint-disable-next-line no-console
+        console.error('[ProjectTemplateDesigner] load error:', e)
         message.error(`加载失败: ${e?.message || '未知错误'}`)
       } finally {
         if (cancelled) return

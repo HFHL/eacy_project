@@ -1,17 +1,11 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
 
 from app.core.auth import CurrentUser, get_current_user, is_admin_user
-from app.services.admin_task_service import AdminTaskConflictError, AdminTaskNotFoundError, AdminTaskService
+from app.services.admin_task_service import AdminTaskNotFoundError, AdminTaskService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-
-class ResubmitTaskRequest(BaseModel):
-    source: str = Field(default="auto", max_length=40)
-    only_failed: bool = True
 
 
 def get_admin_task_service() -> AdminTaskService:
@@ -119,22 +113,3 @@ async def admin_extraction_task_events(
         return await service.list_extraction_task_events(task_id, after_id=after_id, limit=limit)
     except AdminTaskNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-
-
-@router.post("/extraction-tasks/{task_id}/resubmit")
-async def admin_resubmit_extraction_task(
-    task_id: str,
-    payload: ResubmitTaskRequest,
-    current_user: CurrentUser = Depends(require_admin_user),
-    service: AdminTaskService = Depends(get_admin_task_service),
-) -> dict[str, Any]:
-    try:
-        return await service.resubmit_extraction_task(
-            task_id,
-            source=payload.source,
-            only_failed=payload.only_failed,
-        )
-    except AdminTaskNotFoundError as error:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except AdminTaskConflictError as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error

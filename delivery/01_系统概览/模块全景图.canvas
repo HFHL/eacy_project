@@ -1,0 +1,110 @@
+{
+  "nodes": [
+    {
+      "id": "d-user",
+      "type": "text",
+      "text": "## 用户系统与权限\n\nUser · JWT · RBAC\n\n所有业务的鉴权基础",
+      "x": -700,
+      "y": -400,
+      "width": 320,
+      "height": 160,
+      "color": "6"
+    },
+    {
+      "id": "d-doc",
+      "type": "text",
+      "text": "## 文档与 OCR\n\nDocument · TextIn\n\n上传 / 存储 / OCR / Metadata 识别",
+      "x": -300,
+      "y": -400,
+      "width": 320,
+      "height": 160,
+      "color": "5"
+    },
+    {
+      "id": "d-schema",
+      "type": "text",
+      "text": "## Schema 模板与 CRF\n\nSchemaTemplate · SchemaTemplateVersion\n\n可视化设计 / 版本化",
+      "x": 100,
+      "y": -400,
+      "width": 320,
+      "height": 160,
+      "color": "5"
+    },
+    {
+      "id": "d-patient",
+      "type": "text",
+      "text": "## 病例管理\n\nPatient · PatientPool\n\n病例档案 · 多文档汇总",
+      "x": -500,
+      "y": -140,
+      "width": 320,
+      "height": 160,
+      "color": "4"
+    },
+    {
+      "id": "d-extract",
+      "type": "text",
+      "text": "## AI 抽取\n\nExtractionJob · ExtractionRun\nField{Value,Event,Evidence}\n\n规划 → LLM → 落库 → 归因",
+      "x": -100,
+      "y": -140,
+      "width": 360,
+      "height": 160,
+      "color": "3"
+    },
+    {
+      "id": "d-research",
+      "type": "text",
+      "text": "## 科研项目与数据集\n\nResearchProject · ProjectPatient\nProjectTemplateBinding\n\n纳入 / 导出",
+      "x": 320,
+      "y": -140,
+      "width": 360,
+      "height": 160,
+      "color": "2"
+    },
+    {
+      "id": "d-admin",
+      "type": "text",
+      "text": "## 管理后台\n\nAsyncTask · AdminTaskService\n\n任务监控 · 用户管理 · 队列运维",
+      "x": -100,
+      "y": 120,
+      "width": 360,
+      "height": 160,
+      "color": "1"
+    },
+    {
+      "id": "d-dashboard",
+      "type": "text",
+      "text": "## 仪表板\n\n聚合统计\n\n跨业务域 read-only",
+      "x": 320,
+      "y": 120,
+      "width": 320,
+      "height": 160,
+      "color": "6"
+    },
+
+    {
+      "id": "lg",
+      "type": "text",
+      "text": "### 图例\n\n- **实线** = 强依赖（功能不可缺）\n- **虚线** (label `可选`) = 软依赖\n- 颜色无业务含义，仅为可视化分簇",
+      "x": -700,
+      "y": 120,
+      "width": 360,
+      "height": 160
+    }
+  ],
+  "edges": [
+    { "id": "e1", "fromNode": "d-user",    "fromSide": "right",  "toNode": "d-patient",   "toSide": "left",   "label": "鉴权" },
+    { "id": "e2", "fromNode": "d-user",    "fromSide": "right",  "toNode": "d-doc",       "toSide": "left",   "label": "鉴权" },
+    { "id": "e3", "fromNode": "d-doc",     "fromSide": "bottom", "toNode": "d-patient",   "toSide": "top",    "label": "文档归档到病例" },
+    { "id": "e4", "fromNode": "d-doc",     "fromSide": "bottom", "toNode": "d-extract",   "toSide": "top",    "label": "提供 OCR 文本与坐标" },
+    { "id": "e5", "fromNode": "d-schema",  "fromSide": "bottom", "toNode": "d-extract",   "toSide": "top",    "label": "提供字段定义" },
+    { "id": "e6", "fromNode": "d-patient", "fromSide": "right",  "toNode": "d-extract",   "toSide": "left",   "label": "目标病例" },
+    { "id": "e7", "fromNode": "d-extract", "fromSide": "right",  "toNode": "d-research",  "toSide": "left",   "label": "EHR 字段值" },
+    { "id": "e8", "fromNode": "d-schema",  "fromSide": "right",  "toNode": "d-research",  "toSide": "top",    "label": "绑定模板版本" },
+    { "id": "e9", "fromNode": "d-patient", "fromSide": "bottom", "toNode": "d-research",  "toSide": "left",   "label": "纳入病例" },
+    { "id": "e10","fromNode": "d-extract", "fromSide": "bottom", "toNode": "d-admin",     "toSide": "top",    "label": "任务进度" },
+    { "id": "e11","fromNode": "d-doc",     "fromSide": "bottom", "toNode": "d-admin",     "toSide": "top",    "label": "OCR 任务进度" },
+    { "id": "e12","fromNode": "d-patient", "fromSide": "bottom", "toNode": "d-dashboard", "toSide": "top",    "label": "统计" },
+    { "id": "e13","fromNode": "d-research","fromSide": "bottom", "toNode": "d-dashboard", "toSide": "top",    "label": "统计" }
+  ],
+  "metadata": {}
+}

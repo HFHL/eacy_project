@@ -1,0 +1,297 @@
+{
+  "nodes": [
+    {
+      "id": "user",
+      "type": "text",
+      "text": "## 👤 用户\n\n临床研究员 / 科研管理员 / 运维",
+      "x": -200,
+      "y": -900,
+      "width": 400,
+      "height": 110,
+      "color": "6"
+    },
+
+    {
+      "id": "g-frontend",
+      "type": "group",
+      "label": "前端 · React 18 + Ant Design 5 + Vite",
+      "x": -800,
+      "y": -720,
+      "width": 1600,
+      "height": 260,
+      "color": "5"
+    },
+    {
+      "id": "fe-pages",
+      "type": "text",
+      "text": "**Pages**\n\nPatientPool · PatientDetail · DocumentUpload · CRFDesigner · ExtractionDashboard · ResearchDataset · Admin · UserSystem",
+      "x": -780,
+      "y": -660,
+      "width": 520,
+      "height": 180
+    },
+    {
+      "id": "fe-store",
+      "type": "text",
+      "text": "**Redux Store**\n\n@reduxjs/toolkit\n用户态 / UI 态 / 全局任务态",
+      "x": -240,
+      "y": -660,
+      "width": 360,
+      "height": 180
+    },
+    {
+      "id": "fe-api",
+      "type": "text",
+      "text": "**API Client**\n\n`src/api/request.js` (axios)\n统一拦截：鉴权 / 错误码 / 重试",
+      "x": 140,
+      "y": -660,
+      "width": 320,
+      "height": 180
+    },
+    {
+      "id": "fe-poller",
+      "type": "text",
+      "text": "**Background Poller**\n\n`globalBackgroundTaskPoller.js`\n全局轮询异步任务进度",
+      "x": 480,
+      "y": -660,
+      "width": 300,
+      "height": 180
+    },
+
+    {
+      "id": "g-api",
+      "type": "group",
+      "label": "后端 API · FastAPI 0.109 · ASGI",
+      "x": -800,
+      "y": -420,
+      "width": 1600,
+      "height": 220,
+      "color": "4"
+    },
+    {
+      "id": "be-mw",
+      "type": "text",
+      "text": "**Middleware**\n\nCORS · Auth (JWT) · SQLAlchemy session · ResponseLog",
+      "x": -780,
+      "y": -370,
+      "width": 360,
+      "height": 150
+    },
+    {
+      "id": "be-routers",
+      "type": "text",
+      "text": "**Routers `/api/v1/`**\n\nauth · patients · documents · extraction · ehr · templates · research · tasks · admin · dashboard",
+      "x": -400,
+      "y": -370,
+      "width": 600,
+      "height": 150
+    },
+    {
+      "id": "be-di",
+      "type": "text",
+      "text": "**DI 容器**\n\n`app/container.py`\npythondi / dependency-injector",
+      "x": 220,
+      "y": -370,
+      "width": 280,
+      "height": 150
+    },
+    {
+      "id": "be-openapi",
+      "type": "text",
+      "text": "**OpenAPI**\n\n`/docs` · `/redoc`\n生产环境关闭",
+      "x": 520,
+      "y": -370,
+      "width": 260,
+      "height": 150
+    },
+
+    {
+      "id": "g-service",
+      "type": "group",
+      "label": "服务层 · backend/app/services/",
+      "x": -800,
+      "y": -160,
+      "width": 1600,
+      "height": 200,
+      "color": "3"
+    },
+    {
+      "id": "svc-doc",
+      "type": "text",
+      "text": "DocumentService\n\nDocumentMetadataService\n\nArchiveGroupingService",
+      "x": -780,
+      "y": -120,
+      "width": 320,
+      "height": 140
+    },
+    {
+      "id": "svc-ext",
+      "type": "text",
+      "text": "ExtractionService\n\nExtractionPlanner · SchemaFieldPlanner\nLlmEhrExtractor · SimpleEhrExtractor\nEvidenceLocationResolver",
+      "x": -440,
+      "y": -120,
+      "width": 460,
+      "height": 140
+    },
+    {
+      "id": "svc-ehr",
+      "type": "text",
+      "text": "EhrService\n\nStructuredValueService\n\nSchemaService",
+      "x": 40,
+      "y": -120,
+      "width": 320,
+      "height": 140
+    },
+    {
+      "id": "svc-other",
+      "type": "text",
+      "text": "PatientService\nResearchProjectService\nAdminTaskService\nTaskProgressService",
+      "x": 380,
+      "y": -120,
+      "width": 400,
+      "height": 140
+    },
+
+    {
+      "id": "g-repo",
+      "type": "group",
+      "label": "仓储层 · backend/app/repositories/",
+      "x": -800,
+      "y": 80,
+      "width": 1600,
+      "height": 130,
+      "color": "2"
+    },
+    {
+      "id": "repo-all",
+      "type": "text",
+      "text": "**Repositories (UoW + Async SQLAlchemy)**\n\nDocument · Patient · ExtractionJob · ExtractionRun · FieldValue · DataContext · SchemaTemplate · ResearchProject · ...",
+      "x": -780,
+      "y": 110,
+      "width": 1560,
+      "height": 90
+    },
+
+    {
+      "id": "g-data",
+      "type": "group",
+      "label": "数据层",
+      "x": -800,
+      "y": 240,
+      "width": 1100,
+      "height": 200,
+      "color": "1"
+    },
+    {
+      "id": "db-rdbms",
+      "type": "text",
+      "text": "## 🗄 关系型数据库\n\nPostgreSQL (asyncpg) / MySQL (aiomysql)\nAlembic migrations: `backend/migrations/`",
+      "x": -780,
+      "y": 290,
+      "width": 560,
+      "height": 140
+    },
+    {
+      "id": "db-redis",
+      "type": "text",
+      "text": "## ⚡ Redis\n\n• Cache（archive tree 等）\n• Celery Broker + Backend",
+      "x": -200,
+      "y": 290,
+      "width": 480,
+      "height": 140
+    },
+
+    {
+      "id": "g-worker",
+      "type": "group",
+      "label": "异步 Worker · Celery 5.3 · backend/app/workers/",
+      "x": 340,
+      "y": 240,
+      "width": 460,
+      "height": 380,
+      "color": "4"
+    },
+    {
+      "id": "w-ocr",
+      "type": "text",
+      "text": "**OCR Worker**\n\nqueue: `ocr`\n`eacy.ocr.process_document_ocr`",
+      "x": 360,
+      "y": 290,
+      "width": 420,
+      "height": 90
+    },
+    {
+      "id": "w-meta",
+      "type": "text",
+      "text": "**Metadata Worker**\n\nqueue: `metadata`\n`eacy.metadata.extract_document_metadata`",
+      "x": 360,
+      "y": 400,
+      "width": 420,
+      "height": 90
+    },
+    {
+      "id": "w-ext",
+      "type": "text",
+      "text": "**Extraction Worker**\n\nqueue: `extraction`\n`eacy.extraction.process_extraction_job`\n自动重试 ×3（指数退避）",
+      "x": 360,
+      "y": 510,
+      "width": 420,
+      "height": 100
+    },
+
+    {
+      "id": "g-ext",
+      "type": "group",
+      "label": "外部依赖",
+      "x": -800,
+      "y": 480,
+      "width": 1100,
+      "height": 180,
+      "color": "6"
+    },
+    {
+      "id": "ext-textin",
+      "type": "text",
+      "text": "## 🅣 TextIn OCR\n\nPDF / 扫描件识别\n含坐标信息",
+      "x": -780,
+      "y": 520,
+      "width": 340,
+      "height": 130
+    },
+    {
+      "id": "ext-llm",
+      "type": "text",
+      "text": "## 🤖 LLM Provider\n\nLangGraph 0.2 编排\n字段抽取 / Metadata 识别",
+      "x": -420,
+      "y": 520,
+      "width": 340,
+      "height": 130
+    },
+    {
+      "id": "ext-oss",
+      "type": "text",
+      "text": "## ☁ 对象存储\n\n阿里云 OSS\n原始文档存放\n临时签名 URL 预览",
+      "x": -60,
+      "y": 520,
+      "width": 340,
+      "height": 130
+    }
+  ],
+  "edges": [
+    { "id": "e-user-fe",  "fromNode": "user",     "fromSide": "bottom", "toNode": "g-frontend", "toSide": "top",    "label": "浏览器 HTTPS" },
+    { "id": "e-fe-api",   "fromNode": "fe-api",   "fromSide": "bottom", "toNode": "g-api",      "toSide": "top",    "label": "REST / 上传" },
+    { "id": "e-fe-poll",  "fromNode": "fe-poller","fromSide": "bottom", "toNode": "be-routers", "toSide": "top",    "label": "GET /tasks" },
+    { "id": "e-api-svc",  "fromNode": "be-routers","fromSide":"bottom", "toNode": "g-service",  "toSide": "top",    "label": "业务调用" },
+    { "id": "e-svc-repo", "fromNode": "g-service","fromSide": "bottom", "toNode": "g-repo",     "toSide": "top",    "label": "持久化" },
+    { "id": "e-repo-db",  "fromNode": "repo-all", "fromSide": "bottom", "toNode": "db-rdbms",   "toSide": "top",    "label": "SQL (async)" },
+    { "id": "e-svc-redis","fromNode": "svc-doc",  "fromSide": "right",  "toNode": "db-redis",   "toSide": "left",   "label": "cache" },
+    { "id": "e-api-q",    "fromNode": "be-routers","fromSide":"right",  "toNode": "db-redis",   "toSide": "top",    "label": "enqueue" },
+    { "id": "e-redis-w",  "fromNode": "db-redis", "fromSide": "right",  "toNode": "g-worker",   "toSide": "left",   "label": "consume" },
+    { "id": "e-w-ocr-tx", "fromNode": "w-ocr",    "fromSide": "left",   "toNode": "ext-textin", "toSide": "right",  "label": "OCR API" },
+    { "id": "e-w-meta-llm","fromNode":"w-meta",   "fromSide": "left",   "toNode": "ext-llm",    "toSide": "right",  "label": "LLM" },
+    { "id": "e-w-ext-llm","fromNode": "w-ext",    "fromSide": "left",   "toNode": "ext-llm",    "toSide": "right",  "label": "LLM 抽取" },
+    { "id": "e-svc-oss",  "fromNode": "svc-doc",  "fromSide": "bottom", "toNode": "ext-oss",    "toSide": "top",    "label": "save / sign" },
+    { "id": "e-w-db",     "fromNode": "g-worker", "fromSide": "left",   "toNode": "db-rdbms",   "toSide": "right",  "label": "写回结果" }
+  ],
+  "metadata": {}
+}

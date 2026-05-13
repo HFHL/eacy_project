@@ -20,6 +20,7 @@ import {
   matchGroup,
   confirmGroupArchive
 } from '../../api/document'
+import { buildDeleteContent, fetchEvidenceImpactSafe } from '../../utils/documentDeleteConfirm'
 import { createPatient, getPatientList } from '../../api/patient'
 import { maskName } from '../../utils/sensitiveUtils'
 import { useSelector } from 'react-redux'
@@ -1337,6 +1338,36 @@ const FileList = () => {
     }
   }, [fetchTree])
 
+  /**
+   * 监听后台任务完成事件，在文档列表页自动刷新。
+   *
+   * 触发场景：
+   *  - `patient-detail-refresh`: globalBackgroundTaskPoller 在 patient_extract /
+   *    ehr_targeted_extract / ehr_folder_batch 终态时派发。任一文档的抽取/绑定状态
+   *    都可能因此变化，因此需要刷新整个列表与归档树。
+   *  - `patient-rail-refresh`: 患者基础信息变更（新建/编辑/解绑）会派发，
+   *    可能影响"已绑定患者摘要"列显示，也一并刷新。
+   *
+   * 用一个 200ms 的合并定时器，避免短时间内多次派发导致连续请求。
+   */
+  useEffect(() => {
+    let timer = null
+    const scheduleRefresh = () => {
+      if (timer) return
+      timer = window.setTimeout(() => {
+        timer = null
+        refreshAll({ forceTree: true })
+      }, 200)
+    }
+    window.addEventListener('patient-detail-refresh', scheduleRefresh)
+    window.addEventListener('patient-rail-refresh', scheduleRefresh)
+    return () => {
+      window.removeEventListener('patient-detail-refresh', scheduleRefresh)
+      window.removeEventListener('patient-rail-refresh', scheduleRefresh)
+      if (timer) clearTimeout(timer)
+    }
+  }, [refreshAll])
+
   // ─── 轮询：解析状态 ───
   useEffect(() => {
     const POLL_INTERVAL = 2000
@@ -2167,16 +2198,13 @@ const FileList = () => {
     }
   }, [])
 
-  const handleDeleteDocument = useCallback((documentId, fileName) => {
+  const handleDeleteDocument = useCallback(async (documentId, fileName) => {
+    // 弹确认前先查证据影响（失败也不阻塞，按"未引用"展示）
+    const impact = await fetchEvidenceImpactSafe(documentId)
     modal.confirm({
       title: '确认删除文档',
       icon: <DeleteOutlined style={{ color: token.colorError }} />,
-      content: (
-        <div>
-          <p>确定要删除文档 <Text strong>{fileName}</Text> 吗？</p>
-          <p style={{ color: token.colorError }}>删除操作不可撤销</p>
-        </div>
-      ),
+      content: buildDeleteContent(fileName, impact, { errorColor: token.colorError, mutedColor: token.colorTextSecondary }),
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -2192,7 +2220,8 @@ const FileList = () => {
             message.error(response.message || '删除失败')
           }
         } catch (error) {
-          message.error(error.response?.data?.message || '删除文档失败')
+          // request.js 抛 ApiRequestError：.message 已是后端 detail，.data 是原始 body
+          message.error(error?.data?.detail || error?.message || '删除文档失败')
         }
       },
     })
@@ -3379,11 +3408,17 @@ const FileList = () => {
             ) : null
           )}
         </Space>
-        <Space size={8} onClick={(e) => e.stopPropagation()}
-          style={{ opacity: isHovered || isAutoArchiving ? 1 : 0, transition: 'opacity 0.2s', flexShrink: 0, marginLeft: 8 }}
-        >
-          {hoverActions}
-        </Space>
+        {/*
+         * 仅在 hover / 归档中才渲染右侧操作区；否则不占用点击事件，
+         * 让分组行整行都可点击展开/折叠，避免"只能在文件数量图标附近才能切换"。
+         */}
+        {(isHovered || isAutoArchiving) && (
+          <Space size={8} onClick={(e) => e.stopPropagation()}
+            style={{ transition: 'opacity 0.2s', flexShrink: 0, marginLeft: 8 }}
+          >
+            {hoverActions}
+          </Space>
+        )}
       </div>
     )
   }, [expandedGroups, getGroupActionNodes, handleGroupMouseEnter, hoveredGroupKey, isFilterActive, toggleGroup, token.colorPrimary, token.colorTextSecondary])
@@ -3693,7 +3728,9 @@ const FileList = () => {
         key: 'actions',
         width: columnWidths.actions || FILE_LIST_COLUMN_DEFAULT_WIDTHS.actions,
         fixed: 'right',
-        onCell: (record) => record._isGroup ? { colSpan: 0 } : { onClick: (e) => e.stopPropagation() },
+        // 不再整列 stopPropagation；改由 getTableRowProps 内的 `.ant-btn` / `.ant-dropdown-trigger`
+        // 短路逻辑判断"点击是否落在交互元素上"，这样操作列的空白处也能触发整行点击。
+        onCell: (record) => record._isGroup ? { colSpan: 0 } : {},
         render: (_, record) => {
           if (record._isGroup) return null
           const isStarting = startingParseIds.has(record.id)

@@ -15,6 +15,7 @@ class ExtractionJob(TimestampMixin, Base):
         Index("idx_jobs_status", "status"),
         Index("idx_jobs_type", "job_type"),
         Index("idx_jobs_document", "document_id"),
+        Index("idx_jobs_document_type_status", "document_id", "job_type", "status"),
         Index("idx_jobs_context", "context_id"),
     )
 

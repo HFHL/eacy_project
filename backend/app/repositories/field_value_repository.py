@@ -1,4 +1,4 @@
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models import FieldCurrentValue, FieldValueEvent, FieldValueEvidence
@@ -125,6 +125,14 @@ class FieldCurrentValueRepository(BaseRepo[FieldCurrentValue]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
+    async def list_by_contexts(self, context_ids: list[str]) -> list[FieldCurrentValue]:
+        """批量按 context_id 列出所有当前值（用于多上下文聚合，例如项目完整度统计）。"""
+        if not context_ids:
+            return []
+        query = select(FieldCurrentValue).where(FieldCurrentValue.context_id.in_(context_ids))
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
     async def delete_by_context_field(self, *, context_id: str, field_path: str) -> None:
         query = delete(FieldCurrentValue).where(FieldCurrentValue.context_id == context_id).where(FieldCurrentValue.field_path == field_path)
         await session.execute(query)
@@ -169,3 +177,39 @@ class FieldValueEvidenceRepository(BaseRepo[FieldValueEvidence]):
         event_ids_query = select(FieldValueEvent.id).where(FieldValueEvent.context_id == context_id).where(FieldValueEvent.field_path == field_path)
         query = delete(FieldValueEvidence).where(FieldValueEvidence.value_event_id.in_(event_ids_query))
         await session.execute(query)
+
+    async def summarize_by_document_id(self, document_id: str) -> dict:
+        """聚合该文档作为字段证据时影响到的字段清单（用于"删除影响范围"提示）。
+
+        返回:
+            {
+              "evidence_count": int,           # 该文档对应的 evidence 行数
+              "fields": [                       # 去重后的字段列表
+                {"code": <field_key>, "title": <field_title or field_key>}
+              ]
+            }
+        若 evidence_count == 0 表示该文档未被任何字段证据引用。
+        """
+        # 字段列表：按 field_key/field_title 去重
+        field_query = (
+            select(FieldValueEvent.field_key, FieldValueEvent.field_title)
+            .select_from(FieldValueEvidence)
+            .join(FieldValueEvent, FieldValueEvent.id == FieldValueEvidence.value_event_id)
+            .where(FieldValueEvidence.document_id == document_id)
+            .distinct()
+        )
+        field_result = await session.execute(field_query)
+        fields = [
+            {"code": row.field_key, "title": row.field_title or row.field_key}
+            for row in field_result.all()
+        ]
+
+        # evidence 总行数
+        count_query = (
+            select(func.count(FieldValueEvidence.id))
+            .where(FieldValueEvidence.document_id == document_id)
+        )
+        count_result = await session.execute(count_query)
+        evidence_count = count_result.scalar() or 0
+
+        return {"evidence_count": evidence_count, "fields": fields}

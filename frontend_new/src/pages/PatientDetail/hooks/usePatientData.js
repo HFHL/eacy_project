@@ -3,7 +3,7 @@
  * 封装患者基础信息、AI综述等相关状态和操作
  * 只使用 API 数据
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { message } from 'antd'
 import dayjs from 'dayjs'
 import { getPatientDetail, updatePatient, getPatientDocuments, generateAiSummary, getAiSummary } from '@/api/patient'
@@ -59,13 +59,27 @@ export const usePatientData = (patientId = null) => {
   const [patientDocuments, setPatientDocuments] = useState([])
   const [documentsLoading, setDocumentsLoading] = useState(false)
 
+  // 进行中的请求控制器，便于在 patientId 切换/卸载时取消上一次请求
+  const detailAbortRef = useRef(null)
+  const documentsAbortRef = useRef(null)
+  const aiSummaryAbortRef = useRef(null)
+
+  const isAbortError = (error) => (
+    error?.name === 'AbortError' || error?.code === 20 || error?.code === 'ERR_CANCELED'
+  )
+
   // 从 API 获取患者详情
   const fetchPatientDetail = useCallback(async () => {
     if (!patientId) return
-    
+
+    detailAbortRef.current?.abort()
+    const controller = new AbortController()
+    detailAbortRef.current = controller
+
     setLoading(true)
     try {
-      const res = await getPatientDetail(patientId)
+      const res = await getPatientDetail(patientId, { signal: controller.signal })
+      if (controller.signal.aborted) return
       if (res.success && res.data) {
         const data = res.data
         const mergedData = data.merged_data || {}
@@ -103,10 +117,14 @@ export const usePatientData = (patientId = null) => {
         message.error(res.message || '获取患者详情失败')
       }
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('获取患者详情失败:', error)
       message.error('获取患者详情失败')
     } finally {
-      setLoading(false)
+      if (detailAbortRef.current === controller) {
+        detailAbortRef.current = null
+        setLoading(false)
+      }
     }
   }, [patientId])
 
@@ -123,10 +141,15 @@ export const usePatientData = (patientId = null) => {
   // 从 API 获取患者关联文档列表
   const fetchPatientDocuments = useCallback(async () => {
     if (!patientId) return
-    
+
+    documentsAbortRef.current?.abort()
+    const controller = new AbortController()
+    documentsAbortRef.current = controller
+
     setDocumentsLoading(true)
     try {
-      const res = await getPatientDocuments(patientId)
+      const res = await getPatientDocuments(patientId, { signal: controller.signal })
+      if (controller.signal.aborted) return
       if (res.success && res.data) {
         setPatientDocuments(res.data)
         console.log('患者关联文档:', res.data)
@@ -134,10 +157,14 @@ export const usePatientData = (patientId = null) => {
         message.error(res.message || '获取患者文档失败')
       }
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('获取患者文档失败:', error)
       message.error('获取患者文档失败')
     } finally {
-      setDocumentsLoading(false)
+      if (documentsAbortRef.current === controller) {
+        documentsAbortRef.current = null
+        setDocumentsLoading(false)
+      }
     }
   }, [patientId])
 
@@ -271,12 +298,17 @@ export const usePatientData = (patientId = null) => {
     }
   }, [patientId])
 
-  // 当 patientId 变化时获取数据
+  // 当 patientId 变化时获取数据；变更/卸载时取消上一次仍在飞的请求，避免错位回填
   useEffect(() => {
     if (patientId) {
       fetchPatientDetail()
       fetchPatientDocuments()
       fetchAiSummary()
+    }
+    return () => {
+      detailAbortRef.current?.abort()
+      documentsAbortRef.current?.abort()
+      aiSummaryAbortRef.current?.abort()
     }
   }, [patientId, fetchPatientDetail, fetchPatientDocuments, fetchAiSummary])
 

@@ -5,6 +5,7 @@ import { Spin, App as AntdApp } from 'antd'
 import router from './router'
 import { updateLastActivity } from './store/slices/userSlice'
 import { softLogin } from './api/auth'
+import { startGlobalBackgroundTaskPoller, stopGlobalBackgroundTaskPoller } from './utils/globalBackgroundTaskPoller'
 import './styles/global.css'
 
 // 全局加载组件
@@ -102,6 +103,16 @@ function App() {
       clearInterval(activityInterval)
     }
   }, [dispatch, isAuthenticated])
+
+  // 后台抽取 / 病历夹批量任务：全局轮询完成后提醒并触发页面刷新事件
+  useEffect(() => {
+    if (isAuthenticated) {
+      startGlobalBackgroundTaskPoller()
+      return () => stopGlobalBackgroundTaskPoller()
+    }
+    stopGlobalBackgroundTaskPoller()
+    return undefined
+  }, [isAuthenticated])
 
   // 全局错误处理
   useEffect(() => {

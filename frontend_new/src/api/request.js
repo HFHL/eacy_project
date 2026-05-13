@@ -1,3 +1,5 @@
+import { clearUserSessionStorage } from '../utils/authCleanup'
+
 const DEFAULT_API_BASE_URL = '/api/v1'
 
 const trimTrailingSlash = (value) => value.replace(/\/+$/, '')
@@ -83,11 +85,7 @@ const createBody = (data) => {
 }
 
 const clearAuthAndRedirect = () => {
-  localStorage.removeItem('access_token')
-  localStorage.removeItem('refresh_token')
-  localStorage.removeItem('user_info')
-  localStorage.removeItem('user_settings')
-  localStorage.removeItem('login_time')
+  clearUserSessionStorage()
   if (window.location.pathname !== '/login') {
     window.location.href = '/login'
   }

@@ -1,0 +1,10 @@
+{
+  "showLineNumber": true,
+  "showInlineTitle": true,
+  "promptDelete": false,
+  "alwaysUpdateLinks": true,
+  "newLinkFormat": "shortest",
+  "useMarkdownLinks": false,
+  "attachmentFolderPath": "_attachments",
+  "newFileLocation": "current"
+}
