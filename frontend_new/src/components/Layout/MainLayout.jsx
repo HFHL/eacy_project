@@ -199,7 +199,14 @@ const mapProjectRailItems = (items = [], keyword = '', sortMode = 'updated_desc'
       status: item.status || '',
       statusLabel: item.status_label || '',
       statusColor: item.status_color || '',
-      patientCount: Number(item.actual_patient_count || 0),
+      patientCount: Number(
+        item.actual_patient_count
+        ?? item.enrolled_patient_count
+        ?? item.patient_count
+        ?? item.extra_json?.actual_patient_count
+        ?? item.extra_json?.patient_count
+        ?? 0
+      ),
       avgCompleteness: Number(item.avg_completeness || 0),
       updatedAt: item.updated_at || '',
     }))

@@ -123,7 +123,7 @@ const ProjectTemplateDesigner = () => {
         console.log('[ProjectTemplateDesigner] loadTemplateIntoDesignerDetailed:', { loadedFrom, reason })
         if (!loadedFrom) {
           if (reason === 'missing-assets' || reason === 'designer-schema-empty') {
-            message.warning('未找到项目模板快照（designer/schema）')
+            message.warning('项目已关联模板，但当前模板版本缺少可编辑结构（designer/schema）')
           } else if (reason === 'schema-parse-failed') {
             message.warning('模板 schema 解析失败，设计器已清空（请查看控制台日志）')
           }
@@ -185,4 +185,3 @@ const ProjectTemplateDesigner = () => {
 }
 
 export default ProjectTemplateDesigner
-

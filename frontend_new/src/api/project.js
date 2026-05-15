@@ -596,22 +596,51 @@ const pickSchemaVersionFromTemplate = (template = {}, schemaVersionId = '') => {
 export const getProjectTemplateDesigner = async (projectId = '') => {
   if (!projectId) return emptySuccess(null)
   const binding = await fetchActiveProjectBinding(projectId)
-  if (!binding?.template_id) {
+  let templateRef = binding
+  if (!templateRef?.template_id) {
+    try {
+      const project = await request.get(`${PROJECTS_ENDPOINT}/${projectId}`)
+      const extra = isPlainObject(project?.extra_json) ? project.extra_json : {}
+      const scopeConfig = isPlainObject(project?.template_scope_config)
+        ? project.template_scope_config
+        : (isPlainObject(extra.template_scope_config) ? extra.template_scope_config : {})
+      const templateInfo = isPlainObject(project?.template_info)
+        ? project.template_info
+        : (isPlainObject(extra.template_info) ? extra.template_info : {})
+      const templateId = (
+        templateInfo.template_id
+        || scopeConfig.template_id
+        || project?.crf_template_id
+        || extra.crf_template_id
+      )
+      templateRef = templateId
+        ? {
+          template_id: templateId,
+          schema_version_id: templateInfo.schema_version_id || scopeConfig.schema_version_id || null,
+          binding_type: 'primary_crf',
+          id: null,
+        }
+        : null
+    } catch (error) {
+      console.warn('[project] 解析项目模板兜底信息失败:', error)
+    }
+  }
+  if (!templateRef?.template_id) {
     return emptySuccess(null, { message: '项目尚未关联 CRF 模板' })
   }
   try {
-    const template = await request.get(`/schema-templates/${binding.template_id}`)
-    const version = pickSchemaVersionFromTemplate(template, binding.schema_version_id)
+    const template = await request.get(`/schema-templates/${templateRef.template_id}`)
+    const version = pickSchemaVersionFromTemplate(template, templateRef.schema_version_id)
     const schemaJson = version?.schema_json || version?.schema || template?.schema_json || {}
     const layoutConfig = (schemaJson && typeof schemaJson === 'object' && schemaJson.layout_config) || {}
     const designer = schemaJson?.designer || layoutConfig.designer || null
     const fieldGroups = schemaJson?.fieldGroups || layoutConfig.fieldGroups || version?.field_groups || []
     return emptySuccess({
-      template_id: template?.id || binding.template_id,
+      template_id: template?.id || templateRef.template_id,
       template_name: template?.template_name || template?.name || '项目模板',
       schema_version: version?.version_no ? `v${version.version_no}` : (version?.version_name || ''),
-      schema_version_id: version?.id || binding.schema_version_id,
-      binding_id: binding.id,
+      schema_version_id: version?.id || templateRef.schema_version_id,
+      binding_id: templateRef.id || null,
       schema_json: schemaJson,
       schema: schemaJson,
       designer,

@@ -719,13 +719,16 @@ const ProjectDatasetView = () => {
     return 0
   }, [patientDataset, projectData])
 
+  const actualPatientTotal = enrolledPatientCount || projectData?.actual_patient_count || 0
+  const expectedPatientTotal = projectData?.expected_patient_count || null
   const projectInfo = projectData ? {
     id: projectData.id,
     name: projectData.project_name,
     description: projectData.description,
     status: projectData.status,
-    totalPatients: projectData.expected_patient_count || enrolledPatientCount || 0,
-    extractedPatients: enrolledPatientCount || 0,
+    totalPatients: actualPatientTotal,
+    expectedPatients: expectedPatientTotal,
+    extractedPatients: actualPatientTotal,
     completeness: computedAvgCompleteness,
     crfTemplate: projectData?.template_info?.template_name
       || projectData?.template_scope_config?.template_name
@@ -738,6 +741,7 @@ const ProjectDatasetView = () => {
     description: '项目信息加载中...',
     status: 'unknown',
     totalPatients: 0,
+    expectedPatients: null,
     extractedPatients: 0,
     completeness: 0,
     crfTemplate: '未关联模板',
@@ -749,6 +753,7 @@ const ProjectDatasetView = () => {
   // 当前项目绑定的 CRF 模板 ID（用于跳转只读预览）
   const currentTemplateId = projectData?.template_info?.template_id
     || projectData?.template_scope_config?.template_id
+    || projectData?.crf_template_id
 
   const projectDatasetViewModel = useProjectDatasetViewModel({
     projectData,
@@ -2935,7 +2940,7 @@ const ProjectDatasetView = () => {
                   <div style={{ display: 'flex', alignItems: 'center', marginBottom: 4 }}>
                     <TeamOutlined style={{ fontSize: 16, marginRight: 6, color: token.colorPrimary }} />
                     <Text style={{ color: token.colorTextSecondary, fontSize: 12 }}>患者统计</Text>
-                    <Tooltip title="当前纳入患者 / 总患者数">
+                    <Tooltip title={projectInfo.expectedPatients ? `实际入组人数 / 当前入组总数；预期患者 ${projectInfo.expectedPatients}` : '实际入组人数 / 当前入组总数'}>
                       <InfoCircleOutlined style={{ fontSize: 12, color: token.colorTextSecondary, marginLeft: 6 }} />
                     </Tooltip>
                   </div>
