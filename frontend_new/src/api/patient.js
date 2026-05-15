@@ -260,6 +260,17 @@ const setBySchemaPath = (target, schemaNode, parts, value) => {
     if (target[rowIndex] == null || typeof target[rowIndex] !== 'object' || Array.isArray(target[rowIndex])) {
       target[rowIndex] = {}
     }
+    // 行级 value：path 定位到某一行但没有继续给出叶子键时，value 通常
+    // 是 value_json 整行对象。直接合并到当前行，避免被原先的 "parts 为
+    // 空就 return" 默默吞掉，导致重复表单只渲染出一条空白行。
+    if (nextParts.length === 0) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.assign(target[rowIndex], value)
+      } else if (value !== undefined && value !== null) {
+        target[rowIndex] = value
+      }
+      return
+    }
     setBySchemaPath(target[rowIndex], schemaNode.items, nextParts, value)
     return
   }
@@ -269,6 +280,20 @@ const setBySchemaPath = (target, schemaNode, parts, value) => {
   const childSchema = isSchemaObject(schemaNode) ? schemaNode.properties[part] : null
 
   if (isLast) {
+    // schema 期望可重复数组、但后端把整组数据存成 value_json 的单个对象时，
+    // 需要包一层数组；否则 SchemaForm 按行渲染时收到对象，整张表都展不开。
+    if (isSchemaArrayRecord(childSchema)) {
+      if (Array.isArray(value)) {
+        target[part] = value
+      } else if (value && typeof value === 'object') {
+        target[part] = [value]
+      } else if (value === undefined || value === null) {
+        target[part] = []
+      } else {
+        target[part] = value
+      }
+      return
+    }
     target[part] = value
     return
   }

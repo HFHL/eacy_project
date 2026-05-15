@@ -75,6 +75,18 @@ const setBySchemaPath = (target, schemaNode, parts, value) => {
     if (target[rowIndex] == null || typeof target[rowIndex] !== 'object' || Array.isArray(target[rowIndex])) {
       target[rowIndex] = {}
     }
+    // 行级 value：当 path 已经定位到某一行（如 `medications.0`），
+    // 但没有继续给出叶子键时，value 通常是 value_json 整行对象。
+    // 直接合并到当前行；否则会被旧逻辑的 "parts 为空就 return" 静默丢弃，
+    // 导致重复表单只显示一条空白行（用户感知到的"少解了一层包"）。
+    if (nextParts.length === 0) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.assign(target[rowIndex], value)
+      } else if (value !== undefined && value !== null) {
+        target[rowIndex] = value
+      }
+      return
+    }
     setBySchemaPath(target[rowIndex], schemaNode.items, nextParts, value)
     return
   }
@@ -84,6 +96,21 @@ const setBySchemaPath = (target, schemaNode, parts, value) => {
   const childSchema = isSchemaObject(schemaNode) ? schemaNode.properties[part] : null
 
   if (isLast) {
+    // 当 schema 期望可重复数组（array record），但后端把整组数据存成
+    // value_json 的单个对象时，需要包一层数组，否则前端 SchemaForm
+    // 期望按行渲染却收到对象，整张表都点不开。
+    if (isSchemaArrayRecord(childSchema)) {
+      if (Array.isArray(value)) {
+        target[part] = value
+      } else if (value && typeof value === 'object') {
+        target[part] = [value]
+      } else if (value === undefined || value === null) {
+        target[part] = []
+      } else {
+        target[part] = value
+      }
+      return
+    }
     target[part] = value
     return
   }
@@ -112,6 +139,116 @@ const currentValuesToData = (currentValues = {}, schema = null) => {
     setNestedValue(data, fieldPath, extractCurrentValue(current), schema)
   })
   return data
+}
+
+/**
+ * 收集 schema 节点下所有叶子字段路径（以点分形式返回，不带数组索引）。
+ * 与 datasetAdapter.collectLeafFieldPaths 行为一致，但在 api 层独立维护以避免跨层依赖。
+ */
+const collectSchemaLeafPaths = (schemaNode, pathSegments = []) => {
+  if (!schemaNode || typeof schemaNode !== 'object') return []
+  const target = isSchemaArrayRecord(schemaNode) ? schemaNode.items : schemaNode
+  const props = target?.properties
+  if (!props || typeof props !== 'object' || Array.isArray(props)) {
+    return pathSegments.length > 0 ? [pathSegments.join('.')] : []
+  }
+  return Object.entries(props).flatMap(([key, child]) => (
+    collectSchemaLeafPaths(child, [...pathSegments, key])
+  ))
+}
+
+const canonicalDotPath = (dotPath) => (
+  String(dotPath || '')
+    .split('.')
+    .filter((part) => part && !/^\d+$/.test(part))
+    .join('.')
+)
+
+const hasMeaningfulValue = (value) => {
+  if (Array.isArray(value)) return value.length > 0
+  if (value && typeof value === 'object') return Object.keys(value).length > 0
+  return value !== null && value !== undefined && value !== ''
+}
+
+/**
+ * 基于 schema 结构 + current_values 构造 `crf_data.groups`，让前端的概览列、
+ * crfGroups 完成度等计算能够回到 schema 主导的稳定路径上。
+ *
+ * - groupId 与 datasetAdapter.deriveTemplateFieldGroupsFromSchema 对齐：
+ *   折叠 folder/group 两层时为 `${folder}/${group}`，单层时为 `${folder}`。
+ * - groups[groupId].fields 的 key 采用 `folder/group/leaf` 斜杠形式，
+ *   与现有 adaptProjectPatient.calcGroupStats / FieldGroupTable 的字段路径解析保持兼容。
+ */
+const buildCrfGroupsFromSchema = (schema, currentValues = {}) => {
+  if (!schema || typeof schema !== 'object') return {}
+  const rootProps = schema.properties
+  if (!rootProps || typeof rootProps !== 'object' || Array.isArray(rootProps)) return {}
+
+  const filledByCanonical = {}
+  Object.entries(currentValues || {}).forEach(([fieldPath, current]) => {
+    const canonical = canonicalDotPath(normalizeFieldPath(fieldPath))
+    if (!canonical) return
+    const value = extractCurrentValue(current || {})
+    if (filledByCanonical[canonical] === undefined || hasMeaningfulValue(value)) {
+      filledByCanonical[canonical] = value
+    }
+  })
+
+  const buildGroupEntry = (groupSchema, groupId, groupName, pathSegments) => {
+    const leafDotPaths = collectSchemaLeafPaths(groupSchema, pathSegments)
+    const fields = {}
+    leafDotPaths.forEach((dotPath) => {
+      const canonical = canonicalDotPath(dotPath)
+      const slashKey = dotPath.split('.').filter(Boolean).join('/')
+      const value = filledByCanonical[canonical]
+      fields[slashKey] = { value: value === undefined ? null : value }
+    })
+    return {
+      group_id: groupId,
+      group_name: groupName,
+      is_repeatable: groupSchema?.type === 'array',
+      fields,
+      records: [],
+    }
+  }
+
+  const groups = {}
+  Object.entries(rootProps).forEach(([folderKey, folderSchema]) => {
+    if (!folderSchema || typeof folderSchema !== 'object' || Array.isArray(folderSchema)) return
+    const folderInner = isSchemaArrayRecord(folderSchema) ? folderSchema.items : folderSchema
+    const folderChildren = folderInner?.properties
+    if (folderChildren && typeof folderChildren === 'object' && !Array.isArray(folderChildren)) {
+      const hasNestedGroups = Object.values(folderChildren).some((child) => (
+        (child?.properties && typeof child.properties === 'object')
+        || (child?.type === 'array' && child?.items?.properties)
+      ))
+      if (hasNestedGroups) {
+        Object.entries(folderChildren).forEach(([groupKey, groupSchema]) => {
+          if (!groupSchema || typeof groupSchema !== 'object' || Array.isArray(groupSchema)) return
+          const groupId = `${folderKey}/${groupKey}`
+          const groupName = `${folderSchema.title || folderKey} / ${groupSchema.title || groupKey}`
+          groups[groupId] = buildGroupEntry(groupSchema, groupId, groupName, [folderKey, groupKey])
+        })
+        return
+      }
+    }
+    groups[folderKey] = buildGroupEntry(folderSchema, folderKey, folderSchema.title || folderKey, [folderKey])
+  })
+
+  return groups
+}
+
+const computeOverallCompletenessFromGroups = (groups) => {
+  let totalFields = 0
+  let filledFields = 0
+  Object.values(groups || {}).forEach((group) => {
+    const fields = group?.fields && typeof group.fields === 'object' ? group.fields : {}
+    Object.values(fields).forEach((field) => {
+      totalFields += 1
+      if (hasMeaningfulValue(field?.value)) filledFields += 1
+    })
+  })
+  return totalFields > 0 ? Math.round((filledFields / totalFields) * 100) : 0
 }
 
 const toProjectCode = (data = {}) => {
@@ -219,23 +356,37 @@ const wrapList = (items = [], pagination = {}) => emptySuccess(items, {
   },
 })
 
-const projectPatientToDetail = (item = {}, crf = null) => ({
-  ...item,
-  project_patient_id: item.id,
-  subject_id: item.enroll_no || item.subject_id || item.patient_id,
-  enrollment_date: item.enrolled_at || item.enrollment_date,
-  patient_name: item.patient_name || item.name || '',
-  patient_gender: item.patient_gender ?? item.gender ?? null,
-  patient_age: item.patient_age ?? item.age ?? null,
-  patient_birth_date: item.patient_birth_date ?? item.birth_date ?? null,
-  patient_phone: item.patient_phone ?? item.phone ?? '',
-  patient_code: item.patient_code ?? item.patient_id,
-  patient_diagnosis: item.patient_diagnosis ?? item.diagnosis ?? [],
-  crf_data: crf ? { groups: {}, data: currentValuesToData(crf.current_values || {}, crf.schema), current_values: crf.current_values || {}, _documents: item._documents || {}, _crf: crf } : item.crf_data || { groups: {} },
-  documents: item.documents || [],
-  document_count: item.document_count ?? 0,
-  crf_completeness: item.crf_completeness ?? 0,
-})
+const projectPatientToDetail = (item = {}, crf = null) => {
+  const crfGroups = crf ? buildCrfGroupsFromSchema(crf.schema, crf.current_values || {}) : {}
+  const crfCompleteness = crf
+    ? computeOverallCompletenessFromGroups(crfGroups)
+    : (item.crf_completeness ?? 0)
+  return {
+    ...item,
+    project_patient_id: item.id,
+    subject_id: item.enroll_no || item.subject_id || item.patient_id,
+    enrollment_date: item.enrolled_at || item.enrollment_date,
+    patient_name: item.patient_name || item.name || '',
+    patient_gender: item.patient_gender ?? item.gender ?? null,
+    patient_age: item.patient_age ?? item.age ?? null,
+    patient_birth_date: item.patient_birth_date ?? item.birth_date ?? null,
+    patient_phone: item.patient_phone ?? item.phone ?? '',
+    patient_code: item.patient_code ?? item.patient_id,
+    patient_diagnosis: item.patient_diagnosis ?? item.diagnosis ?? [],
+    crf_data: crf
+      ? {
+          groups: crfGroups,
+          data: currentValuesToData(crf.current_values || {}, crf.schema),
+          current_values: crf.current_values || {},
+          _documents: item._documents || {},
+          _crf: crf,
+        }
+      : item.crf_data || { groups: {} },
+    documents: item.documents || [],
+    document_count: item.document_count ?? 0,
+    crf_completeness: crfCompleteness,
+  }
+}
 
 const documentListToMap = (documents = []) => Object.fromEntries(
   (Array.isArray(documents) ? documents : [])
@@ -254,8 +405,22 @@ const fetchPatientDocuments = async (patientId = '') => {
   }
 }
 
-const mergePatientProfile = async (projectPatient = {}) => {
-  if (!projectPatient?.patient_id) return projectPatientToDetail(projectPatient)
+/**
+ * 拉取项目患者的 CRF（schema + current_values）。
+ * 失败时返回 null，调用方按"无 crf"分支降级（保留旧的 groups: {} 行为）。
+ */
+const fetchProjectPatientCrf = async (projectId = '', projectPatientId = '') => {
+  if (!projectId || !projectPatientId) return null
+  try {
+    return await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients/${projectPatientId}/crf`)
+  } catch (error) {
+    console.warn('[project] 获取项目患者 CRF 失败:', error)
+    return null
+  }
+}
+
+const mergePatientProfile = async (projectPatient = {}, crf = null) => {
+  if (!projectPatient?.patient_id) return projectPatientToDetail(projectPatient, crf)
   const documents = await fetchPatientDocuments(projectPatient.patient_id)
   try {
     const patient = await request.get(`/patients/${projectPatient.patient_id}`)
@@ -274,14 +439,14 @@ const mergePatientProfile = async (projectPatient = {}) => {
       department: patient.department,
       main_diagnosis: patient.main_diagnosis,
       doctor_name: patient.doctor_name,
-    })
+    }, crf)
   } catch {
     return projectPatientToDetail({
       ...projectPatient,
       documents,
       _documents: documentListToMap(documents),
       document_count: projectPatient.document_count ?? documents.length,
-    })
+    }, crf)
   }
 }
 
@@ -368,15 +533,22 @@ export const removeProjectMember = async () => emptySuccess(null)
 export const getProjectPatients = async (projectId = '') => {
   if (!projectId) return wrapList([])
   const patients = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients`)
-  const enriched = await Promise.all((Array.isArray(patients) ? patients : []).map(mergePatientProfile))
+  // 列表页右侧概览需要每个患者的 CRF groups 完成度，因此在这里并行拉取 CRF。
+  // 后端列表接口 ProjectPatientResponse 不带 crf_data，因此必须二次取 CRF 才能
+  // 让 adaptProjectPatient.calcGroupStats / overviewColumns 显示出真实条数。
+  const list = Array.isArray(patients) ? patients : []
+  const enriched = await Promise.all(list.map(async (patient) => {
+    const crf = await fetchProjectPatientCrf(projectId, patient.id)
+    return mergePatientProfile(patient, crf)
+  }))
   return wrapList(enriched)
 }
 export const getProjectPatientDetail = async (projectId = '', patientId = '') => {
   const projectPatient = await resolveProjectPatient(projectId, patientId)
   if (!projectPatient) return emptySuccess(null)
-  const crf = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients/${projectPatient.id}/crf`)
-  const enriched = await mergePatientProfile(projectPatient)
-  return emptySuccess(projectPatientToDetail(enriched, crf))
+  const crf = await fetchProjectPatientCrf(projectId, projectPatient.id)
+  const enriched = await mergePatientProfile(projectPatient, crf)
+  return emptySuccess(enriched)
 }
 export const updateProjectPatientCrfFields = async (projectId, projectPatientId, data = {}) => {
   const fields = Array.isArray(data?.fields) ? data.fields : []
