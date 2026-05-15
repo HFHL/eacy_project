@@ -1,5 +1,6 @@
 import request from './request'
 import { emptyList, emptySuccess, emptyTask } from './_empty'
+import { normalizeFieldEvidence } from './_evidence'
 import { PATIENT_DEPARTMENT_OPTIONS } from '../constants/patientDepartments'
 import { getDocumentList } from './document'
 
@@ -437,44 +438,7 @@ const normalizeHistoryEvent = (event = {}) => ({
   note: event.note,
 })
 
-const normalizeEvidenceLocation = (evidence = {}) => {
-  let rawLocation = evidence.bbox_json
-  if (typeof rawLocation === 'string') {
-    try {
-      rawLocation = JSON.parse(rawLocation)
-    } catch {
-      rawLocation = null
-    }
-  }
-  const location = rawLocation && typeof rawLocation === 'object' ? rawLocation : {}
-  const pageNo = evidence.page_no || location.page_no || location.page || 1
-  const polygon = Array.isArray(location.polygon)
-    ? location.polygon
-    : Array.isArray(location.textin_position)
-      ? location.textin_position
-      : Array.isArray(location.position)
-        ? location.position
-        : null
-
-  return {
-    ...location,
-    page: pageNo,
-    page_no: pageNo,
-    polygon,
-    coord_space: location.coord_space || 'pixel',
-    page_width: location.page_width,
-    page_height: location.page_height,
-    quote_text: evidence.quote_text || location.quote_text || '',
-    evidence_id: evidence.id,
-    evidence_type: evidence.evidence_type,
-    document_id: evidence.document_id,
-  }
-}
-
-const normalizeFieldEvidence = (evidence = {}) => ({
-  ...evidence,
-  source_location: normalizeEvidenceLocation(evidence),
-})
+// normalizeEvidenceLocation / normalizeFieldEvidence 已抽到 ./_evidence.js 共享给科研 CRF 使用
 
 export const getPatientEhr = async (patientId = '') => {
   const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ehr`)

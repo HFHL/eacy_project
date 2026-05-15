@@ -1,4 +1,5 @@
 import { emptyList, emptySuccess, emptyTask } from './_empty'
+import { normalizeFieldEvidence } from './_evidence'
 import { extractEhrDataTargeted, getDocumentList } from './document'
 import request, { ensureFreshAccessToken } from './request'
 
@@ -423,6 +424,17 @@ export const getProjectCrfFieldHistory = async (projectId = '', projectPatientId
   }))
   return emptySuccess({ history })
 }
+/**
+ * 获取科研项目 CRF 字段的 evidence（坐标证据）。
+ * 与 getEhrFieldEvidence 对齐：返回经过 normalizeFieldEvidence 处理的 evidence 数组，
+ * 每条都带有 source_location（polygon / page_width / page_height / page）。
+ */
+export const getCrfFieldEvidence = async (projectId = '', projectPatientId = '', fieldPath = '') => {
+  if (!projectId || !projectPatientId || !fieldPath) return emptySuccess([])
+  const evidences = await request.get(crfFieldUrl(projectId, projectPatientId, fieldPath, '/evidence'))
+  return emptySuccess((Array.isArray(evidences) ? evidences : []).map(normalizeFieldEvidence))
+}
+
 export const getProjectCrfFieldCandidates = async (projectId = '', projectPatientId = '', fieldPath = '') => {
   if (!projectId || !projectPatientId || !fieldPath) return emptySuccess({
     candidates: [],

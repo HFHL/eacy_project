@@ -2168,6 +2168,9 @@ const ProjectDatasetView = () => {
       audit: sourceContext.audit,
       documents: sourceContext.documents,
       changeLogs: fieldChangeLogs,
+      // 透传给 FieldSourceModal，用来按 EhrTab 同链路拉取 CRF evidence 渲染坐标
+      projectPatientId: patientRecord?.id || null,
+      fieldPath,
     })
     setFieldSourceModalVisible(true)
   }
@@ -3559,6 +3562,9 @@ const ProjectDatasetView = () => {
                             audit={sourceContext.audit}
                             documents={sourceContext.documents}
                             showSourceTag={true}
+                            projectId={projectId}
+                            projectPatientId={currentPatient?.id}
+                            fieldPath={cell.fieldPath}
                           />
                         </div>
                       )
@@ -3632,6 +3638,9 @@ const ProjectDatasetView = () => {
                                       audit={sourceContext.audit}
                                       documents={sourceContext.documents}
                                       showSourceTag={true}
+                                      projectId={projectId}
+                                      projectPatientId={currentPatient?.id}
+                                      fieldPath={cell.fieldPath}
                                     />
                                     {isComplexValue && (
                                       <div style={{ marginTop: 6 }}>
@@ -3776,6 +3785,9 @@ const ProjectDatasetView = () => {
         audit={currentFieldSource?.audit}
         documents={currentFieldSource?.documents}
         changeLogs={currentFieldSource?.changeLogs}
+        projectId={projectId}
+        projectPatientId={currentFieldSource?.projectPatientId}
+        fieldPath={currentFieldSource?.fieldPath}
       />
 
       {docDetailDoc && (

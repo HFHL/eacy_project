@@ -32,9 +32,25 @@ import {
   InfoCircleOutlined
 } from '@ant-design/icons';
 import { getFreshDocumentPdfStreamUrl, getDocumentTempUrl } from '../../api/document';
+import { getCrfFieldEvidence } from '../../api/project';
 import { appThemeToken } from '../../styles/themeTokens';
 import PdfPageWithHighlight from '../PdfPageWithHighlight';
+import HighlightedImage from '../HighlightedImage';
 import './styles.css';
+
+const isPdfFileLike = ({ fileType, fileName, fileUrl } = {}) => {
+  const type = String(fileType || '').toLowerCase();
+  const name = String(fileName || '').toLowerCase();
+  const url = String(fileUrl || '').toLowerCase();
+  const cleanUrl = url.split('?')[0].split('#')[0];
+  return (
+    type === 'pdf' ||
+    type === '.pdf' ||
+    type.includes('application/pdf') ||
+    name.endsWith('.pdf') ||
+    cleanUrl.endsWith('.pdf')
+  );
+};
 
 const { Text, Paragraph } = Typography;
 
@@ -113,152 +129,66 @@ const RawTextHighlight = ({ raw, value }) => {
 };
 
 /**
- * 文档图片预览面板（带bbox高亮）
- * 
- * @param {string} documentId - 文档ID
- * @param {string} fileName - 文件名
- * @param {Array} bbox - 坐标 [x1, y1, x2, y2]，相对于图片的像素坐标
- * @param {number} pageIndex - 页码（从0开始）
- * @param {string} sourceId - 来源位置标识（如 p0.5）
+ * 文档证据预览面板：完全按电子病历夹（EhrTab）的方式渲染坐标。
+ *
+ * 输入 evidence 数组（每条带 source_location.polygon + page_width/page_height）：
+ * - PDF 文件 → 复用 PdfPageWithHighlight 的 polygon 路径
+ * - 图片文件 → 复用 HighlightedImage（裁剪 + 容器填充）
+ *
+ * 不再消费旧的 LLM 4 元组 bbox：科研侧的字段坐标历史上靠 1100 阈值兜底，
+ * 视觉上"乱画"，因此本组件只走 evidence 链路；evidence 缺失时显示空态。
  */
-const DocumentBboxViewer = ({ documentId, fileName, bbox, pageIndex = 0, sourceId, pageAngle = 0 }) => {
-  const [loading, setLoading] = useState(true);
-  const [imageUrl, setImageUrl] = useState(null);
-  const [fileType, setFileType] = useState(null);
-  const [error, setError] = useState(null);
-  const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
-  const [containerWidth, setContainerWidth] = useState(0);
-  const containerRef = React.useRef(null);
-  const imageRef = React.useRef(null);
+const EvidenceDocumentViewer = ({ evidences, loading }) => {
+  const [docInfo, setDocInfo] = useState(null);
+  const [docError, setDocError] = useState(null);
+  const [docLoading, setDocLoading] = useState(false);
 
-  // bbox 可能是 [x1,y1,x2,y2] 或 8 点多边形；统一转成 4 点 min/max
-  const normalizeBbox = (b) => {
-    if (!Array.isArray(b) || b.length < 4) return null;
-    if (b.length === 4) return b;
-    if (b.length === 8) {
-      const xs = [b[0], b[2], b[4], b[6]];
-      const ys = [b[1], b[3], b[5], b[7]];
-      const x1 = Math.min(...xs);
-      const y1 = Math.min(...ys);
-      const x2 = Math.max(...xs);
-      const y2 = Math.max(...ys);
-      return [x1, y1, x2, y2];
-    }
-    // 兜底：只取前四个
-    return b.slice(0, 4);
-  };
-
-  const convertBboxToPixels = (b4, w, h) => {
-    if (!Array.isArray(b4) || b4.length !== 4) return b4;
-    const [x1, y1, x2, y2] = b4.map(v => Number(v));
-    const maxV = Math.max(x1, y1, x2, y2);
-    // 经验判断：<=1000 认为是归一化坐标
-    if (maxV <= 1100) {
-      return [
-        (x1 / 1000) * w,
-        (y1 / 1000) * h,
-        (x2 / 1000) * w,
-        (y2 / 1000) * h,
-      ];
-    }
-    return [x1, y1, x2, y2];
-  };
+  const validEvidences = Array.isArray(evidences) ? evidences.filter(Boolean) : [];
+  const primary = validEvidences[0] || null;
+  const documentId = primary?.document_id || primary?.source_location?.document_id || null;
 
   useEffect(() => {
     if (!documentId) {
-      setLoading(false);
+      setDocInfo(null);
+      setDocError(null);
       return;
     }
-
     let cancelled = false;
     const loadDocument = async () => {
-      setLoading(true);
-      setError(null);
+      setDocLoading(true);
+      setDocError(null);
       try {
         const urlRes = await getDocumentTempUrl(documentId);
         if (cancelled) return;
         if (urlRes.success && urlRes.data?.temp_url) {
-          const ft = urlRes.data?.file_type || urlRes.data?.mime_type || null;
-          setFileType(ft);
-          setImageUrl(String(ft).toLowerCase().includes('pdf') ? await getFreshDocumentPdfStreamUrl(documentId) : urlRes.data.temp_url);
+          const fileName = urlRes.data?.file_name || '';
+          const fileType = urlRes.data?.file_type || urlRes.data?.mime_type || '';
+          const isPdf = isPdfFileLike({ fileType, fileName, fileUrl: urlRes.data.temp_url });
+          const url = isPdf
+            ? await getFreshDocumentPdfStreamUrl(documentId)
+            : urlRes.data.temp_url;
+          if (!cancelled) {
+            setDocInfo({ url, fileName, fileType, isPdf });
+          }
         } else {
-          setError('无法获取文档图片');
+          setDocError('无法获取文档');
         }
       } catch (err) {
         if (!cancelled) {
           console.error('加载文档失败:', err);
-          setError(err.message || '加载文档失败');
+          setDocError(err.message || '加载文档失败');
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setDocLoading(false);
       }
     };
-
     loadDocument();
     return () => {
       cancelled = true;
     };
-  }, [documentId, pageIndex, pageAngle]);
+  }, [documentId]);
 
-  // 监听容器宽度变化
-  useEffect(() => {
-    if (containerRef.current) {
-      const updateWidth = () => {
-        setContainerWidth(containerRef.current.offsetWidth);
-      };
-      updateWidth();
-      window.addEventListener('resize', updateWidth);
-      return () => window.removeEventListener('resize', updateWidth);
-    }
-  }, []);
-
-  // 图片加载完成后获取原始尺寸
-  const handleImageLoad = (e) => {
-    const img = e.target;
-    setImageDimensions({
-      width: img.naturalWidth,
-      height: img.naturalHeight
-    });
-  };
-
-  // 计算bbox在缩放后图片上的位置
-  const calculateBboxStyle = () => {
-    const norm = normalizeBbox(bbox);
-    if (!norm || norm.length !== 4 || !imageDimensions.width || !containerWidth) {
-      return null;
-    }
-
-    // 支持归一化坐标（0-1000）以及像素坐标
-    const [x1, y1, x2, y2] = convertBboxToPixels(norm, imageDimensions.width, imageDimensions.height);
-    const displayWidth = Math.min(containerWidth - 32, imageDimensions.width);
-    const scale = displayWidth / imageDimensions.width;
-    
-    // 计算缩放后的坐标
-    const scaledX1 = x1 * scale;
-    const scaledY1 = y1 * scale;
-    const scaledWidth = (x2 - x1) * scale;
-    const scaledHeight = (y2 - y1) * scale;
-
-    return {
-      position: 'absolute',
-      left: scaledX1,
-      top: scaledY1,
-      width: scaledWidth,
-      height: scaledHeight,
-      border: `3px solid ${appThemeToken.colorError}`,
-      backgroundColor: 'rgba(255, 77, 79, 0.15)',
-      borderRadius: 4,
-      pointerEvents: 'none',
-      boxShadow: '0 0 8px rgba(255, 77, 79, 0.5)',
-      transition: 'all 0.3s ease'
-    };
-  };
-
-  if (!documentId) {
-    return <Empty description="无关联文档" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
-  }
-
-  if (loading) {
+  if (loading || docLoading) {
     return (
       <div style={{ textAlign: 'center', padding: '60px 0' }}>
         <Spin tip="加载文档中..." size="large" />
@@ -266,51 +196,29 @@ const DocumentBboxViewer = ({ documentId, fileName, bbox, pageIndex = 0, sourceI
     );
   }
 
-  if (error || !imageUrl) {
-    return <Empty description={error || '无法加载文档图片'} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
-  }
-
-  if (fileType === 'pdf') {
+  if (!documentId) {
     return (
-      <div
-        ref={containerRef}
-        style={{
-          background: appThemeToken.colorFillTertiary,
-          borderRadius: 8,
-          padding: 16,
-          maxHeight: '80vh',
-          overflow: 'auto'
-        }}
-      >
-        <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ color: appThemeToken.colorTextSecondary, fontSize: 14 }}>
-            📄 {fileName || '原始文档'}
-            <Tag color="blue" style={{ marginLeft: 8 }}>第 {(pageIndex || 0) + 1} 页</Tag>
-          </div>
-          <Space size={8}>
-            {sourceId && (
-              <Tag color="blue">位置: {sourceId}</Tag>
-            )}
-          </Space>
-        </div>
-        <PdfPageWithHighlight
-          pdfUrl={imageUrl}
-          pageNumber={(pageIndex || 0) + 1}
-          locations={bbox ? [{ bbox, page: (pageIndex || 0) + 1 }] : []}
-          maxWidth="100%"
-          loading={false}
-        />
-      </div>
+      <Empty
+        description="暂无定位坐标信息（该字段的抽取记录中未保存坐标证据）"
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+      />
     );
   }
 
-  const bboxStyle = calculateBboxStyle();
-  const displayWidth = containerWidth ? Math.min(containerWidth - 32, imageDimensions.width || 800) : '100%';
+  if (docError || !docInfo?.url) {
+    return <Empty description={docError || '无法加载文档'} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
+  }
+
+  const sourceLocations = validEvidences
+    .map(item => item.source_location)
+    .filter(Boolean);
+
+  // 头部信息：文件名 + 页码
+  const pageNo = sourceLocations[0]?.page || sourceLocations[0]?.page_no || 1;
 
   return (
-    <div 
-      ref={containerRef}
-      style={{ 
+    <div
+      style={{
         background: appThemeToken.colorFillTertiary,
         borderRadius: 8,
         padding: 16,
@@ -318,112 +226,81 @@ const DocumentBboxViewer = ({ documentId, fileName, bbox, pageIndex = 0, sourceI
         overflow: 'auto'
       }}
     >
-      {/* 头部信息 */}
       <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ color: appThemeToken.colorTextSecondary, fontSize: 14 }}>
-          📄 {fileName || '原始文档'}
-          {fileType === 'pdf' && <Tag color="blue" style={{ marginLeft: 8 }}>第 {(pageIndex || 0) + 1} 页</Tag>}
+          📄 {docInfo.fileName || '原始文档'}
+          <Tag color="blue" style={{ marginLeft: 8 }}>第 {pageNo} 页</Tag>
         </div>
-        <Space size={8}>
-          {sourceId && (
-            <Tag color="blue">位置: {sourceId}</Tag>
-          )}
-          {bbox && bbox.length === 4 && (
-            <Tag color="orange">
-              坐标: [{bbox.map(v => Math.round(v)).join(', ')}]
-            </Tag>
-          )}
-        </Space>
-      </div>
-      
-      {/* Textin 坐标基于原始图像（straighten=0），需禁用 EXIF 并反向旋转 */}
-      <div style={{
-        position: 'relative',
-        display: 'inline-block',
-        ...(pageAngle ? {
-          transform: `rotate(${-pageAngle}deg)`,
-          transformOrigin: 'center center',
-        } : {}),
-      }}>
-        <img 
-          ref={imageRef}
-          src={imageUrl} 
-          alt={fileName || '原始文档'}
-          onLoad={handleImageLoad}
-          style={{ 
-            width: displayWidth,
-            maxWidth: '100%',
-            boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
-            borderRadius: 4,
-            background: appThemeToken.colorBgContainer,
-            display: 'block',
-            ...(pageAngle ? { imageOrientation: 'none' } : {}),
-          }}
-          onError={(e) => {
-            e.target.style.display = 'none';
-            setError('图片加载失败');
-          }}
-        />
-        
-        {/* Bbox 高亮框 */}
-        {bboxStyle && (
-          <div style={bboxStyle}>
-            <div style={{
-              position: 'absolute',
-              top: -24,
-              left: -3,
-              background: appThemeToken.colorError,
-              color: appThemeToken.colorBgContainer,
-              fontSize: 12,
-              padding: '2px 6px',
-              borderRadius: '4px 4px 0 0',
-              whiteSpace: 'nowrap'
-            }}>
-              抽取位置
-            </div>
-          </div>
+        {validEvidences.length > 1 && (
+          <Tag color="purple">{validEvidences.length} 个溯源片段</Tag>
         )}
       </div>
-      
-      {/* 无bbox时的提示 */}
-      {(!bbox || bbox.length !== 4) && (
-        <div style={{ 
-          marginTop: 12, 
-          padding: '8px 12px', 
-          background: 'rgba(250, 173, 20, 0.1)', 
-          border: `1px solid ${appThemeToken.colorWarning}`,
-          borderRadius: 4,
-          fontSize: 14,
-          color: appThemeToken.colorWarning
-        }}>
-          暂无定位坐标信息，无法高亮显示抽取位置
-        </div>
+
+      {docInfo.isPdf ? (
+        <PdfPageWithHighlight
+          pdfUrl={docInfo.url}
+          pageNumber={sourceLocations.length > 0 ? pageNo : null}
+          locations={sourceLocations}
+          maxWidth="100%"
+          loading={false}
+        />
+      ) : (
+        <HighlightedImage
+          imageUrl={docInfo.url}
+          sourceLocation={sourceLocations}
+          loading={false}
+        />
       )}
     </div>
   );
 };
 
 /**
- * 文档预览面板 - 简洁版，只显示原始文档图片（兼容旧版）
- */
-const DocumentPreviewPanel = ({ documentId, fileName }) => {
-  return <DocumentBboxViewer documentId={documentId} fileName={fileName} />;
-};
-
-/**
  * 字段来源详情弹窗（带文档预览）
  */
-const FieldSourceModal = ({ 
-  visible, 
-  onClose, 
-  fieldName, 
-  fieldValue, 
+const FieldSourceModal = ({
+  visible,
+  onClose,
+  fieldName,
+  fieldValue,
   fieldData,
   audit,
   documents,
   changeLogs,
+  // 科研项目专用：用于拉取 CRF evidence（与电子病历夹同链路渲染坐标）
+  projectId,
+  projectPatientId,
+  fieldPath,
 }) => {
   const [activeTab, setActiveTab] = useState('info');
+  const [evidences, setEvidences] = useState([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+
+  // 拉取 CRF evidence：完全按电子病历夹（EhrTab）的方式渲染坐标。
+  // 不再依赖 LLM 抽取的 4 元组 bbox，避免坐标"乱画"。
+  useEffect(() => {
+    if (!visible || !projectId || !projectPatientId || !fieldPath) {
+      setEvidences([]);
+      return;
+    }
+    let cancelled = false;
+    setEvidenceLoading(true);
+    getCrfFieldEvidence(projectId, projectPatientId, fieldPath)
+      .then((res) => {
+        if (cancelled) return;
+        setEvidences(res?.success && Array.isArray(res.data) ? res.data : []);
+      })
+      .catch((err) => {
+        console.error('加载字段证据失败:', err);
+        if (!cancelled) setEvidences([]);
+      })
+      .finally(() => {
+        if (!cancelled) setEvidenceLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, projectId, projectPatientId, fieldPath]);
   
   // 从 audit 或 fieldData 中提取字段信息
   // 优先级：fieldData > audit.fields[fieldName]
@@ -670,15 +547,12 @@ const FieldSourceModal = ({
           文档定位
         </Space>
       ),
-      disabled: !docId,
+      // 走 evidence 链路：有 evidence 才能精确定位，没有就显示空态（不再回退到旧 bbox）
+      disabled: !evidenceLoading && evidences.length === 0,
       children: (
-        <DocumentBboxViewer 
-          documentId={docId} 
-          fileName={docInfo?.file_name || docInfo?.fileName || docInfo?.name}
-          bbox={fieldAudit.bbox}
-          pageIndex={fieldAudit.page_idx || fieldAudit.page}
-          sourceId={fieldAudit.source_id}
-          pageAngle={fieldAudit._page_angle || 0}
+        <EvidenceDocumentViewer
+          evidences={evidences}
+          loading={evidenceLoading}
         />
       )
     }
@@ -902,13 +776,17 @@ const FieldSourceModal = ({
 /**
  * 可点击的字段值（带来源预览）
  */
-const ClickableFieldValue = ({ 
-  fieldName, 
-  fieldValue, 
+const ClickableFieldValue = ({
+  fieldName,
+  fieldValue,
   fieldData,
   audit,
   documents,
-  showSourceTag = true
+  showSourceTag = true,
+  // 科研项目专用：透传给 FieldSourceModal 用于拉取 CRF evidence（坐标渲染走 EhrTab 同链路）
+  projectId,
+  projectPatientId,
+  fieldPath,
 }) => {
   const [modalVisible, setModalVisible] = useState(false);
   
@@ -978,10 +856,13 @@ const ClickableFieldValue = ({
         fieldData={fieldData}
         audit={audit}
         documents={documents}
+        projectId={projectId}
+        projectPatientId={projectPatientId}
+        fieldPath={fieldPath}
       />
     </>
   );
 };
 
-export { SourceTag, RawTextHighlight, FieldSourceModal, DocumentBboxViewer, ClickableFieldValue };
+export { SourceTag, RawTextHighlight, FieldSourceModal, ClickableFieldValue };
 export default ClickableFieldValue;
