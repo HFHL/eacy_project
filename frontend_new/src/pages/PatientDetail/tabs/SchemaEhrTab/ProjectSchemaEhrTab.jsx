@@ -16,8 +16,6 @@ import {
 } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import SchemaForm from '../../../../components/SchemaForm'
-import { getProjectTemplate } from '../../../../api/crfTemplate'
-import { resolveTemplateAssets } from '../../../../utils/templateAssetResolver'
 import {
   parseSchemaDefsToEnums,
   createSchemaFormLayoutProps,
@@ -39,19 +37,23 @@ const ProjectSchemaEhrTab = ({
   // 项目信息
   projectId,
   projectName = '研究项目',
-  
+
   // Schema配置
   schemaPath = '/schema/siyuan_project.schema.json',
   schemaData = null,  // 直接传入schema对象
-  
+  // 外部托管的 schema 加载状态（父组件已经在拉模板时使用，避免子组件再发一次请求）
+  schemaLoading,
+  schemaError,
+  onReloadSchema,
+
   // 患者数据
   patientData = null,
   patientId = null,
   sourcePatientId = null,
-  
+
   // 项目文档
   projectDocuments = [],
-  
+
   // 事件回调
   onSave,
   onDataChange,
@@ -59,7 +61,7 @@ const ProjectSchemaEhrTab = ({
   onUploadDocument,
   onFieldCandidateSolidified,
   externalHistoryRefreshKey = 0,
-  
+
   // 配置选项
   autoSaveInterval = 30000,
   siderWidth = PROJECT_SCHEMA_FORM_LAYOUT_DEFAULTS.siderWidth,
@@ -68,14 +70,19 @@ const ProjectSchemaEhrTab = ({
   showSourcePanel = PROJECT_SCHEMA_FORM_LAYOUT_DEFAULTS.showSourcePanel,
   collapsedTitle = PROJECT_SCHEMA_FORM_LAYOUT_DEFAULTS.collapsedTitle
 }) => {
+  // 当传入 projectId 时,父组件负责拉取项目模板 schema,这里不再重复发请求
+  const isSchemaManagedByParent = Boolean(projectId)
+
   // 状态管理
   const [schema, setSchema] = useState(schemaData)
   const [enums, setEnums] = useState({})
-  const [loading, setLoading] = useState(!schemaData)
+  const [loading, setLoading] = useState(
+    isSchemaManagedByParent ? Boolean(schemaLoading) : !schemaData,
+  )
   const [error, setError] = useState(null)
   const [localPatientData, setLocalPatientData] = useState(patientData)
   const [selectedDocument, setSelectedDocument] = useState(null)
-  
+
   // 加载Schema
   useEffect(() => {
     if (schemaData) {
@@ -83,11 +90,18 @@ const ProjectSchemaEhrTab = ({
       const parsedEnums = parseSchemaDefsToEnums(schemaData)
       setSchema(schemaData)
       setEnums(parsedEnums)
-      setLoading(false)
-    } else {
-      loadSchema()
+      setError(null)
+      return
     }
-  }, [schemaPath, schemaData])
+    if (isSchemaManagedByParent) {
+      // 父组件托管:schema 还在拉/拉失败时,只清空本地 schema 即可,
+      // loading/error 通过 schemaLoading/schemaError 透出
+      setSchema(null)
+      setEnums({})
+      return
+    }
+    loadSchema()
+  }, [schemaPath, schemaData, isSchemaManagedByParent])
   
   // 当外部patientData变化时更新本地数据
   useEffect(() => {
@@ -97,76 +111,30 @@ const ProjectSchemaEhrTab = ({
   }, [patientData])
   
   /**
-   * 加载Schema文件
+   * 加载默认 Schema 文件(仅在没有 projectId 时用,projectId 模式由父组件托管)
    */
   const loadSchema = useCallback(async () => {
     setLoading(true)
     setError(null)
-    
+
     try {
-      let loadedSchema = null
-      
-      if (projectId) {
-        const response = await getProjectTemplate(projectId)
-        if (!response?.success || !response.data) {
-          throw new Error(response?.message || '项目模板获取失败')
-        }
-        const template = response.data
-        const { schema } = resolveTemplateAssets(template)
-        loadedSchema = schema
+      const schemaModule = await import('../../../../data/patient_ehr-V2.schema.json')
+      const loadedSchema = schemaModule.default
 
-        console.log('[ProjectSchemaEhrTab] 加载的项目Schema:', {
-          projectId,
-          hasSchema: !!schema,
-          schemaType: schema?.type,
-          propertiesCount: Object.keys(schema?.properties || {}).length,
-          properties: Object.keys(schema?.properties || {})
-        })
-
-        // 打印前几个字段的详细信息
-        if (schema?.properties) {
-          const firstFolder = Object.keys(schema.properties)[0]
-          if (firstFolder && schema.properties[firstFolder]?.properties) {
-            const firstFolderSchema = schema.properties[firstFolder]
-            const groupNames = Object.keys(firstFolderSchema.properties || {}).slice(0, 3)
-            console.log('[ProjectSchemaEhrTab] 第一个文件夹示例:', {
-              folderName: firstFolder,
-              groupsCount: Object.keys(firstFolderSchema.properties || {}).length,
-              sampleGroups: groupNames,
-              firstGroupSchema: firstFolderSchema.properties[groupNames[0]]
-            })
-          }
-        }
-
-        if (!loadedSchema) {
-          throw new Error('项目模板未包含 schema_json')
-        }
-      } else {
-        const schemaModule = await import('../../../../data/patient_ehr-V2.schema.json')
-        loadedSchema = schemaModule.default
-      }
-      
-      
-      // 解析enums
       const parsedEnums = parseSchemaDefsToEnums(loadedSchema)
-      
       setSchema(loadedSchema)
       setEnums(parsedEnums)
-      
+
       if (!patientData) {
         setLocalPatientData({})
       }
-      
-      console.log('✅ 项目Schema加载成功:', loadedSchema.$id)
-      console.log('📋 Enums数量:', Object.keys(parsedEnums).length)
-      
     } catch (err) {
-      console.error('❌ 项目Schema加载失败:', err)
+      console.error('❌ 默认 Schema 加载失败:', err)
       setError(err.message || 'Schema加载失败')
     } finally {
       setLoading(false)
     }
-  }, [schemaPath, patientData, projectId])
+  }, [schemaPath, patientData])
   
   /**
    * 处理保存
@@ -229,13 +197,20 @@ const ProjectSchemaEhrTab = ({
     sourcePatientId
   }), [projectDocuments, selectedDocument, handleDocumentSelect, onUploadDocument, handleAddRepeatableInstance, sourcePatientId])
   
+  // 加载/错误状态:projectId 模式下完全跟随父组件,默认 schema 模式下沿用本地状态
+  const effectiveLoading = isSchemaManagedByParent ? Boolean(schemaLoading) : loading
+  const effectiveError = isSchemaManagedByParent ? (schemaError || null) : error
+  const handleReload = isSchemaManagedByParent
+    ? (onReloadSchema || (() => {}))
+    : loadSchema
+
   // 渲染加载状态
-  if (loading) {
+  if (effectiveLoading) {
     return (
-      <div style={{ 
-        height: 500, 
-        display: 'flex', 
-        alignItems: 'center', 
+      <div style={{
+        height: 500,
+        display: 'flex',
+        alignItems: 'center',
         justifyContent: 'center',
         flexDirection: 'column',
         gap: 16
@@ -245,18 +220,18 @@ const ProjectSchemaEhrTab = ({
       </div>
     )
   }
-  
+
   // 渲染错误状态
-  if (error) {
+  if (effectiveError) {
     return (
       <Alert
         message="项目Schema加载失败"
         description={
           <Space direction="vertical">
-            <Text>{error}</Text>
-            <Button 
-              icon={<ReloadOutlined />} 
-              onClick={loadSchema}
+            <Text>{effectiveError}</Text>
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={handleReload}
               size="small"
             >
               重新加载

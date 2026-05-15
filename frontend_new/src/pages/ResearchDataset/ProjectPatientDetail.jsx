@@ -746,6 +746,13 @@ const ProjectPatientDetail = () => {
 
   const [projectSchema, setProjectSchema] = useState(null)
   const [projectTemplateFieldGroups, setProjectTemplateFieldGroups] = useState([])
+  const [projectSchemaLoading, setProjectSchemaLoading] = useState(Boolean(projectId))
+  const [projectSchemaError, setProjectSchemaError] = useState(null)
+  const [projectSchemaReloadTick, setProjectSchemaReloadTick] = useState(0)
+
+  const reloadProjectSchema = useCallback(() => {
+    setProjectSchemaReloadTick((tick) => tick + 1)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -753,12 +760,26 @@ const ProjectPatientDetail = () => {
     const loadProjectSchema = async () => {
       if (!projectId) {
         setProjectSchema(null)
+        setProjectTemplateFieldGroups([])
+        setProjectSchemaLoading(false)
+        setProjectSchemaError(null)
         return
       }
+      setProjectSchemaLoading(true)
+      setProjectSchemaError(null)
       try {
         const response = await getProjectTemplate(projectId)
-        const template = response?.data
+        if (!response?.success) {
+          throw new Error(response?.message || '项目模板获取失败')
+        }
+        const template = response.data
+        if (!template) {
+          throw new Error('项目尚未关联 CRF 模板')
+        }
         const { schema } = resolveTemplateAssets(template)
+        if (!schema || typeof schema !== 'object') {
+          throw new Error('项目模板未包含 schema_json')
+        }
         const normalizedGroups = normalizeTemplateFieldGroups(
           template?.field_groups
             || template?.template_info?.field_groups
@@ -774,7 +795,7 @@ const ProjectPatientDetail = () => {
           dbFields: Array.isArray(group.db_fields) ? group.db_fields : [],
         }))
         if (!cancelled) {
-          setProjectSchema(schema && typeof schema === 'object' ? schema : null)
+          setProjectSchema(schema)
           setProjectTemplateFieldGroups(normalizedTemplateGroups)
         }
       } catch (error) {
@@ -782,6 +803,11 @@ const ProjectPatientDetail = () => {
         if (!cancelled) {
           setProjectSchema(null)
           setProjectTemplateFieldGroups([])
+          setProjectSchemaError(error?.message || 'Schema加载失败')
+        }
+      } finally {
+        if (!cancelled) {
+          setProjectSchemaLoading(false)
         }
       }
     }
@@ -790,7 +816,7 @@ const ProjectPatientDetail = () => {
     return () => {
       cancelled = true
     }
-  }, [projectId])
+  }, [projectId, projectSchemaReloadTick])
 
   // 将 crf_data 的 _task_results 和 groups 转换为 SchemaForm 期望的 _extraction_metadata 格式
   const schemaData = useMemo(() => {
@@ -1181,6 +1207,9 @@ const ProjectPatientDetail = () => {
             projectId={projectId}
             projectName={projectName}
             schemaData={projectSchema}
+            schemaLoading={projectSchemaLoading}
+            schemaError={projectSchemaError}
+            onReloadSchema={reloadProjectSchema}
             patientData={schemaData}
             patientId={resolvedProjectPatientId}
             sourcePatientId={patientInfo.patientId}

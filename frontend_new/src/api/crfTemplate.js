@@ -132,13 +132,42 @@ export const assignTemplateToProject = async (projectId = '', templateId = '', o
   return emptySuccess(binding)
 }
 
+const fetchActiveProjectBindingForTemplate = async (projectId = '') => {
+  if (!projectId) return null
+  try {
+    const bindings = await request.get(`/projects/${projectId}/template-bindings`)
+    const list = Array.isArray(bindings) ? bindings : []
+    const primary = list.find(
+      (b) => b?.status === 'active' && b?.binding_type === 'primary_crf',
+    )
+    if (primary) return primary
+    return list.find((b) => b?.status === 'active') || null
+  } catch (error) {
+    console.warn('[crfTemplate] 获取项目模板绑定失败:', error)
+    return null
+  }
+}
+
 export const getProjectTemplate = async (projectId = '') => {
   if (!projectId) return emptySuccess(null)
   const project = await request.get(`/projects/${projectId}`)
   const templateInfo = project?.template_info || project?.extra_json?.template_info || null
   if (templateInfo) return emptySuccess(templateInfo)
 
-  const templateId = project?.crf_template_id || project?.extra_json?.crf_template_id || project?.template_scope_config?.template_id
+  // 后端 /projects/{id} 响应（ResearchProjectResponse）只暴露 extra_json，
+  // 模板的权威来源是 project_template_bindings。这里先看 extra_json,
+  // 兜底查 /projects/{id}/template-bindings,以便从绑定关系解析模板 ID。
+  let templateId = (
+    project?.crf_template_id
+    || project?.extra_json?.crf_template_id
+    || project?.template_scope_config?.template_id
+    || project?.extra_json?.template_scope_config?.template_id
+    || null
+  )
+  if (!templateId) {
+    const binding = await fetchActiveProjectBindingForTemplate(projectId)
+    if (binding?.template_id) templateId = binding.template_id
+  }
   if (!templateId) return emptySuccess(null)
   const template = await request.get(`/schema-templates/${templateId}`)
   return emptySuccess(normalizeTemplate(template))
