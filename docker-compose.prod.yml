@@ -1,0 +1,189 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-docker.m.daocloud.io/library/postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eacy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ${POSTGRES_DB:-eacy}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - eacy
+
+  redis:
+    image: ${REDIS_IMAGE:-docker.m.daocloud.io/library/redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - eacy
+
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.m.daocloud.io/library/python:3.11.7-slim}
+        APT_MIRROR: ${APT_MIRROR:-https://mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+    image: eacy-backend:prod
+    restart: "no"
+    env_file:
+      - ${EACY_ENV_FILE:-.env.prod}
+    environment:
+      ENV: prod
+      DEBUG: "false"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - eacy
+
+  api:
+    image: eacy-backend:prod
+    restart: unless-stopped
+    env_file:
+      - ${EACY_ENV_FILE:-.env.prod}
+    environment:
+      ENV: prod
+      DEBUG: "false"
+    command:
+      - gunicorn
+      - app.server:app
+      - -k
+      - uvicorn.workers.UvicornWorker
+      - -b
+      - 0.0.0.0:8000
+      - --workers
+      - "${API_WORKERS:-2}"
+      - --timeout
+      - "${API_TIMEOUT_SECONDS:-180}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1', 8000), 3); s.close()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - eacy
+
+  worker-ocr:
+    image: eacy-backend:prod
+    restart: unless-stopped
+    env_file:
+      - ${EACY_ENV_FILE:-.env.prod}
+    environment:
+      ENV: prod
+      DEBUG: "false"
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - -Q
+      - ocr
+      - --loglevel=info
+      - --concurrency=${OCR_CONCURRENCY:-1}
+      - --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}
+      - -n
+      - eacy-ocr@%h
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - eacy
+
+  worker-metadata:
+    image: eacy-backend:prod
+    restart: unless-stopped
+    env_file:
+      - ${EACY_ENV_FILE:-.env.prod}
+    environment:
+      ENV: prod
+      DEBUG: "false"
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - -Q
+      - metadata
+      - --loglevel=info
+      - --concurrency=${METADATA_CONCURRENCY:-1}
+      - --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}
+      - -n
+      - eacy-metadata@%h
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - eacy
+
+  worker-extraction:
+    image: eacy-backend:prod
+    restart: unless-stopped
+    env_file:
+      - ${EACY_ENV_FILE:-.env.prod}
+    environment:
+      ENV: prod
+      DEBUG: "false"
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - -Q
+      - extraction
+      - --loglevel=info
+      - --concurrency=${EXTRACTION_CONCURRENCY:-2}
+      - --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}
+      - -n
+      - eacy-extraction@%h
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - eacy
+
+  nginx:
+    build:
+      context: .
+      dockerfile: deploy/docker/frontend.Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:20-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-docker.m.daocloud.io/library/nginx:1.27-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    image: eacy-frontend:prod
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - eacy
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  eacy:
+    driver: bridge

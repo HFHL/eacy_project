@@ -45,6 +45,8 @@ def _seed_test_users(bind) -> None:
         sa.column("role", sa.String),
         sa.column("permissions", sa.String),
         sa.column("is_active", sa.Boolean),
+        sa.column("created_at", sa.DateTime),
+        sa.column("updated_at", sa.DateTime),
     )
     for user_id, email, username, name, role in TEST_USERS:
         exists = bind.execute(sa.text("SELECT 1 FROM users WHERE email = :email OR username = :username"), {"email": email, "username": username}).first()
@@ -60,6 +62,8 @@ def _seed_test_users(bind) -> None:
                 role=role,
                 permissions="*" if role == "admin" else "",
                 is_active=True,
+                created_at=sa.func.now(),
+                updated_at=sa.func.now(),
             )
         )
 

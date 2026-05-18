@@ -186,6 +186,59 @@ const buildSecondLevelColumns = (groupName, dbFields) => {
 }
 
 /**
+ * 从患者 CRF 抽取结果中反推字段组定义。
+ * 当项目模板绑定缺失或 template_info 未带 field_groups/schema 时，仍可用已有
+ * crf_data.groups 渲染结果，避免右侧误显示“暂无字段组定义”。
+ *
+ * @param {Array<Record<string, any>>} patientDataset 患者列表。
+ * @returns {Array<Record<string, any>>}
+ */
+const deriveFieldGroupsFromPatientCrfData = (patientDataset) => {
+  const groupMap = new Map()
+  ;(Array.isArray(patientDataset) ? patientDataset : []).forEach((patient) => {
+    const groups = patient?.crf_data?.groups && typeof patient.crf_data.groups === 'object'
+      ? patient.crf_data.groups
+      : (patient?.crfGroups && typeof patient.crfGroups === 'object' ? patient.crfGroups : {})
+
+    Object.entries(groups).forEach(([groupId, groupNode]) => {
+      if (!groupId || !groupNode || typeof groupNode !== 'object') return
+      const existing = groupMap.get(groupId) || {
+        group_id: String(groupId),
+        group_name: String(groupNode.group_name || groupNode.name || groupId),
+        dbFieldSet: new Set(),
+        is_repeatable: Boolean(groupNode.is_repeatable),
+        order: groupMap.size,
+      }
+
+      const collectFieldKeys = (fields) => {
+        if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return
+        Object.keys(fields).forEach((fieldKey) => {
+          if (fieldKey && !String(fieldKey).startsWith('__')) existing.dbFieldSet.add(String(fieldKey))
+        })
+      }
+
+      collectFieldKeys(groupNode.fields)
+      ;(Array.isArray(groupNode.records) ? groupNode.records : []).forEach((record) => {
+        collectFieldKeys(record?.fields && typeof record.fields === 'object' ? record.fields : record)
+      })
+      existing.is_repeatable = existing.is_repeatable || Boolean(groupNode.is_repeatable) || (Array.isArray(groupNode.records) && groupNode.records.length > 0)
+      groupMap.set(groupId, existing)
+    })
+  })
+
+  return [...groupMap.values()]
+    .map((group) => ({
+      group_id: group.group_id,
+      group_name: group.group_name,
+      db_fields: [...group.dbFieldSet],
+      is_repeatable: group.is_repeatable,
+      order: group.order,
+      sources: null,
+    }))
+    .filter((group) => group.db_fields.length > 0)
+}
+
+/**
  * 生成项目详情页 V2 只读 ViewModel。
  *
  * @param {{
@@ -222,7 +275,10 @@ export const useProjectDatasetViewModel = (params) => {
   } = params || {}
 
   return useMemo(() => {
-    const sortedGroups = [...(templateFieldGroups || [])]
+    const effectiveFieldGroups = Array.isArray(templateFieldGroups) && templateFieldGroups.length > 0
+      ? templateFieldGroups
+      : deriveFieldGroupsFromPatientCrfData(patientDataset)
+    const sortedGroups = [...effectiveFieldGroups]
       .filter((group) => group && group.group_id)
       .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
       .map((group) => {
@@ -335,4 +391,3 @@ export const useProjectDatasetViewModel = (params) => {
     templateSchemaJson,
   ])
 }
-

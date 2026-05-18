@@ -8,6 +8,15 @@ const pickActiveVersion = (template = {}) => {
   return versions.find((item) => item.status === 'published') || versions.find((item) => item.status === 'active') || versions[0] || null
 }
 
+const pickTemplateVersion = (template = {}, schemaVersionId = '') => {
+  const versions = Array.isArray(template.versions) ? template.versions : []
+  if (schemaVersionId) {
+    const matched = versions.find((item) => String(item?.id) === String(schemaVersionId))
+    if (matched) return matched
+  }
+  return pickActiveVersion(template)
+}
+
 const normalizeVersion = (version = {}) => {
   const schemaJson = version.schema_json || version.schema || {}
   const layoutConfig = schemaJson?.layout_config && typeof schemaJson.layout_config === 'object'
@@ -152,25 +161,42 @@ export const getProjectTemplate = async (projectId = '') => {
   if (!projectId) return emptySuccess(null)
   const project = await request.get(`/projects/${projectId}`)
   const templateInfo = project?.template_info || project?.extra_json?.template_info || null
-  if (templateInfo) return emptySuccess(templateInfo)
+  const hasInlineSchema = Boolean(templateInfo?.schema_json || templateInfo?.schema)
+  if (templateInfo && hasInlineSchema) return emptySuccess(templateInfo)
 
   // 后端 /projects/{id} 响应（ResearchProjectResponse）只暴露 extra_json，
   // 模板的权威来源是 project_template_bindings。这里先看 extra_json,
   // 兜底查 /projects/{id}/template-bindings,以便从绑定关系解析模板 ID。
+  const scopeConfig = project?.template_scope_config || project?.extra_json?.template_scope_config || {}
+  let binding = null
   let templateId = (
-    project?.crf_template_id
+    templateInfo?.template_id
+    || project?.crf_template_id
     || project?.extra_json?.crf_template_id
-    || project?.template_scope_config?.template_id
-    || project?.extra_json?.template_scope_config?.template_id
+    || scopeConfig?.template_id
     || null
   )
   if (!templateId) {
-    const binding = await fetchActiveProjectBindingForTemplate(projectId)
+    binding = await fetchActiveProjectBindingForTemplate(projectId)
     if (binding?.template_id) templateId = binding.template_id
   }
   if (!templateId) return emptySuccess(null)
+  const schemaVersionId = templateInfo?.schema_version_id || scopeConfig?.schema_version_id || binding?.schema_version_id || ''
   const template = await request.get(`/schema-templates/${templateId}`)
-  return emptySuccess(normalizeTemplate(template))
+  const normalizedTemplate = normalizeTemplate(template)
+  const boundVersion = pickTemplateVersion(normalizedTemplate, schemaVersionId)
+  const normalizedVersion = boundVersion ? normalizeVersion(boundVersion) : null
+  return emptySuccess({
+    ...normalizedTemplate,
+    ...(templateInfo || {}),
+    template_id: normalizedTemplate.id || templateId,
+    template_name: templateInfo?.template_name || normalizedTemplate.template_name || normalizedTemplate.name || '',
+    schema_version_id: normalizedVersion?.id || schemaVersionId || normalizedTemplate.active_version_id || null,
+    schema_json: normalizedVersion?.schema_json || normalizedTemplate.schema_json || {},
+    schema: normalizedVersion?.schema || normalizedVersion?.schema_json || normalizedTemplate.schema || normalizedTemplate.schema_json || {},
+    designer: normalizedVersion?.designer || normalizedTemplate.designer || null,
+    field_groups: normalizedVersion?.field_groups || normalizedTemplate.field_groups || [],
+  })
 }
 
 export const createCrfTemplateDesigner = async (payload = {}) => {

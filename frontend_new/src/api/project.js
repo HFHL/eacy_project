@@ -397,8 +397,21 @@ const documentListToMap = (documents = []) => Object.fromEntries(
 const fetchPatientDocuments = async (patientId = '') => {
   if (!patientId) return []
   try {
-    const response = await getDocumentList({ patient_id: patientId, page: 1, page_size: 1000 })
-    return Array.isArray(response?.data) ? response.data : []
+    const pageSize = 100
+    let page = 1
+    let allDocuments = []
+    let total = null
+
+    do {
+      const response = await getDocumentList({ patient_id: patientId, page, page_size: pageSize })
+      const pageItems = Array.isArray(response?.data) ? response.data : []
+      allDocuments = allDocuments.concat(pageItems)
+      total = Number(response?.pagination?.total ?? response?.total ?? total ?? allDocuments.length)
+      if (pageItems.length < pageSize) break
+      page += 1
+    } while (allDocuments.length < total)
+
+    return allDocuments
   } catch (error) {
     console.warn('[project] 获取项目患者文档失败:', error)
     return []
@@ -417,6 +430,12 @@ const fetchProjectPatientCrf = async (projectId = '', projectPatientId = '') => 
     console.warn('[project] 获取项目患者 CRF 失败:', error)
     return null
   }
+}
+
+export const getProjectPatientCrf = async (projectId = '', projectPatientId = '') => {
+  if (!projectId || !projectPatientId) return emptySuccess(null)
+  const payload = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients/${projectPatientId}/crf`)
+  return emptySuccess(payload)
 }
 
 const mergePatientProfile = async (projectPatient = {}, crf = null) => {

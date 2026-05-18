@@ -39,6 +39,7 @@ import {
   updateProjectPatientCrfFields,
   updateProjectCrfFolder,
   getCrfExtractionProgress,
+  getProjectPatientCrf,
 } from '@/api/project'
 import { message } from 'antd'
 import { toAuditPath } from '../../utils/auditResolver'
@@ -696,7 +697,7 @@ const ProjectPatientDetail = () => {
     projectInfo?.projectName ||
     projectInfo?.name ||
     '未知项目'
-  const resolvedProjectPatientId = patientInfo?.id || patientInfo?.project_patient_id || patientId || null
+  const resolvedProjectPatientId = patientInfo?.id || patientInfo?.project_patient_id || null
   /**
    * 患者姓名脱敏展示：
    * 两字：王*；三字：王*宁；四字及以上：王**宁。
@@ -749,6 +750,10 @@ const ProjectPatientDetail = () => {
   const [projectSchemaLoading, setProjectSchemaLoading] = useState(Boolean(projectId))
   const [projectSchemaError, setProjectSchemaError] = useState(null)
   const [projectSchemaReloadTick, setProjectSchemaReloadTick] = useState(0)
+  const crfSchema = crfData?._crf?.schema && typeof crfData._crf.schema === 'object'
+    ? crfData._crf.schema
+    : null
+  const effectiveProjectSchema = projectSchema || crfSchema
 
   const reloadProjectSchema = useCallback(() => {
     setProjectSchemaReloadTick((tick) => tick + 1)
@@ -768,23 +773,39 @@ const ProjectPatientDetail = () => {
       setProjectSchemaLoading(true)
       setProjectSchemaError(null)
       try {
-        const response = await getProjectTemplate(projectId)
-        if (!response?.success) {
-          throw new Error(response?.message || '项目模板获取失败')
+        let schema = null
+        let fieldGroupsRaw = []
+
+        if (resolvedProjectPatientId) {
+          const crfResponse = await getProjectPatientCrf(projectId, resolvedProjectPatientId)
+          const crf = crfResponse?.data
+          schema = crf?.schema || crf?.schema_ || null
+          fieldGroupsRaw = crf?.field_groups || []
         }
-        const template = response.data
-        if (!template) {
-          throw new Error('项目尚未关联 CRF 模板')
+
+        if (!schema) {
+          const response = await getProjectTemplate(projectId)
+          if (!response?.success) {
+            throw new Error(response?.message || '项目模板获取失败')
+          }
+          const template = response?.data
+          if (!template) {
+            throw new Error('项目尚未关联 CRF 模板')
+          }
+          const assets = resolveTemplateAssets(template)
+          schema = assets.schema
+          fieldGroupsRaw = template?.field_groups
+            || template?.template_info?.field_groups
+            || template?.layout_config?.field_groups
+            || []
         }
-        const { schema } = resolveTemplateAssets(template)
+
         if (!schema || typeof schema !== 'object') {
           throw new Error('项目模板未包含 schema_json')
         }
+
         const normalizedGroups = normalizeTemplateFieldGroups(
-          template?.field_groups
-            || template?.template_info?.field_groups
-            || template?.layout_config?.field_groups
-            || [],
+          fieldGroupsRaw,
         )
         const normalizedTemplateGroups = (normalizedGroups.length > 0
           ? normalizedGroups
@@ -816,7 +837,7 @@ const ProjectPatientDetail = () => {
     return () => {
       cancelled = true
     }
-  }, [projectId, projectSchemaReloadTick])
+  }, [projectId, projectSchemaReloadTick, resolvedProjectPatientId])
 
   // 将 crf_data 的 _task_results 和 groups 转换为 SchemaForm 期望的 _extraction_metadata 格式
   const schemaData = useMemo(() => {
@@ -840,7 +861,7 @@ const ProjectPatientDetail = () => {
     const effectiveTemplateGroups = projectTemplateFieldGroups.length > 0
       ? projectTemplateFieldGroups
       : normalizedHookTemplateGroups
-    const data = mergeGroupValuesIntoDataByTemplate(baseData, projectSchema, groups, effectiveTemplateGroups)
+    const data = mergeGroupValuesIntoDataByTemplate(baseData, effectiveProjectSchema, groups, effectiveTemplateGroups)
 
     // 合并所有溯源信息到统一的 _extraction_metadata
     const allFields = {}
@@ -897,7 +918,7 @@ const ProjectPatientDetail = () => {
         stats: crfData?._stats
       },
     }
-  }, [crfData, documents, projectSchema, projectTemplateFieldGroups, projectTemplateGroups])
+  }, [crfData, documents, effectiveProjectSchema, projectTemplateFieldGroups, projectTemplateGroups])
 
   const getSchemaFieldPath = (fieldKey, field) => {
     const raw = field?.field_path || field?.db_field || fieldKey
@@ -914,10 +935,10 @@ const ProjectPatientDetail = () => {
     if (!raw) return undefined
     const parts = normalizeSchemaPath(raw)
     if (parts.length === 0) return undefined
-    const schemaResolved = readValueBySchema(data, projectSchema, parts)
+    const schemaResolved = readValueBySchema(data, effectiveProjectSchema, parts)
     if (schemaResolved !== undefined) return schemaResolved
     return readValueByLoosePath(data, parts)
-  }, [projectSchema])
+  }, [effectiveProjectSchema])
 
   const normalizeValue = (value) => (value === undefined ? null : value)
 
@@ -1206,7 +1227,7 @@ const ProjectPatientDetail = () => {
           <ProjectSchemaEhrTab
             projectId={projectId}
             projectName={projectName}
-            schemaData={projectSchema}
+            schemaData={effectiveProjectSchema}
             schemaLoading={projectSchemaLoading}
             schemaError={projectSchemaError}
             onReloadSchema={reloadProjectSchema}
