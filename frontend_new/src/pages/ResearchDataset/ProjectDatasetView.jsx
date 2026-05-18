@@ -2404,11 +2404,6 @@ const ProjectDatasetView = () => {
   }
 
   /**
-   * 科研项目主页主卡片固定高度，确保背景区域稳定覆盖页面主体。
-   */
-  const PROJECT_DATASET_CARD_HEIGHT = toViewportHeight(PAGE_LAYOUT_HEIGHTS.researchDataset.cardOffset)
-
-  /**
    * 表格可滚动主体高度，给顶部统计区与底部分页预留空间。
    */
   const PROJECT_DATASET_TABLE_SCROLL_Y = toViewportHeight(PAGE_LAYOUT_HEIGHTS.researchDataset.tableScrollOffset)
@@ -2736,11 +2731,9 @@ const ProjectDatasetView = () => {
           header: { padding: '12px 16px' },
           body: {
             padding: 16,
-            height: PROJECT_DATASET_CARD_HEIGHT,
             minHeight: PAGE_LAYOUT_HEIGHTS.researchDataset.cardMinHeight,
             display: 'flex',
             flexDirection: 'column',
-            overflow: 'hidden',
           },
         }}
         title={

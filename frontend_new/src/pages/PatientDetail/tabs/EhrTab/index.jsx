@@ -606,7 +606,7 @@ const EhrTab = ({
               onMouseEnter={(e) => e.target.style.background = appThemeToken.colorBorderSecondary}
               onMouseLeave={(e) => e.target.style.background = appThemeToken.colorBorder}
             />
-            {/* 右侧溯源区块：固定在视口右侧，随页面滚动始终可见 */}
+            {/* 右侧溯源区块：粘性定位随滚动保留在可视区，配合自然页面滚动展示全部内容 */}
             <div
               style={{
                 width: `${ehrRightWidth}px`,
@@ -616,10 +616,10 @@ const EhrTab = ({
                 flexDirection: 'column',
                 borderLeft: `1px solid ${appThemeToken.colorBorder}`,
                 background: appThemeToken.colorBgContainer,
-                position: 'fixed',
-                top: 64,                 // 与 MainLayout Header 高度对齐
-                right: 0,
-                height: 'calc(100vh - 64px)',
+                position: 'sticky',
+                top: 0,                  // 在 MainLayout Content 滚动容器内部粘住顶部
+                alignSelf: 'flex-start', // 防止 flex 拉伸破坏 sticky 行为
+                maxHeight: 'calc(100vh - 80px)',
                 overflowY: 'auto',
                 zIndex: 90,
               }}

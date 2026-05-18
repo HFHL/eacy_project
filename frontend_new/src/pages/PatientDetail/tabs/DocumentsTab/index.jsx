@@ -643,14 +643,12 @@ const DocumentsTab = ({
         />
       </div>
 
-      {/* 分组文档展示：使用独立滚动容器，从详情返回后仅异步刷新数据，滚动位置由容器保留 */}
+      {/* 分组文档展示：不再限定高度，跟随页面整体滚动展示全部内容 */}
       <div
         ref={listScrollContainerRef}
-        className="documents-timeline documents-timeline-scroll"
+        className="documents-timeline"
         style={{
-          maxHeight: 'calc(100vh - 340px)',
-          overflowY: 'auto',
-          overflowX: 'hidden'
+          overflowX: 'hidden',
         }}
       >
         {loading && documents.length === 0 ? (

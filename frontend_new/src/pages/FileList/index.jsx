@@ -27,7 +27,7 @@ import { useSelector } from 'react-redux'
 import { useUploadManager, UploadStatus } from '../../hooks/useUploadManager'
 import UploadPanel from '../../components/UploadPanel'
 import UploadFloatingButton from '../../components/UploadPanel/UploadFloatingButton'
-import { PAGE_LAYOUT_HEIGHTS, toViewportHeight } from '../../constants/pageLayout'
+import { PAGE_LAYOUT_HEIGHTS } from '../../constants/pageLayout'
 import {
   App as AntdApp,
   Typography,
@@ -3789,10 +3789,6 @@ const FileList = () => {
   }, [treeTableData])
 
   /**
-   * 文件列表主容器固定高度，确保页面主体背景稳定铺满。
-   */
-  const FILE_LIST_MAIN_CONTAINER_HEIGHT = toViewportHeight(PAGE_LAYOUT_HEIGHTS.fileList.containerOffset)
-  /**
    * 小于该行数时不启用纵向固定滚动区，避免少量数据时滚动条轨道常驻。
    */
   const FILE_LIST_MIN_ROWS_FOR_VERTICAL_SCROLL = 6
@@ -3902,7 +3898,7 @@ const FileList = () => {
 
   // ─── 渲染 ───
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: FILE_LIST_MAIN_CONTAINER_HEIGHT }}>
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* 筛选 overlay：固定定位，表格重渲染时位置不变，避免闪烁 */}
       {openFilterKey && overlayPosition && createPortal(
         <>

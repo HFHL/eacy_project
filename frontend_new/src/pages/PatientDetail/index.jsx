@@ -80,7 +80,7 @@ import {
 import { usePatientData } from './hooks/usePatientData'
 import { useModals } from './hooks/useModals'
 import { PATIENT_DEPARTMENT_OPTIONS } from '@/constants/patientDepartments'
-import { PAGE_LAYOUT_HEIGHTS, toViewportHeight } from '@/constants/pageLayout'
+import { PAGE_LAYOUT_HEIGHTS } from '@/constants/pageLayout'
 import { modalBodyPreset, modalWidthPreset } from '../../styles/themeTokens'
 
 // 导入Tab组件
@@ -1527,18 +1527,16 @@ const PatientDetail = () => {
   return (
     <div className="page-container fade-in">
       {/**
-       * 患者详情主容器固定高度，确保概览区与内容区合并后铺满主体背景。
+       * 患者详情主容器：不再固定视口高度，允许内容随浏览器自然滚动展示全部信息。
        */}
       <Card
           size="small"
           style={{ marginBottom: 16 }}
           bodyStyle={{
             padding: 16,
-            height: toViewportHeight(PAGE_LAYOUT_HEIGHTS.patientDetail.cardOffset),
             minHeight: PAGE_LAYOUT_HEIGHTS.patientDetail.cardMinHeight,
             display: 'flex',
             flexDirection: 'column',
-            overflow: 'hidden',
           }}
         >
           <Row gutter={24} align="middle" style={{ flexShrink: 0 }}>
@@ -1641,13 +1639,12 @@ const PatientDetail = () => {
 
           <Divider style={{ margin: '12px -16px 12px' }} />
 
-          {/* Tab页面布局 */}
-          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          {/* Tab页面布局：不再限定高度，子页内容随浏览器滚动展开 */}
+          <div style={{ flex: 1, minHeight: 0 }}>
             <Tabs
           defaultActiveKey="ehr-schema"
           activeKey={activeTab}
           onChange={setActiveTab}
-          style={{ height: '100%' }}
           items={[
             {
               key: 'ehr-schema',
