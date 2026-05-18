@@ -1,7 +1,7 @@
 """add llm_call_logs table and extraction status/timeout columns
 
 Revision ID: 20260518_1500
-Revises: 20260518_1000
+Revises: 20260511_1100
 Create Date: 2026-05-18 15:00:00.000000
 
 Adds a dedicated `llm_call_logs` table that records every outbound LLM call
@@ -16,7 +16,7 @@ from alembic import op
 
 
 revision = "20260518_1500"
-down_revision = "20260518_1000"
+down_revision = "20260511_1100"
 branch_labels = None
 depends_on = None
 
