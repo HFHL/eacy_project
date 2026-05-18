@@ -10,6 +10,7 @@ from app.services.document_text_extractor import extract_document_text
 from app.services.ehr_service import EhrService
 from app.services.evidence_location_resolver import resolve_evidence_locations
 from app.services.extraction_planner import ExtractionPlanner
+from app.services.llm_call_logger import ERROR_TIMEOUT, classify_exception, flush_llm_call_logs
 from app.services.llm_ehr_extractor import LlmEhrExtractor
 from app.services.schema_field_planner import plan_schema_fields
 from app.services.simple_ehr_extractor import SimpleEhrExtractor
@@ -745,6 +746,8 @@ class ExtractionService:
         job.status = "running"
         job.progress = 10
         job.error_message = None
+        job.error_type = None
+        job.timeout_at = None
         job.started_at = datetime.utcnow()
         job.finished_at = None
         await self.job_repository.save(job)
@@ -764,8 +767,19 @@ class ExtractionService:
             run_no=next_run_no,
             model_name=model_name,
             prompt_version=prompt_version,
-            input_snapshot_json={"job_type": job.job_type, "input_json": job.input_json, **input_snapshot_extra},
         )
+        # Per-job buffer collected by LLMCallRecorder. Flushed on success and
+        # on failure so partial logs (e.g. one timeout) still land in
+        # llm_call_logs and surface in the admin UI.
+        llm_call_buffer: list[dict[str, Any]] = []
+        llm_call_context: dict[str, Any] = {
+            "job_id": job.id,
+            "run_id": run.id,
+            "document_id": job.document_id,
+            "project_id": job.project_id,
+            "requested_by": job.requested_by,
+            "prompt_version": prompt_version,
+        }
         job.progress = 20
         await self.job_repository.save(job)
         await self.task_progress_service.update_job_progress(
@@ -801,7 +815,11 @@ class ExtractionService:
                 current_step=4,
                 commit=True,
             )
-            output = await self._extract(job=job)
+            output = await self._extract(
+                job=job,
+                llm_call_buffer=llm_call_buffer,
+                llm_call_context=llm_call_context,
+            )
             job.progress = 65
             await self.job_repository.save(job)
             await self.task_progress_service.update_job_progress(
@@ -813,9 +831,15 @@ class ExtractionService:
                 current_step=5,
                 commit=True,
             )
-            run.raw_output_json = output.get("raw_output") if isinstance(output, dict) and "raw_output" in output else output
-            run.parsed_output_json = self._build_parsed_output(output)
-            run.validation_status = run.parsed_output_json.get("validation_status") or "valid"
+            # `llm_call_logs.raw_response` is the source of truth for LLM I/O.
+            # `parsed_output_json` is reduced to {fields, attempt_count}; validation_log
+            # moves to its own column so the admin UI doesn't need to crack JSON.
+            parsed = self._build_parsed_output(output) if isinstance(output, dict) else {}
+            run.parsed_output_json = parsed
+            run.validation_log = output.get("validation_log") if isinstance(output, dict) else None
+            run.validation_status = (
+                output.get("validation_status") if isinstance(output, dict) else None
+            ) or "valid"
             job.progress = 90
             await self.job_repository.save(job)
             await self.task_progress_service.update_job_progress(
@@ -838,10 +862,13 @@ class ExtractionService:
             job.progress = 100
             job.finished_at = finished_at
             await self.job_repository.save(job)
+            await flush_llm_call_logs(llm_call_buffer)
             await self.task_progress_service.mark_job_succeeded(job)
             return job
         except Exception as error:
             await session.rollback()
+            # Re-flush LLM call logs in a fresh transaction; rollback above wiped them.
+            await flush_llm_call_logs(llm_call_buffer, commit=True)
             await self._mark_failed(job=job, run=run, error=error)
             if not raise_on_failure and self._is_transient_error(error):
                 raise
@@ -852,29 +879,47 @@ class ExtractionService:
     async def _mark_failed(self, *, job: ExtractionJob, run: ExtractionRun, error: Exception) -> None:
         finished_at = datetime.utcnow()
         error_message = str(error) or error.__class__.__name__
-        run.status = "failed"
+        # Drill through chained exceptions so an LlmExtractionError wrapping a
+        # TimeoutException still classifies as llm_timeout.
+        error_type = self._classify_extraction_error(error)
+        is_timeout = error_type == ERROR_TIMEOUT
+        terminal_status = "timeout" if is_timeout else "failed"
+
+        run.status = terminal_status
         run.finished_at = finished_at
         run.error_message = error_message
+        run.error_type = error_type
         run.validation_status = "invalid"
         await self.run_repository.save(run)
 
-        job.status = "failed"
+        job.status = terminal_status
         job.error_message = error_message
+        job.error_type = error_type
         job.finished_at = finished_at
+        if is_timeout:
+            job.timeout_at = finished_at
         await self.job_repository.save(job)
         await self.task_progress_service.mark_job_failed(job, error_message=error_message)
         await session.commit()
 
+    def _classify_extraction_error(self, error: BaseException) -> str:
+        current: BaseException | None = error
+        while current is not None:
+            tag = classify_exception(current)
+            if tag != "unknown":
+                return tag
+            current = current.__cause__ or current.__context__
+        return "unknown"
+
     def _build_parsed_output(self, output: dict[str, Any]) -> dict[str, Any]:
+        # Slimmed payload: raw LLM responses live in llm_call_logs, validation_log
+        # lives in extraction_runs.validation_log. Keeping only the fields the
+        # downstream value writer needs.
         if not isinstance(output, dict):
-            return {"fields": [], "validation_status": "valid", "validation_log": [], "attempt_count": 1, "raw_output": output}
+            return {"fields": [], "attempt_count": 1}
         return {
             "fields": output.get("fields", []),
-            "validation_status": output.get("validation_status", "valid"),
-            "validation_log": output.get("validation_log", []),
-            "validation_warnings": output.get("validation_warnings", []),
             "attempt_count": output.get("attempt_count", 1),
-            "raw_output": output.get("raw_output", output),
         }
 
     def _ensure_can_process(self, job: ExtractionJob) -> None:
@@ -913,7 +958,13 @@ class ExtractionService:
             raise ExtractionNotFoundError("Document not found")
         return not self._document_ready_for_extraction(document)
 
-    async def _extract(self, *, job: ExtractionJob) -> dict[str, Any]:
+    async def _extract(
+        self,
+        *,
+        job: ExtractionJob,
+        llm_call_buffer: list[dict[str, Any]] | None = None,
+        llm_call_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if self._uses_schema_extractor(job):
             document, context = await self._resolve_schema_extraction_scope(job)
             schema_version = await self.ehr_service.schema_service.get_version(job.schema_version_id)
@@ -928,6 +979,8 @@ class ExtractionService:
                     fields=fields,
                     document_id=document.id,
                     document=document,
+                    llm_call_buffer=llm_call_buffer,
+                    llm_call_context=llm_call_context,
                 )
             return self.ehr_extractor.extract(text=extract_document_text(document), fields=fields, document_id=document.id)
         return self.extractor.extract(job=job)

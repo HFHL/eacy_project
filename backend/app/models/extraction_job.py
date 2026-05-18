@@ -33,6 +33,8 @@ class ExtractionJob(TimestampMixin, Base):
     input_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     progress: Mapped[int | None] = mapped_column(Integer)
     error_message: Mapped[str | None] = mapped_column(Text)
+    error_type: Mapped[str | None] = mapped_column(String(64))
     requested_by: Mapped[str | None] = mapped_column(Uuid(as_uuid=False))
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    timeout_at: Mapped[datetime | None] = mapped_column(DateTime)

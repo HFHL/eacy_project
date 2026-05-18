@@ -6,6 +6,7 @@ from .extraction_run import ExtractionRun
 from .field_current_value import FieldCurrentValue
 from .field_value_event import FieldValueEvent
 from .field_value_evidence import FieldValueEvidence
+from .llm_call_log import LLMCallLog
 from .patient import Patient
 from .project_patient import ProjectPatient
 from .project_template_binding import ProjectTemplateBinding
@@ -26,6 +27,7 @@ __all__ = [
     "FieldCurrentValue",
     "FieldValueEvent",
     "FieldValueEvidence",
+    "LLMCallLog",
     "Patient",
     "ProjectPatient",
     "ProjectTemplateBinding",

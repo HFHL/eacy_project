@@ -14,6 +14,7 @@ from app.models import (
     ExtractionRun,
     FieldValueEvent,
     FieldValueEvidence,
+    LLMCallLog,
     Patient,
     ProjectPatient,
     ResearchProject,
@@ -26,6 +27,7 @@ from core.db import session
 
 ADMIN_TASK_STALE_AFTER = timedelta(minutes=15)
 ACTIVE_STATUSES = {"pending", "queued", "running", "stale"}
+TERMINAL_FAILURE_STATUSES = {"failed", "timeout"}
 
 
 class AdminTaskNotFoundError(ValueError):
@@ -242,12 +244,16 @@ class AdminTaskService:
     async def _batch_detail(self, batch: AsyncTaskBatch) -> dict[str, Any]:
         items = await self._items_for_batch(batch.id)
         jobs = []
+        job_ids: list[str] = []
         for item in items:
             job = await session.get(ExtractionJob, item.extraction_job_id) if item.extraction_job_id else None
             jobs.append(await self._job_detail_payload(job, item=item))
+            if job is not None:
+                job_ids.append(job.id)
 
         summary = await self._batch_summary(batch, items)
-        return {"summary": summary, "jobs": jobs, "llm_source": "run", "llm_calls": self._llm_calls_from_jobs(jobs)}
+        llm_calls = await self._llm_calls_for_jobs(job_ids, jobs_payload=jobs)
+        return {"summary": summary, "jobs": jobs, "llm_source": "llm_call_logs", "llm_calls": llm_calls}
 
     async def _batch_summary(self, batch: AsyncTaskBatch, items: list[AsyncTaskItem]) -> dict[str, Any]:
         first_job = await self._first_job_for_items(items)
@@ -339,8 +345,11 @@ class AdminTaskService:
             "finished_at": run.finished_at,
             "error_message": run.error_message,
             "extracted_fields": extracted_fields,
-            "validation_log": (run.parsed_output_json or {}).get("validation_log") if isinstance(run.parsed_output_json, dict) else None,
-            "raw_output_json": run.raw_output_json,
+            # validation_log moved to its own column; fall back to legacy embedded
+            # location for rows written before the migration.
+            "validation_log": run.validation_log
+            or ((run.parsed_output_json or {}).get("validation_log") if isinstance(run.parsed_output_json, dict) else None),
+            "error_type": run.error_type,
             "parsed_output_json": run.parsed_output_json,
         }
 
@@ -507,25 +516,75 @@ class AdminTaskService:
             return event.value_json
         return event.value_text
 
-    def _llm_calls_from_jobs(self, jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def _llm_calls_for_jobs(
+        self,
+        job_ids: list[str],
+        *,
+        jobs_payload: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Load LLM call logs for the given jobs.
+
+        Each row in `llm_call_logs` becomes one entry in the admin UI's
+        `LLMCallList`, with the prompts / raw response / token usage / error
+        fields the frontend already has Tab placeholders for.
+        """
+        if not job_ids:
+            return []
+        result = await session.execute(
+            select(LLMCallLog)
+            .where(LLMCallLog.job_id.in_(job_ids))
+            .order_by(LLMCallLog.started_at, LLMCallLog.id)
+        )
+        logs = list(result.scalars().all())
+        if not logs:
+            return []
+
+        # Resolve display names from the already-fetched job payloads to avoid
+        # an extra round trip per call.
+        job_index: dict[str, dict[str, Any]] = {}
+        for job in jobs_payload:
+            key = job.get("extraction_job_id")
+            if key:
+                job_index[str(key)] = job
+
         calls: list[dict[str, Any]] = []
-        for job in jobs:
-            run = job.get("extraction_run") or {}
-            validation_log = run.get("validation_log")
-            if not validation_log:
-                continue
-            calls.append(
-                {
-                    "call_id": run.get("id"),
-                    "task_name": job.get("document_name") or job.get("extraction_job_id"),
-                    "status": run.get("status"),
-                    "started_at": run.get("started_at"),
-                    "finished_at": run.get("finished_at"),
-                    "validation_log": validation_log,
-                    "parsed": run.get("parsed_output_json"),
-                    "extracted_raw": run.get("raw_output_json"),
-                }
-            )
+        for log in logs:
+            job_info = job_index.get(str(log.job_id)) if log.job_id else None
+            task_name = (job_info or {}).get("document_name") or log.job_id or log.call_id
+            task_path = list(filter(None, [
+                (job_info or {}).get("project_name"),
+                (job_info or {}).get("patient_name"),
+                (job_info or {}).get("schema_name"),
+                (job_info or {}).get("document_name"),
+            ]))
+            calls.append({
+                "call_id": log.call_id,
+                "task_name": task_name,
+                "task_path": task_path,
+                "document_id": log.document_id,
+                "status": log.status,
+                "error": log.error_message,
+                "error_type": log.error_type,
+                "model_name": log.model_name,
+                "prompt_version": log.prompt_version,
+                "purpose": log.purpose,
+                "node_name": log.node_name,
+                "retry_no": log.retry_no,
+                "http_status": log.http_status,
+                "prompt_tokens": log.prompt_tokens,
+                "completion_tokens": log.completion_tokens,
+                "total_tokens": log.total_tokens,
+                "elapsed_ms": log.elapsed_ms,
+                "started_at": log.started_at,
+                "finished_at": log.finished_at,
+                "instruction": log.system_prompt,
+                "user_message": log.user_prompt,
+                "extracted_raw": log.raw_response,
+                "parsed": log.parsed_response,
+                # validation_log lives at run granularity, not call granularity;
+                # pull it from the matching run payload so the existing Tab works.
+                "validation_log": ((job_info or {}).get("extraction_run") or {}).get("validation_log"),
+            })
         return calls
 
     def _count_by(self, rows: list[dict[str, Any]], key: str, *, include_all: bool = False) -> dict[str, int]:

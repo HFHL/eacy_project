@@ -10,6 +10,7 @@ import httpx
 
 from app.models import Document
 from app.services.evidence_location_resolver import build_ocr_evidence_units
+from app.services.llm_call_logger import ERROR_PARSE, LLMCallRecorder
 from app.services.schema_field_planner import SchemaField
 from core.config import config
 
@@ -39,6 +40,8 @@ class EhrExtractionState(TypedDict):
     validation_log: NotRequired[list[dict[str, Any]]]
     repair_prompt: NotRequired[str]
     validation_status: NotRequired[str]
+    llm_call_buffer: NotRequired[list[dict[str, Any]]]
+    llm_call_context: NotRequired[dict[str, Any]]
 
 
 VALUE_SLOTS = {
@@ -60,6 +63,8 @@ class LlmEhrExtractor:
         fields: list[SchemaField],
         document_id: str | None = None,
         document: Document | None = None,
+        llm_call_buffer: list[dict[str, Any]] | None = None,
+        llm_call_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not config.OPENAI_API_KEY:
             raise LlmExtractionError("Missing OPENAI_API_KEY for EHR extraction")
@@ -73,6 +78,8 @@ class LlmEhrExtractor:
             "attempt": 0,
             "max_attempts": 3,
             "validation_log": [],
+            "llm_call_buffer": llm_call_buffer if llm_call_buffer is not None else [],
+            "llm_call_context": dict(llm_call_context or {}),
         }
         result = graph.invoke(state)
         validation_status = result.get("validation_status") or "invalid"
@@ -141,20 +148,53 @@ class LlmEhrExtractor:
             "Content-Type": "application/json",
         }
         timeout = getattr(config, "EXTRACTION_LLM_TIMEOUT_SECONDS", config.METADATA_LLM_TIMEOUT_SECONDS)
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(f"{base_url}/chat/completions", headers=headers, json=request_payload)
-            if response.status_code >= 400 and request_payload.get("response_format"):
-                request_payload.pop("response_format", None)
-                response = client.post(f"{base_url}/chat/completions", headers=headers, json=request_payload)
-            response.raise_for_status()
-            data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content")
-        if not content:
-            content = ""
+
+        buffer = state.get("llm_call_buffer")
+        call_context = dict(state.get("llm_call_context") or {})
+        call_context.setdefault("purpose", "extract")
+        call_context.setdefault("provider", "openai")
+        call_context.setdefault("node_name", "call_llm")
+        call_context["retry_no"] = attempt - 1
+        recorder = LLMCallRecorder(buffer=buffer, context=call_context)
+        recorder.set_request(
+            system_prompt=state["system_prompt"],
+            user_prompt=prompt,
+            model_name=config.OPENAI_MODEL,
+            prompt_version=call_context.get("prompt_version"),
+        )
+
+        # Run the HTTP call under the recorder so failure paths still produce a log entry.
+        try:
+            with recorder:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.post(f"{base_url}/chat/completions", headers=headers, json=request_payload)
+                    if response.status_code >= 400 and request_payload.get("response_format"):
+                        request_payload.pop("response_format", None)
+                        response = client.post(f"{base_url}/chat/completions", headers=headers, json=request_payload)
+                    recorder.set_response(http_status=response.status_code, raw_response=response.text)
+                    response.raise_for_status()
+                    data = response.json()
+                recorder.set_response(usage=data.get("usage") or {})
+                content = data.get("choices", [{}])[0].get("message", {}).get("content") or ""
+        except httpx.TimeoutException as exc:
+            # Recorder already captured this via __exit__; re-raise so the graph aborts and
+            # extraction_service can mark the job as timeout (rather than generic failed).
+            raise LlmExtractionError(f"LLM timeout: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise LlmExtractionError(f"LLM HTTP error: {exc}") from exc
+
         try:
             raw_output = self._parse_json_content(content)
+            recorder.set_response(parsed_response=raw_output)
+            # Mutate the buffer entry we just appended so parsed_response is included.
+            if buffer:
+                buffer[-1]["parsed_response"] = raw_output
             return {"attempt": attempt, "raw_content": content, "raw_output": raw_output, "parse_error": None}
         except Exception as exc:
+            if buffer:
+                # Mark the last record as a parse_error without changing status (HTTP succeeded).
+                buffer[-1]["error_type"] = ERROR_PARSE
+                buffer[-1]["error_message"] = str(exc) or exc.__class__.__name__
             return {"attempt": attempt, "raw_content": content, "raw_output": None, "parse_error": str(exc)}
 
     def _node_validate(self, state: EhrExtractionState) -> dict[str, Any]:

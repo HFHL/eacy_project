@@ -208,6 +208,7 @@ const extractionStatusMeta = {
   completed:               { color: 'success',    label: '已完成',  progressStatus: 'success' },
   completed_with_errors:   { color: 'warning',    label: '部分成功', progressStatus: 'exception'},
   failed:                  { color: 'error',      label: '失败',    progressStatus: 'exception'},
+  timeout:                 { color: 'orange',     label: '已超时',  progressStatus: 'exception'},
   cancelled:               { color: 'warning',    label: '已取消',  progressStatus: 'normal'  },
   stale:                   { color: 'warning',    label: '已停滞',  progressStatus: 'exception'},
   idle:                    { color: 'default',    label: '空闲',    progressStatus: 'normal'  },
