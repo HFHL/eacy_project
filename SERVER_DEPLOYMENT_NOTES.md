@@ -1,20 +1,44 @@
 # EACY 当前服务器启动与部署说明
 
-生成时间：2026-04-30
+最后核对：2026-05-18
 项目目录：`/data/eacy/eacy_project`
 
-## 当前服务器状态
+> 想知道“当前怎么跑”的最快路径：先看根目录 `CLAUDE.md`。
 
-本次检查发现 `run/` 目录中保留了上一轮后台启动的 PID 和端口记录：
+## 当前服务器状态（authoritative）
 
-- 后端 PID：`run/backend.pid`
-- 前端 PID：`run/frontend.pid`
-- Celery PID：`run/celery.pid`
-- 端口记录：`run/ports.env`
+**当前服务器使用 Docker Compose 跑生产**，入口 `docker-compose.prod.yml`，env 文件 `.env.prod`。
 
-但这些 PID 对应的进程当前都已经不存在，说明服务目前不是通过这些 PID 文件处于运行状态，或者上一轮服务已退出但 PID 文件未清理。
+实际运行的容器（`docker ps`）：
 
-`run/ports.env` 记录的上一轮启动信息：
+```
+eacy_project-nginx-1             eacy-frontend:prod   0.0.0.0:8000->80/tcp
+eacy_project-api-1               eacy-backend:prod    8000/tcp (healthy)
+eacy_project-worker-ocr-1        eacy-backend:prod    8000/tcp
+eacy_project-worker-metadata-1   eacy-backend:prod    8000/tcp
+eacy_project-worker-extraction-1 eacy-backend:prod    8000/tcp
+eacy_project-postgres-1          postgres:16-alpine   5432/tcp (healthy)
+eacy_project-redis-1             redis:7-alpine       6379/tcp (healthy)
+```
+
+对外访问入口：`http://<服务器IP>:8000/`（`.env.prod` 里 `HTTP_PORT=8000`，nginx 容器把宿主机 8000 映射到容器 80，再代理到 `api:8000`）。
+
+常用命令（必须带 `--env-file .env.prod`，否则会报 `POSTGRES_PASSWORD missing`）：
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod ps
+docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f api
+docker compose -f docker-compose.prod.yml --env-file .env.prod restart api
+docker compose -f docker-compose.prod.yml --env-file .env.prod down       # 不删卷
+```
+
+详细 compose 编排、镜像源、调优、升级顺序见 `deploy/docker/README.md`。
+
+## 历史遗留：`run/` 与 `logs/` 来自旧的 daemon-start.sh
+
+`run/` 目录里的 PID 和 `run/ports.env`、以及 `logs/*.log` 是早期用 `scripts/daemon-start.sh` 跑过留下的残留，**与当前 Docker 部署无关**。当前 Docker 部署的日志请用 `docker compose ... logs` 查看。
+
+`run/ports.env` 历史值（仅供参考，不代表当前）：
 
 ```bash
 BACKEND_PORT=8000
@@ -23,15 +47,11 @@ VITE_DEV_API_PROXY_TARGET=http://127.0.0.1:8000
 STARTED_AT=2026-04-29T17:12:36+08:00
 ```
 
-日志位置：
+---
 
-- 后端日志：`logs/backend.log`
-- Celery 日志：`logs/celery.log`
-- 前端日志：`logs/frontend.log`
+下文记录的是 **非当前部署方式**（裸机 / 本机开发 / Windows 开发），用于在没有 Docker 的环境里启项目，或者临时调试。**正在 Docker 跑着的服务器上不要同时启动这些，会端口冲突 / 数据库连接打满。**
 
-日志中可见上一轮服务曾经启动并处理请求；Celery 日志后段出现 `missed heartbeat`，后端日志中曾出现数据库连接过多和响应日志解码异常。
-
-## Linux 后台启动方式
+## Linux 后台启动方式（开发用，非当前生产）
 
 Linux/SSH 环境主要使用：
 
@@ -185,7 +205,7 @@ docker compose -f backend/docker/docker-compose.yml down
 
 当前 `.env` 中还配置了远程 PostgreSQL 连接、Redis、Celery broker/result backend。文档中不记录具体密码或密钥。
 
-## Windows 一键启动方式
+## Windows 一键启动方式（开发用，非当前生产）
 
 Windows 使用：
 
@@ -273,11 +293,7 @@ scripts/daemon-start.sh
 
 ## 目前需要注意的问题
 
-1. `run/*.pid` 当前是过期 PID。重新启动前建议先执行：
-
-   ```bash
-   scripts/daemon-stop.sh
-   ```
+1. `run/*.pid`、`run/ports.env`、`logs/*.log` 都是旧 `daemon-start.sh` 的残留，**不反映当前 Docker 部署状态**。要看现在的日志请用 `docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f <service>`。
 
 2. 后端日志曾出现：
 
@@ -295,9 +311,4 @@ scripts/daemon-start.sh
 
    这是响应日志中间件尝试按 UTF-8 解码二进制响应导致的风险，和文件流/导出类接口有关。建议后续让 `ResponseLogMiddleware` 跳过二进制响应体或按 content-type 判断。
 
-4. 当前 Linux 启动方式是开发型部署：前端使用 Vite dev server，后端使用单 worker uvicorn，Celery 使用一个 worker 监听三条队列。正式生产建议改为：
-
-   - 前端 `npm run build` 后由 Nginx 托管 `dist`
-   - 后端由 systemd/supervisor 管理 uvicorn/gunicorn
-   - Celery 按队列拆分 worker，并单独配置并发
-   - Redis、数据库使用独立稳定服务
+4. `daemon-start.sh` 是开发型部署：前端 Vite dev server、后端单 worker uvicorn、Celery 一个 worker 监听三条队列。当前生产已经迁移到 `docker-compose.prod.yml`：前端 nginx 托管 `dist`，后端 gunicorn + 多 uvicorn worker，Celery 按队列拆分，PostgreSQL/Redis 用命名卷持久化。

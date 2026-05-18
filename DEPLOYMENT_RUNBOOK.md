@@ -1,5 +1,9 @@
 # EACY 项目部署与快速运行手册
 
+> ⚠️ **本文档描述的是【裸机 / poetry+systemd】通用部署方案，不是当前生产服务器的实际部署方式。**
+> 当前服务器使用 Docker Compose（`docker-compose.prod.yml`）部署，详见根目录 `CLAUDE.md` 和 `deploy/docker/README.md`。
+> 本文档保留作为：① 迁移到无 Docker 环境的参考；② 开发机本机起服务的参考。
+
 本文档面向接手项目的 AI 工具或工程师，目标是在另一台服务器上尽快把 EACY 跑起来。
 
 ## 1. 项目结构

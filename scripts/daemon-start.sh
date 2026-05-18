@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# ⚠️ 这是【本机/SSH 开发用】的后台启动脚本，不是当前生产部署方式。
+# 当前生产用 docker-compose.prod.yml（详见根目录 CLAUDE.md / SERVER_DEPLOYMENT_NOTES.md）。
+# 已经在用 docker compose 跑着的服务器上不要再执行这个脚本，会端口冲突 / DB 连接打满。
+#
 # 后台启动：后端 (uvicorn，无 reload) + Celery (三队列单 worker) + 前端 (Vite dev + API 代理)
 # 断开 SSH 后仍运行（nohup）。日志：logs/*.log，PID：run/*.pid
 set -euo pipefail
