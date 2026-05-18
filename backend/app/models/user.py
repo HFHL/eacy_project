@@ -24,3 +24,7 @@ class User(TimestampMixin, Base):
     permissions: Mapped[str | None] = mapped_column(String(1000))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+    phone: Mapped[str | None] = mapped_column(String(32))
+    organization: Mapped[str | None] = mapped_column(String(200))
+    department: Mapped[str | None] = mapped_column(String(200))
+    job_title: Mapped[str | None] = mapped_column(String(100))

@@ -7,15 +7,41 @@ from app.services.auth_service import AuthService
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+
+class SendCodeRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255, pattern=EMAIL_PATTERN)
+    purpose: str = Field(..., pattern=r"^(register|reset)$")
+
+
+class SendCodeResponse(BaseModel):
+    email: str
+    purpose: str
+    ttl_seconds: int
+    cooldown_seconds: int
+
+
 class RegisterRequest(BaseModel):
-    email: str = Field(..., min_length=3, max_length=255, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    email: str = Field(..., min_length=3, max_length=255, pattern=EMAIL_PATTERN)
     password: str = Field(..., min_length=6, max_length=128)
+    code: str = Field(..., min_length=4, max_length=10)
     username: str | None = Field(default=None, max_length=100)
     name: str | None = Field(default=None, max_length=100)
+    phone: str | None = Field(default=None, max_length=32)
+    organization: str | None = Field(default=None, max_length=200)
+    department: str | None = Field(default=None, max_length=200)
+    job_title: str | None = Field(default=None, max_length=100)
+
+
+class ResetPasswordRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255, pattern=EMAIL_PATTERN)
+    code: str = Field(..., min_length=4, max_length=10)
+    new_password: str = Field(..., min_length=6, max_length=128)
 
 
 class LoginRequest(BaseModel):
-    email: str = Field(..., min_length=3, max_length=255, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    email: str = Field(..., min_length=3, max_length=255, pattern=EMAIL_PATTERN)
     password: str = Field(..., min_length=1, max_length=128)
 
 
@@ -52,6 +78,17 @@ async def auth_status(
     return {"module": "auth", "status": "ready"}
 
 
+@router.post("/send-code", response_model=SendCodeResponse)
+async def send_code(
+    payload: SendCodeRequest,
+    service: AuthService = Depends(get_auth_service),
+) -> SendCodeResponse:
+    data = await service.verification_code_service.request_code(
+        email=payload.email, purpose=payload.purpose,
+    )
+    return SendCodeResponse.model_validate(data)
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
@@ -60,8 +97,26 @@ async def register(
     data = await service.register(
         email=payload.email,
         password=payload.password,
+        code=payload.code,
         username=payload.username,
         name=payload.name,
+        phone=payload.phone,
+        organization=payload.organization,
+        department=payload.department,
+        job_title=payload.job_title,
+    )
+    return TokenResponse.model_validate(data)
+
+
+@router.post("/reset-password", response_model=TokenResponse)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    service: AuthService = Depends(get_auth_service),
+) -> TokenResponse:
+    data = await service.reset_password(
+        email=payload.email,
+        code=payload.code,
+        new_password=payload.new_password,
     )
     return TokenResponse.model_validate(data)
 

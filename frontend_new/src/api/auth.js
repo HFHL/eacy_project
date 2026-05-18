@@ -12,9 +12,18 @@ export const register = async (data = {}) => {
   const payload = await request.post('/auth/register', data)
   return emptySuccess(payload)
 }
-export const sendRegisterEmailCode = async () => emptySuccess(null)
-export const sendResetPasswordEmailCode = async () => emptySuccess(null)
-export const resetPasswordByEmail = async () => emptySuccess(null)
+export const sendRegisterEmailCode = async ({ email } = {}) => {
+  const payload = await request.post('/auth/send-code', { email, purpose: 'register' })
+  return emptySuccess(payload)
+}
+export const sendResetPasswordEmailCode = async ({ email } = {}) => {
+  const payload = await request.post('/auth/send-code', { email, purpose: 'reset' })
+  return emptySuccess(payload)
+}
+export const resetPasswordByEmail = async ({ email, code, new_password } = {}) => {
+  const payload = await request.post('/auth/reset-password', { email, code, new_password })
+  return emptySuccess(payload)
+}
 export const loginByEmail = async (data = {}) => {
   const payload = await request.post('/auth/login', data)
   return emptySuccess(payload)

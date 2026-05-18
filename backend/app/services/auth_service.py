@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 
 from app.models import User
 from app.repositories.user_repository import UserRepository
+from app.services.verification_code_service import VerificationCodeService
 from core.config import config
 from core.db import Transactional
 
@@ -46,8 +47,13 @@ def _permissions_to_list(value: str | None) -> list[str]:
 
 
 class AuthService:
-    def __init__(self, user_repository: UserRepository | None = None):
+    def __init__(
+        self,
+        user_repository: UserRepository | None = None,
+        verification_code_service: VerificationCodeService | None = None,
+    ):
         self.user_repository = user_repository or UserRepository()
+        self.verification_code_service = verification_code_service or VerificationCodeService()
 
     def build_user_payload(self, user: User) -> dict[str, Any]:
         return {
@@ -84,8 +90,24 @@ class AuthService:
         }
 
     @Transactional()
-    async def register(self, *, email: str, password: str, username: str | None = None, name: str | None = None) -> dict[str, Any]:
+    async def register(
+        self,
+        *,
+        email: str,
+        password: str,
+        code: str,
+        username: str | None = None,
+        name: str | None = None,
+        phone: str | None = None,
+        organization: str | None = None,
+        department: str | None = None,
+        job_title: str | None = None,
+    ) -> dict[str, Any]:
         normalized_email = email.strip().lower()
+        # 1. 先校验验证码（错误码 / 过期 → 400）
+        await self.verification_code_service.verify(
+            email=normalized_email, purpose="register", code=code,
+        )
         resolved_username = (username or normalized_email.split("@", 1)[0]).strip()
         if await self.user_repository.get_by_email(normalized_email):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
@@ -100,8 +122,31 @@ class AuthService:
                 "role": "user",
                 "permissions": "",
                 "is_active": True,
+                "phone": (phone or None),
+                "organization": (organization or None),
+                "department": (department or None),
+                "job_title": (job_title or None),
             }
         )
+        # 2. 成功后消费掉验证码（防重放）
+        await self.verification_code_service.consume(email=normalized_email, purpose="register")
+        return self.build_token_response(user)
+
+    @Transactional()
+    async def reset_password(self, *, email: str, code: str, new_password: str) -> dict[str, Any]:
+        normalized_email = email.strip().lower()
+        await self.verification_code_service.verify(
+            email=normalized_email, purpose="reset", code=code,
+        )
+        user = await self.user_repository.get_by_email(normalized_email)
+        if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="该邮箱未注册或账号已停用",
+            )
+        user.password_hash = hash_password(new_password)
+        await self.user_repository.save(user)
+        await self.verification_code_service.consume(email=normalized_email, purpose="reset")
         return self.build_token_response(user)
 
     @Transactional()

@@ -26,6 +26,7 @@ import {
   loginByEmail,
   register,
   getUserSettings,
+  sendRegisterEmailCode,
   sendResetPasswordEmailCode,
   resetPasswordByEmail,
 } from '../../api/auth'
@@ -134,10 +135,43 @@ const Login = () => {
     generateQRCode()
   }
 
+  // 发送注册邮箱验证码
+  const handleSendRegisterEmailCode = async () => {
+    try {
+      const email = registerForm.getFieldValue('email')
+      if (!email) {
+        message.warning('请先填写邮箱地址')
+        return
+      }
+      await registerForm.validateFields(['email'])
+
+      if (emailCodeCountdown > 0 || sendingEmailCode) {
+        return
+      }
+
+      setSendingEmailCode(true)
+      const res = await sendRegisterEmailCode({ email })
+      if (res?.success && res?.code === 0) {
+        message.success('验证码已发送，请前往邮箱查收')
+        setEmailCodeCountdown(60)
+      } else {
+        message.error(res?.message || '发送验证码失败，请稍后重试')
+      }
+    } catch (error) {
+      if (error?.errorFields) {
+        // 表单校验错误交给 antd 自己展示
+      } else {
+        console.error('发送注册邮箱验证码失败:', error)
+      }
+    } finally {
+      setSendingEmailCode(false)
+    }
+  }
+
   // 处理注册
   const handleRegister = async (values) => {
     setRegisterLoading(true)
-    
+
     try {
       const response = await register({
         email: values.email,
@@ -149,7 +183,7 @@ const Login = () => {
         department: values.department || undefined,
         job_title: values.job_title || undefined,
       })
-      
+
       if (response.success && response.code === 0) {
         message.success('注册成功！请使用邮箱和密码登录')
         // 清空注册表单和验证码倒计时
@@ -382,21 +416,31 @@ const Login = () => {
               <Form.Item
                 name="code"
                 rules={[
-                  { required: true, message: '请输入验证码' },
-                  { len: 4, message: '验证码为 4 位' },
-                  {
-                    pattern: /^0000$/,
-                    message: '请输入固定验证码 0000',
-                  },
+                  { required: true, message: '请输入邮箱验证码' },
+                  { len: 6, message: '验证码为 6 位数字' },
+                  { pattern: /^\d{6}$/, message: '验证码格式不正确，应为 6 位数字' },
                 ]}
               >
-                <Input
-                  prefix={<LockOutlined style={{ color: appThemeToken.colorTextTertiary }} />}
-                  placeholder="固定验证码：0000"
-                  maxLength={4}
-                  style={styles.input}
-                  autoComplete="off"
-                />
+                <div style={styles.emailWithCodeRow}>
+                  <Input
+                    prefix={<LockOutlined style={{ color: appThemeToken.colorTextTertiary }} />}
+                    placeholder="请输入邮箱验证码"
+                    maxLength={6}
+                    style={styles.emailInput}
+                    autoComplete="off"
+                  />
+                  <Button
+                    type="primary"
+                    ghost
+                    size="middle"
+                    style={styles.sendCodeButton}
+                    onClick={handleSendRegisterEmailCode}
+                    loading={sendingEmailCode}
+                    disabled={!!emailCodeCountdown || sendingEmailCode}
+                  >
+                    {emailCodeCountdown > 0 ? `${emailCodeCountdown}s 后重试` : '发送验证码'}
+                  </Button>
+                </div>
               </Form.Item>
 
               <Form.Item

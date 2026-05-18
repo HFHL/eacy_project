@@ -58,6 +58,24 @@ class Config(BaseSettings):
     EXTRACTION_LLM_TIMEOUT_SECONDS: float = 180.0
     EXTRACTION_LLM_TEMPERATURE: float = 0.0
 
+    # SMTP（用于注册/找回密码邮箱验证码）
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 465
+    SMTP_USE_SSL: bool = True
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM: str | None = None
+    SMTP_FROM_NAME: str = "易悉 EACY"
+    SMTP_TIMEOUT_SECONDS: float = 15.0
+
+    # 邮箱验证码
+    VERIFICATION_CODE_TTL_SECONDS: int = 600        # 10 分钟有效
+    VERIFICATION_CODE_RESEND_COOLDOWN: int = 60     # 同邮箱 60s 一次
+    VERIFICATION_CODE_DAILY_LIMIT: int = 10         # 同邮箱 24h 上限
+    VERIFICATION_CODE_LENGTH: int = 6
+    # 当 SMTP 未配置时是否退化为"调试模式"（验证码写入日志，不真发邮件）
+    VERIFICATION_CODE_DEBUG_FALLBACK: bool = True
+
     @model_validator(mode="after")
     def use_database_url_when_writer_reader_are_default(self):
         if self.DATABASE_URL:
