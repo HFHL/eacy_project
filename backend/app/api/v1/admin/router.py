@@ -1,9 +1,23 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 
 from app.core.auth import CurrentUser, get_current_user, is_admin_user
-from app.services.admin_task_service import AdminTaskNotFoundError, AdminTaskService
+from app.services.admin_task_service import (
+    AdminTaskNotFoundError,
+    AdminTaskService,
+    AdminUserNotFoundError,
+    VALID_USER_ROLES,
+)
+
+
+class UpdateUserStatusRequest(BaseModel):
+    is_active: bool = Field(..., description="Whether the user account is active")
+
+
+class UpdateUserRoleRequest(BaseModel):
+    role: str = Field(..., description="User role: admin or user")
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -40,6 +54,47 @@ async def admin_users(
 ) -> dict[str, Any]:
     users = await service.list_users()
     return {"users": users, "items": users, "total": len(users)}
+
+
+@router.patch("/users/{user_id}/status")
+async def admin_update_user_status(
+    user_id: str,
+    payload: UpdateUserStatusRequest,
+    current_user: CurrentUser = Depends(require_admin_user),
+    service: AdminTaskService = Depends(get_admin_task_service),
+) -> dict[str, Any]:
+    if user_id == current_user.id and not payload.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot disable your own account",
+        )
+    try:
+        return await service.update_user_status(user_id, is_active=payload.is_active)
+    except AdminUserNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+
+@router.patch("/users/{user_id}/role")
+async def admin_update_user_role(
+    user_id: str,
+    payload: UpdateUserRoleRequest,
+    current_user: CurrentUser = Depends(require_admin_user),
+    service: AdminTaskService = Depends(get_admin_task_service),
+) -> dict[str, Any]:
+    if payload.role not in VALID_USER_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role. Allowed: {sorted(VALID_USER_ROLES)}",
+        )
+    if user_id == current_user.id and payload.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot demote your own admin role",
+        )
+    try:
+        return await service.update_user_role(user_id, role=payload.role)
+    except AdminUserNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
 
 @router.get("/projects")

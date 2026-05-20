@@ -34,6 +34,13 @@ class AdminTaskNotFoundError(ValueError):
     pass
 
 
+class AdminUserNotFoundError(ValueError):
+    pass
+
+
+VALID_USER_ROLES = {"admin", "user"}
+
+
 class AdminTaskService:
     async def get_stats(self) -> dict[str, Any]:
         task_rows = await self.list_extraction_tasks(limit=1000, offset=0)
@@ -56,19 +63,40 @@ class AdminTaskService:
 
     async def list_users(self) -> list[dict[str, Any]]:
         result = await session.execute(select(User).order_by(User.created_at.desc()).limit(500))
-        return [
-            {
-                "id": user.id,
-                "name": user.name or user.username,
-                "email": user.email,
-                "role": user.role,
-                "status": "active" if user.is_active else "inactive",
-                "permissions": user.permissions,
-                "login_at": user.last_login_at,
-                "created_at": user.created_at,
-            }
-            for user in result.scalars().all()
-        ]
+        return [self._user_payload(user) for user in result.scalars().all()]
+
+    async def update_user_status(self, user_id: str, *, is_active: bool) -> dict[str, Any]:
+        user = await session.get(User, user_id)
+        if user is None:
+            raise AdminUserNotFoundError("User not found")
+        user.is_active = is_active
+        await session.commit()
+        await session.refresh(user)
+        return self._user_payload(user)
+
+    async def update_user_role(self, user_id: str, *, role: str) -> dict[str, Any]:
+        if role not in VALID_USER_ROLES:
+            raise ValueError(f"Invalid role: {role}")
+        user = await session.get(User, user_id)
+        if user is None:
+            raise AdminUserNotFoundError("User not found")
+        user.role = role
+        await session.commit()
+        await session.refresh(user)
+        return self._user_payload(user)
+
+    @staticmethod
+    def _user_payload(user: User) -> dict[str, Any]:
+        return {
+            "id": user.id,
+            "name": user.name or user.username,
+            "email": user.email,
+            "role": user.role,
+            "status": "active" if user.is_active else "inactive",
+            "permissions": user.permissions,
+            "login_at": user.last_login_at,
+            "created_at": user.created_at,
+        }
 
     async def list_projects(self) -> list[dict[str, Any]]:
         result = await session.execute(select(ResearchProject).where(ResearchProject.status != "deleted").order_by(ResearchProject.created_at.desc()).limit(500))

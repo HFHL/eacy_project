@@ -25,11 +25,12 @@ import {
   Divider
 } from 'antd';
 import {
-  FileTextOutlined, 
+  FileTextOutlined,
   LinkOutlined,
   CheckCircleOutlined,
   FileImageOutlined,
-  InfoCircleOutlined
+  InfoCircleOutlined,
+  ExportOutlined
 } from '@ant-design/icons';
 import { getFreshDocumentPdfStreamUrl, getDocumentTempUrl } from '../../api/document';
 import { getCrfFieldEvidence } from '../../api/project';
@@ -222,35 +223,49 @@ const EvidenceDocumentViewer = ({ evidences, loading }) => {
         background: appThemeToken.colorFillTertiary,
         borderRadius: 8,
         padding: 16,
-        maxHeight: '80vh',
-        overflow: 'auto'
+        height: 'calc(85vh - 180px)',
+        minHeight: 480,
+        overflow: 'auto',
+        display: 'flex',
+        flexDirection: 'column',
       }}
     >
-      <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ color: appThemeToken.colorTextSecondary, fontSize: 14 }}>
-          📄 {docInfo.fileName || '原始文档'}
-          <Tag color="blue" style={{ marginLeft: 8 }}>第 {pageNo} 页</Tag>
+      <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ color: appThemeToken.colorTextSecondary, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <FileTextOutlined />
+          <span>{docInfo.fileName || '原始文档'}</span>
+          <Tag color="blue">第 {pageNo} 页</Tag>
+          {validEvidences.length > 1 && (
+            <Tag color="purple">{validEvidences.length} 个溯源片段</Tag>
+          )}
         </div>
-        {validEvidences.length > 1 && (
-          <Tag color="purple">{validEvidences.length} 个溯源片段</Tag>
-        )}
+        <a
+          href={docInfo.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: 12 }}
+        >
+          <ExportOutlined /> 新标签页打开
+        </a>
       </div>
 
-      {docInfo.isPdf ? (
-        <PdfPageWithHighlight
-          pdfUrl={docInfo.url}
-          pageNumber={sourceLocations.length > 0 ? pageNo : null}
-          locations={sourceLocations}
-          maxWidth="100%"
-          loading={false}
-        />
-      ) : (
-        <HighlightedImage
-          imageUrl={docInfo.url}
-          sourceLocation={sourceLocations}
-          loading={false}
-        />
-      )}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {docInfo.isPdf ? (
+          <PdfPageWithHighlight
+            pdfUrl={docInfo.url}
+            pageNumber={sourceLocations.length > 0 ? pageNo : null}
+            locations={sourceLocations}
+            maxWidth="100%"
+            loading={false}
+          />
+        ) : (
+          <HighlightedImage
+            imageUrl={docInfo.url}
+            sourceLocation={sourceLocations}
+            loading={false}
+          />
+        )}
+      </div>
     </div>
   );
 };
@@ -507,22 +522,6 @@ const FieldSourceModal = ({
             )}
           </Card>
 
-          {/* 原文片段 */}
-          <Card 
-            size="small" 
-            title={
-              <Space>
-                <FileTextOutlined />
-                OCR 原文片段
-                {fieldAudit.source_id && (
-                  <Tag size="small">位置: {fieldAudit.source_id}</Tag>
-                )}
-              </Space>
-            }
-          >
-            <RawTextHighlight raw={fieldAudit.raw} value={fieldValue} />
-          </Card>
-
           {/* 置信度信息 */}
           {fieldAudit.confidence && (
             <div style={{ marginTop: 16, textAlign: 'center' }}>
@@ -761,11 +760,12 @@ const FieldSourceModal = ({
       open={visible}
       onCancel={onClose}
       footer={null}
-      width={900}
-      styles={{ body: { padding: '12px 24px' } }}
+      width="85vw"
+      style={{ top: 24, maxWidth: 1400 }}
+      styles={{ body: { padding: '12px 24px', maxHeight: 'calc(95vh - 110px)', overflow: 'auto' } }}
     >
-      <Tabs 
-        activeKey={activeTab} 
+      <Tabs
+        activeKey={activeTab}
         onChange={setActiveTab}
         items={tabItems}
       />

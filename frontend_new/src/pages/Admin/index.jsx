@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Card, Tabs, Table, Tag, Space, Typography, Statistic, Row, Col,
   Button, message, Tooltip, Badge, Avatar, Spin, Empty, Input,
-  Progress, Segmented, Select, Modal, Descriptions, Alert, Divider
+  Progress, Segmented, Select, Modal, Descriptions, Alert, Divider,
+  Popconfirm
 } from 'antd'
 import {
   UserOutlined, ExperimentOutlined, FileTextOutlined, DatabaseOutlined,
@@ -14,7 +15,8 @@ import {
 import {
   getAdminUsers, getAdminProjects, getAdminTemplates,
   getAdminDocuments, getAdminStats, getAdminExtractionTasks,
-  getAdminExtractionTaskDetail
+  getAdminExtractionTaskDetail,
+  updateAdminUserStatus, updateAdminUserRole
 } from '../../api/admin'
 import { appThemeToken } from '../../styles/themeTokens'
 import { useExtractionProgressSSE } from '../../hooks'
@@ -91,10 +93,21 @@ const OverviewCards = ({ stats, loading }) => {
 }
 
 // ─── Users Tab ──────────────────────────────────────────────────
+const getCurrentUserId = () => {
+  try {
+    const raw = localStorage.getItem('user_info')
+    if (!raw) return null
+    const info = JSON.parse(raw)
+    return info?.id || info?.user_id || null
+  } catch { return null }
+}
+
 const UsersTab = () => {
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
+  const [pendingId, setPendingId] = useState(null)
+  const currentUserId = useMemo(() => getCurrentUserId(), [])
 
   const fetch = useCallback(async () => {
     setLoading(true)
@@ -107,6 +120,36 @@ const UsersTab = () => {
   }, [])
 
   useEffect(() => { fetch() }, [fetch])
+
+  const handleToggleStatus = useCallback(async (row) => {
+    const nextActive = row.status !== 'active'
+    setPendingId(row.id)
+    try {
+      const res = await updateAdminUserStatus(row.id, nextActive)
+      const updated = res?.data
+      setData(prev => prev.map(u => u.id === row.id ? { ...u, ...updated } : u))
+      message.success(nextActive ? '已启用该用户' : '已禁用该用户')
+    } catch (e) {
+      message.error(e?.message || '更新用户状态失败')
+    } finally {
+      setPendingId(null)
+    }
+  }, [])
+
+  const handleToggleRole = useCallback(async (row) => {
+    const nextRole = row.role === 'admin' ? 'user' : 'admin'
+    setPendingId(row.id)
+    try {
+      const res = await updateAdminUserRole(row.id, nextRole)
+      const updated = res?.data
+      setData(prev => prev.map(u => u.id === row.id ? { ...u, ...updated } : u))
+      message.success(nextRole === 'admin' ? '已设为管理员' : '已取消管理员')
+    } catch (e) {
+      message.error(e?.message || '更新用户角色失败')
+    } finally {
+      setPendingId(null)
+    }
+  }, [])
 
   const filtered = search
     ? data.filter(u => [u.name, u.email, u.phone, u.organization, u.department]
@@ -126,18 +169,86 @@ const UsersTab = () => {
         </Space>
       )
     },
+    {
+      title: '角色', dataIndex: 'role', key: 'role', width: 100,
+      filters: [
+        { text: '管理员', value: 'admin' },
+        { text: '普通用户', value: 'user' },
+      ],
+      onFilter: (val, r) => (r.role || 'user') === val,
+      render: v => v === 'admin'
+        ? <Tag color="gold">管理员</Tag>
+        : <Tag>普通用户</Tag>
+    },
     { title: '手机', dataIndex: 'phone', key: 'phone', width: 140, render: v => v || '-' },
     { title: '职称', dataIndex: 'job_title', key: 'job_title', width: 120, render: v => v || '-' },
     { title: '机构', dataIndex: 'organization', key: 'organization', width: 180, ellipsis: true, render: v => v || '-' },
     { title: '科室', dataIndex: 'department', key: 'department', width: 120, render: v => v || '-' },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 80,
+      title: '状态', dataIndex: 'status', key: 'status', width: 90,
+      filters: [
+        { text: '活跃', value: 'active' },
+        { text: '已禁用', value: 'inactive' },
+      ],
+      onFilter: (val, r) => r.status === val,
       render: v => <Tag color={statusColors[v] || 'default'}>{statusLabels[v] || v || '-'}</Tag>
     },
-    { title: '积分', dataIndex: 'points', key: 'points', width: 80, render: v => v ?? 0 },
     { title: '最后登录', dataIndex: 'login_at', key: 'login_at', width: 170, render: formatTime },
     { title: '注册时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: formatTime },
     { title: 'ID', dataIndex: 'id', key: 'id', width: 120, ellipsis: true, render: v => <Text copyable={{ text: v }} type="secondary" style={{ fontSize: 12 }}>{v?.slice(0, 8)}…</Text> },
+    {
+      title: '操作', key: 'actions', width: 220, fixed: 'right',
+      render: (_, r) => {
+        const isSelf = currentUserId && r.id === currentUserId
+        const isActive = r.status === 'active'
+        const isAdmin = r.role === 'admin'
+        const loadingRow = pendingId === r.id
+        const disableReason = isSelf ? '不能修改当前登录账号' : ''
+        return (
+          <Space size={4}>
+            <Tooltip title={disableReason}>
+              <Popconfirm
+                title={isActive ? '禁用该用户？' : '启用该用户？'}
+                description={isActive ? '禁用后该用户将无法登录系统。' : '启用后该用户可以重新登录系统。'}
+                onConfirm={() => handleToggleStatus(r)}
+                okText="确认"
+                cancelText="取消"
+                disabled={isSelf}
+              >
+                <Button
+                  size="small"
+                  type="link"
+                  danger={isActive}
+                  disabled={isSelf}
+                  loading={loadingRow}
+                >
+                  {isActive ? '禁用' : '启用'}
+                </Button>
+              </Popconfirm>
+            </Tooltip>
+            <Tooltip title={disableReason}>
+              <Popconfirm
+                title={isAdmin ? '取消管理员？' : '设为管理员？'}
+                description={isAdmin ? '取消后该用户将失去后台管理权限。' : '设为管理员后，该用户将拥有后台所有管理权限。'}
+                onConfirm={() => handleToggleRole(r)}
+                okText="确认"
+                cancelText="取消"
+                disabled={isSelf}
+              >
+                <Button
+                  size="small"
+                  type="link"
+                  disabled={isSelf}
+                  loading={loadingRow}
+                >
+                  {isAdmin ? '取消管理员' : '设为管理员'}
+                </Button>
+              </Popconfirm>
+            </Tooltip>
+          </Space>
+        )
+      }
+    },
   ]
 
   return (
@@ -149,7 +260,7 @@ const UsersTab = () => {
       </div>
       <Table
         columns={columns} dataSource={filtered} rowKey="id" loading={loading}
-        scroll={{ x: 1400 }} size="small" pagination={{ pageSize: 20, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
+        scroll={{ x: 1600 }} size="small" pagination={{ pageSize: 20, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
       />
     </>
   )

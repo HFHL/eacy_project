@@ -8,6 +8,10 @@ const wrap = (data) => ({
 })
 
 export const getAdminUsers = async () => wrap(await request.get('/admin/users'))
+export const updateAdminUserStatus = async (userId, isActive) =>
+  wrap(await request.patch(`/admin/users/${encodeURIComponent(userId)}/status`, { is_active: isActive }))
+export const updateAdminUserRole = async (userId, role) =>
+  wrap(await request.patch(`/admin/users/${encodeURIComponent(userId)}/role`, { role }))
 export const getAdminProjects = async () => wrap(await request.get('/admin/projects'))
 export const getAdminTemplates = async () => wrap(await request.get('/admin/templates'))
 export const getAdminDocuments = async (params = {}) => wrap(await request.get('/admin/documents', params))

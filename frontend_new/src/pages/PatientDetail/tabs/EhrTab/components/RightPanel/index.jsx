@@ -13,7 +13,9 @@ import {
   Spin,
   Empty,
   List,
-  Divider
+  Divider,
+  Modal,
+  Tooltip
 } from 'antd'
 import {
   FileTextOutlined,
@@ -23,7 +25,9 @@ import {
   HistoryOutlined,
   UserOutlined,
   RobotOutlined,
-  ClockCircleOutlined
+  ClockCircleOutlined,
+  FullscreenOutlined,
+  ExportOutlined
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { maskSensitiveField } from '@/utils/sensitiveUtils'
@@ -71,6 +75,9 @@ const RightPanel = ({
   onReExtract,
   extracting = false
 }) => {
+  // 全屏 PDF 预览（科研项目+EHR 用同一种"放大查看"模式）
+  const [fullscreenOpen, setFullscreenOpen] = useState(false)
+
   // 获取最新的变更记录
   const latestHistory = fieldHistory && fieldHistory.length > 0 ? fieldHistory[0] : null
   // 是否处于兜底模式：有选中字段、无可溯源历史、但有兜底文档
@@ -240,14 +247,38 @@ const RightPanel = ({
 
           {/* 文档图片预览区域 */}
           <div style={{ marginBottom: 16 }}>
-            <Text strong style={{ fontSize: 12, marginBottom: 8, display: 'block' }}>
-              {isFallbackMode ? '关联文档:' : '来源文档:'}
-            </Text>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <Text strong style={{ fontSize: 12 }}>
+                {isFallbackMode ? '关联文档:' : '来源文档:'}
+              </Text>
+              {documentImageUrl && (traceIsPdf || traceIsImage) && (
+                <Space size={4}>
+                  <Tooltip title="放大查看">
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<FullscreenOutlined />}
+                      onClick={() => setFullscreenOpen(true)}
+                    >
+                      放大
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title="在新标签页打开">
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<ExportOutlined />}
+                      onClick={() => window.open(documentImageUrl, '_blank', 'noopener,noreferrer')}
+                    />
+                  </Tooltip>
+                </Space>
+              )}
+            </div>
             {imageLoading ? (
-              <div style={{ 
-                height: 120, 
-                display: 'flex', 
-                alignItems: 'center', 
+              <div style={{
+                height: 120,
+                display: 'flex',
+                alignItems: 'center',
                 justifyContent: 'center',
                 background: appThemeToken.colorFillTertiary,
                 borderRadius: 4
@@ -278,7 +309,7 @@ const RightPanel = ({
                 />
               )
             ) : (
-              <Empty 
+              <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
                 description="暂无来源文档"
               />
@@ -415,6 +446,47 @@ const RightPanel = ({
           </div>
         </div>
       )}
+
+      <Modal
+        title={
+          <Space>
+            <FileTextOutlined />
+            <span>{(Array.isArray(sourceLocation) ? sourceLocation.find(s => s?.file_name)?.file_name : sourceLocation?.file_name) || latestHistory?.source_document_name || sourceName || '原始文档'}</span>
+          </Space>
+        }
+        open={fullscreenOpen}
+        onCancel={() => setFullscreenOpen(false)}
+        footer={null}
+        width="85vw"
+        style={{ top: 24, maxWidth: 1400 }}
+        styles={{ body: { padding: 16, maxHeight: 'calc(95vh - 110px)', overflow: 'auto' } }}
+        destroyOnHidden
+      >
+        {documentImageUrl ? (
+          traceIsPdf ? (
+            <PdfPageWithHighlight
+              pdfUrl={documentImageUrl}
+              pageNumber={Array.isArray(sourceLocation) ? null : (sourceLocation?.page ?? null)}
+              locations={Array.isArray(sourceLocation) ? sourceLocation : (sourceLocation ? [sourceLocation] : [])}
+              maxWidth="100%"
+              loading={false}
+            />
+          ) : traceIsImage ? (
+            <HighlightedImage
+              imageUrl={documentImageUrl}
+              sourceLocation={sourceLocation}
+              loading={false}
+            />
+          ) : (
+            <Empty
+              description="该文档类型暂不支持内嵌预览"
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+            />
+          )
+        ) : (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无来源文档" />
+        )}
+      </Modal>
     </Card>
   )
 }

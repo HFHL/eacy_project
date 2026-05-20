@@ -275,6 +275,7 @@ const ImagePreviewArea = ({
           locations={currentPageBlocks}
           maxWidth="100%"
           loading={false}
+          showToolbar={false}
         />
       </div>
     );

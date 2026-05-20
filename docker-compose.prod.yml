@@ -1,21 +1,4 @@
 services:
-  postgres:
-    image: ${POSTGRES_IMAGE:-docker.m.daocloud.io/library/postgres:16-alpine}
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-eacy}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
-      POSTGRES_DB: ${POSTGRES_DB:-eacy}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    networks:
-      - eacy
-
   redis:
     image: ${REDIS_IMAGE:-docker.m.daocloud.io/library/redis:7-alpine}
     restart: unless-stopped
@@ -47,8 +30,6 @@ services:
       DEBUG: "false"
     command: ["alembic", "upgrade", "head"]
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -181,7 +162,6 @@ services:
       - eacy
 
 volumes:
-  postgres-data:
   redis-data:
 
 networks:

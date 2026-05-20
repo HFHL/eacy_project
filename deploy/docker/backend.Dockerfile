@@ -32,6 +32,9 @@ RUN poetry export --only main --without-hashes --format=requirements.txt --outpu
 
 COPY backend/ ./
 
+# Backend code resolves these schemas at runtime via parents[3] -> /app/.
+COPY meta_data.json ehr_schema.json /app/
+
 RUN useradd --create-home --shell /usr/sbin/nologin eacy \
     && chown -R eacy:eacy /app
 
