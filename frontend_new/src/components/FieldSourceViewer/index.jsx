@@ -32,26 +32,12 @@ import {
   InfoCircleOutlined,
   ExportOutlined
 } from '@ant-design/icons';
-import { getFreshDocumentPdfStreamUrl, getDocumentTempUrl } from '../../api/document';
+import { resolveTraceDocumentPreviewUrl } from '../../api/document';
 import { getCrfFieldEvidence } from '../../api/project';
 import { appThemeToken } from '../../styles/themeTokens';
-import PdfPageWithHighlight from '../PdfPageWithHighlight';
-import HighlightedImage from '../HighlightedImage';
+import TraceDocumentPreview from '../TraceDocumentPreview';
+import { hasRenderablePolygon } from '../../api/_evidence';
 import './styles.css';
-
-const isPdfFileLike = ({ fileType, fileName, fileUrl } = {}) => {
-  const type = String(fileType || '').toLowerCase();
-  const name = String(fileName || '').toLowerCase();
-  const url = String(fileUrl || '').toLowerCase();
-  const cleanUrl = url.split('?')[0].split('#')[0];
-  return (
-    type === 'pdf' ||
-    type === '.pdf' ||
-    type.includes('application/pdf') ||
-    name.endsWith('.pdf') ||
-    cleanUrl.endsWith('.pdf')
-  );
-};
 
 const { Text, Paragraph } = Typography;
 
@@ -148,6 +134,12 @@ const EvidenceDocumentViewer = ({ evidences, loading }) => {
   const primary = validEvidences[0] || null;
   const documentId = primary?.document_id || primary?.source_location?.document_id || null;
 
+  const sourceLocations = validEvidences
+    .map(item => item.source_location)
+    .filter(Boolean);
+
+  const pageNo = sourceLocations[0]?.page || sourceLocations[0]?.page_no || 1;
+
   useEffect(() => {
     if (!documentId) {
       setDocInfo(null);
@@ -159,21 +151,26 @@ const EvidenceDocumentViewer = ({ evidences, loading }) => {
       setDocLoading(true);
       setDocError(null);
       try {
-        const urlRes = await getDocumentTempUrl(documentId);
+        const preview = await resolveTraceDocumentPreviewUrl(documentId, { pageNo });
         if (cancelled) return;
-        if (urlRes.success && urlRes.data?.temp_url) {
-          const fileName = urlRes.data?.file_name || '';
-          const fileType = urlRes.data?.file_type || urlRes.data?.mime_type || '';
-          const isPdf = isPdfFileLike({ fileType, fileName, fileUrl: urlRes.data.temp_url });
-          const url = isPdf
-            ? await getFreshDocumentPdfStreamUrl(documentId)
-            : urlRes.data.temp_url;
-          if (!cancelled) {
-            setDocInfo({ url, fileName, fileType, isPdf });
-          }
-        } else {
+        if (!preview?.url) {
           setDocError('无法获取文档');
+          return;
         }
+        if (preview.mode === 'unsupported') {
+          setDocError('该文档类型暂不支持内嵌预览');
+          return;
+        }
+        setDocInfo({
+          url: preview.url,
+          fileName: preview.fileName,
+          fileType: preview.fileType,
+          mimeType: preview.mimeType,
+          isPdf: preview.mode === 'pdf',
+          previewSource: preview.previewSource,
+          ocrPageCount: preview.ocrPageCount,
+          pageNo: preview.pageNo || pageNo,
+        });
       } catch (err) {
         if (!cancelled) {
           console.error('加载文档失败:', err);
@@ -187,7 +184,7 @@ const EvidenceDocumentViewer = ({ evidences, loading }) => {
     return () => {
       cancelled = true;
     };
-  }, [documentId]);
+  }, [documentId, pageNo]);
 
   if (loading || docLoading) {
     return (
@@ -210,12 +207,7 @@ const EvidenceDocumentViewer = ({ evidences, loading }) => {
     return <Empty description={docError || '无法加载文档'} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
   }
 
-  const sourceLocations = validEvidences
-    .map(item => item.source_location)
-    .filter(Boolean);
-
-  // 头部信息：文件名 + 页码
-  const pageNo = sourceLocations[0]?.page || sourceLocations[0]?.page_no || 1;
+  const displayPageNo = docInfo?.pageNo || pageNo;
 
   return (
     <div
@@ -234,7 +226,7 @@ const EvidenceDocumentViewer = ({ evidences, loading }) => {
         <div style={{ color: appThemeToken.colorTextSecondary, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <FileTextOutlined />
           <span>{docInfo.fileName || '原始文档'}</span>
-          <Tag color="blue">第 {pageNo} 页</Tag>
+          <Tag color="blue">第 {displayPageNo} 页</Tag>
           {validEvidences.length > 1 && (
             <Tag color="purple">{validEvidences.length} 个溯源片段</Tag>
           )}
@@ -249,22 +241,16 @@ const EvidenceDocumentViewer = ({ evidences, loading }) => {
         </a>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
-        {docInfo.isPdf ? (
-          <PdfPageWithHighlight
-            pdfUrl={docInfo.url}
-            pageNumber={sourceLocations.length > 0 ? pageNo : null}
-            locations={sourceLocations}
-            maxWidth="100%"
-            loading={false}
-          />
-        ) : (
-          <HighlightedImage
-            imageUrl={docInfo.url}
-            sourceLocation={sourceLocations}
-            loading={false}
-          />
-        )}
+      <div style={{ flex: 1, minHeight: 0, minWidth: 0, width: '100%', display: 'flex', flexDirection: 'column' }}>
+        <TraceDocumentPreview
+          pdfUrl={docInfo.isPdf ? docInfo.url : null}
+          imageUrl={docInfo.url}
+          isPdf={docInfo.isPdf}
+          sourceLocation={sourceLocations.filter((loc) => hasRenderablePolygon(loc))}
+          pageNumber={sourceLocations.length > 0 ? displayPageNo : null}
+          loading={false}
+          previewStyle={{ width: '100%', minWidth: 0 }}
+        />
       </div>
     </div>
   );

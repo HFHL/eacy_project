@@ -3,6 +3,7 @@
  * 处理文档的搜索、筛选和排序逻辑
  */
 import { useState, useMemo } from 'react'
+import { documentMatchesKeyword } from '@/utils/documentSearch'
 
 const useDocumentFilter = (documents = []) => {
   const formatLocalYYYYMMDD = (d) => {
@@ -85,18 +86,7 @@ const useDocumentFilter = (documents = []) => {
 
     // 文本搜索
     if (filters.searchText) {
-      const searchLower = filters.searchText.toLowerCase()
-      result = result.filter(doc => {
-        const fileName = (doc.fileName || '').toLowerCase()
-        const orgName = (doc.metadata?.organizationName || '').toLowerCase()
-        const docType = (doc.metadata?.documentType || '').toLowerCase()
-        const docSubtype = (doc.metadata?.documentSubtype || '').toLowerCase()
-        
-        return fileName.includes(searchLower) ||
-               orgName.includes(searchLower) ||
-               docType.includes(searchLower) ||
-               docSubtype.includes(searchLower)
-      })
+      result = result.filter((doc) => documentMatchesKeyword(doc, filters.searchText))
     }
 
     // 文档类型筛选
@@ -115,7 +105,11 @@ const useDocumentFilter = (documents = []) => {
 
     // 处理状态筛选
     if (filters.status) {
-      result = result.filter(doc => doc.status === filters.status)
+      result = result.filter(doc => (
+        doc.task_status === filters.status ||
+        doc.taskStatus === filters.status ||
+        doc.status === filters.status
+      ))
     }
 
     // 日期范围筛选
@@ -238,13 +232,23 @@ const useDocumentFilter = (documents = []) => {
           groupTitle = groupKey === 'unknown' ? '未知机构' : groupKey
           break
         case 'status':
-          groupKey = doc.status || 'unknown'
+          groupKey = doc.task_status || doc.taskStatus || doc.status || 'unknown'
           const statusMap = {
-            'extracted': '已抽取',
-            'pending': '待处理', 
-            'processing': '处理中',
-            'error': '处理失败',
-            'unknown': '未知状态'
+            uploaded: '已上传',
+            parsing: '解析中',
+            parsed: '已解析',
+            parse_failed: '解析失败',
+            ai_matching: 'AI匹配中',
+            pending_confirm_new: '新建',
+            pending_confirm_review: '候选',
+            pending_confirm_uncertain: '信息不足',
+            auto_archived: '优选',
+            archived: '已归档',
+            extracted: '已抽取',
+            pending: '待处理',
+            processing: '处理中',
+            error: '处理失败',
+            unknown: '未知状态',
           }
           groupTitle = statusMap[groupKey] || groupKey
           break

@@ -1,4 +1,6 @@
-from datetime import datetime
+import json
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -8,7 +10,17 @@ from app.models import DataContext, Document, ExtractionJob, ExtractionRun, Reco
 from app.repositories import DocumentRepository, ExtractionJobRepository, ExtractionRunRepository, RecordInstanceRepository
 from app.services.document_text_extractor import extract_document_text
 from app.services.ehr_service import EhrService
-from app.services.evidence_location_resolver import resolve_evidence_locations
+from app.services.evidence_location_resolver import (
+    build_ocr_reading_units,
+    evidence_location_is_trusted,
+    flatten_reading_unit_corpus,
+    resolve_evidence_locations,
+)
+from app.services.extraction_plan_trace import (
+    build_folder_plan_json,
+    build_single_job_plan_json,
+    document_trace_terms,
+)
 from app.services.extraction_planner import ExtractionPlanner
 from app.services.llm_call_logger import ERROR_TIMEOUT, classify_exception, flush_llm_call_logs
 from app.services.llm_ehr_extractor import LlmEhrExtractor
@@ -17,14 +29,14 @@ from app.services.simple_ehr_extractor import SimpleEhrExtractor
 from app.services.structured_value_service import StructuredValueService
 from app.services.task_progress_service import TaskProgressService
 from core.config import config
-from core.db import Transactional, session
+from core.db import Transactional, release_db_connection, session
 
 try:  # pragma: no cover - optional dependency guard
     import httpx
-    from sqlalchemy.exc import DisconnectionError, OperationalError
+    from sqlalchemy.exc import DBAPIError, DisconnectionError, InterfaceError, OperationalError
 except Exception:  # pragma: no cover
     httpx = None
-    DisconnectionError = OperationalError = None
+    DBAPIError = DisconnectionError = InterfaceError = OperationalError = None
 
 
 class ExtractionServiceError(ValueError):
@@ -39,6 +51,12 @@ class ExtractionConflictError(ExtractionServiceError):
     pass
 
 
+@dataclass(frozen=True)
+class FolderUpdateOptions:
+    target_form_keys: list[str] | None = None
+    mode: str = "incremental"
+
+
 TRANSIENT_EXTRACTION_ERRORS = tuple(
     error_type
     for error_type in (
@@ -46,8 +64,17 @@ TRANSIENT_EXTRACTION_ERRORS = tuple(
         getattr(httpx, "TransportError", None),
         OperationalError,
         DisconnectionError,
+        InterfaceError,
+        DBAPIError,
     )
     if isinstance(error_type, type)
+)
+
+_TRANSIENT_DB_ORIG_EXCEPTIONS = (
+    "ConnectionDoesNotExistError",
+    "ConnectionResetError",
+    "BrokenPipeError",
+    "ConnectionRefusedError",
 )
 
 
@@ -104,6 +131,161 @@ class ExtractionService:
         self.llm_ehr_extractor = llm_ehr_extractor or LlmEhrExtractor()
         self.extraction_planner = extraction_planner or ExtractionPlanner()
         self.task_progress_service = task_progress_service or TaskProgressService()
+
+    def _normalize_folder_update_mode(self, mode: str | None) -> str:
+        normalized = str(mode or "incremental").strip().lower()
+        return normalized if normalized in {"incremental", "full"} else "incremental"
+
+    def _normalize_folder_update_options(
+        self,
+        *,
+        target_form_keys: list[str] | None = None,
+        mode: str | None = None,
+    ) -> FolderUpdateOptions:
+        keys = [str(key).strip() for key in (target_form_keys or []) if str(key).strip()]
+        return FolderUpdateOptions(
+            target_form_keys=keys or None,
+            mode=self._normalize_folder_update_mode(mode),
+        )
+
+    def _filter_plan_items_to_targets(
+        self,
+        plan_items: list[Any],
+        target_form_keys: list[str] | None,
+    ) -> list[Any]:
+        if not target_form_keys:
+            return plan_items
+        allowed = set(target_form_keys)
+        return [item for item in plan_items if item.target_form_key in allowed]
+
+    def _existing_target_forms_by_document(
+        self,
+        existing_jobs: list[ExtractionJob],
+        *,
+        job_types: set[str],
+        project_id: str | None = None,
+        project_patient_id: str | None = None,
+    ) -> dict[str, set[str]]:
+        forms_by_document: dict[str, set[str]] = {}
+        for job in existing_jobs:
+            if job.document_id is None or not job.target_form_key:
+                continue
+            if job.job_type not in job_types:
+                continue
+            if job.status not in {"pending", "running", "completed"}:
+                continue
+            if project_id is not None and job.project_id != project_id:
+                continue
+            if project_patient_id is not None and job.project_patient_id != project_patient_id:
+                continue
+            forms_by_document.setdefault(str(job.document_id), set()).add(job.target_form_key)
+        return forms_by_document
+
+    def _pending_plan_items_for_document(
+        self,
+        *,
+        document: Document,
+        schema_json: dict[str, Any],
+        existing_forms_by_document: dict[str, set[str]],
+        options: FolderUpdateOptions,
+        source_tag: str,
+    ) -> list[Any]:
+        plan_items = self.extraction_planner.plan(
+            document=document,
+            schema_json=schema_json,
+            input_json={"source": source_tag},
+            source_roles={"primary"},
+        )
+        plan_items = self._filter_plan_items_to_targets(plan_items, options.target_form_keys)
+        if options.mode == "full":
+            return plan_items
+        existing_forms = existing_forms_by_document.get(str(document.id), set())
+        return [item for item in plan_items if item.target_form_key not in existing_forms]
+
+    def _folder_batch_title(self, *, base_title: str, options: FolderUpdateOptions) -> str:
+        if not options.target_form_keys:
+            return base_title
+        count = len(options.target_form_keys)
+        return f"{base_title}（靶向 {count} 个表单）"
+
+    def _folder_batch_task_type(self, *, folder_task_type: str, options: FolderUpdateOptions) -> str:
+        if options.target_form_keys:
+            if folder_task_type == "patient_ehr_folder_extract":
+                return "patient_ehr_targeted_extract"
+            if folder_task_type == "project_crf_folder_extract":
+                return "project_crf_targeted_extract"
+        return folder_task_type
+
+    async def _attach_async_task_tracking_for_job(
+        self,
+        *,
+        job: ExtractionJob,
+        requested_by: str | None,
+    ) -> str:
+        if job.job_type == "project_crf":
+            title = "科研项目 CRF 抽取"
+            scope_type = "project_patient"
+            batch_kwargs = {
+                "project_id": job.project_id,
+                "project_patient_id": job.project_patient_id,
+                "patient_id": job.patient_id,
+            }
+        else:
+            title = "病历抽取"
+            scope_type = "patient"
+            batch_kwargs = {"patient_id": job.patient_id, "document_id": job.document_id}
+        if job.target_form_key:
+            title = f"{title} · {job.target_form_key}"
+        batch = await self.task_progress_service.create_batch(
+            task_type=self._task_type_for_job(job),
+            title=title,
+            scope_type=scope_type,
+            requested_by=requested_by,
+            **{key: value for key, value in batch_kwargs.items() if value is not None},
+        )
+        await self.task_progress_service.create_item_for_job(
+            batch_id=batch.id,
+            task_type=self._task_type_for_job(job),
+            job=job,
+        )
+        document = await self.document_repository.get_visible_by_id(job.document_id) if job.document_id else None
+        await self.task_progress_service.persist_plan_snapshot(
+            batch.id,
+            build_single_job_plan_json(job=job, document=document),
+        )
+        return batch.id
+
+    async def _persist_folder_batch_plan(
+        self,
+        *,
+        batch_id: str,
+        options: FolderUpdateOptions,
+        schema_version_id: str | None,
+        schema_json: dict[str, Any],
+        source_tag: str,
+        documents: list[Document],
+        eligible_documents: list[Document],
+        pending_documents: list[Document],
+        already_extracted_document_ids: set[str],
+        jobs: list[ExtractionJob],
+        skipped: list[dict[str, str]],
+        extra_stats: dict[str, Any] | None = None,
+    ) -> None:
+        plan_json = build_folder_plan_json(
+            options={"mode": options.mode, "target_form_keys": options.target_form_keys or []},
+            schema_version_id=schema_version_id,
+            source_tag=source_tag,
+            documents_total=len(documents),
+            eligible_documents=eligible_documents,
+            pending_documents=pending_documents,
+            already_extracted_document_ids=already_extracted_document_ids,
+            jobs=jobs,
+            skipped=skipped,
+            schema_json=schema_json,
+            planner=self.extraction_planner,
+            extra_stats=extra_stats,
+        )
+        await self.task_progress_service.persist_plan_snapshot(batch_id, plan_json)
 
     async def create_job(self, *, job_type: str, **params: Any) -> ExtractionJob:
         return await self.job_repository.create({"job_type": job_type, "status": "pending", **params})
@@ -172,6 +354,8 @@ class ExtractionService:
 
     @Transactional()
     async def create_and_process_job(self, *, job_type: str, requested_by: str | None = None, **params: Any) -> ExtractionJob:
+        if job_type == "patient_ehr" and params.get("target_form_key"):
+            job_type = "targeted_schema"
         job = await self.create_job(
             job_type=job_type,
             requested_by=requested_by,
@@ -179,6 +363,14 @@ class ExtractionService:
             **params,
         )
         await self._prepare_job(job=job, created_by=requested_by)
+        input_json = job.input_json if isinstance(job.input_json, dict) else {}
+        tracks_async = input_json.get("enqueue_async") is True or input_json.get("wait_for_document_ready") is True
+        if tracks_async:
+            batch_id = await self._attach_async_task_tracking_for_job(job=job, requested_by=requested_by)
+            if isinstance(job.input_json, dict):
+                job.input_json = {**job.input_json, "async_task_batch_id": batch_id}
+            else:
+                job.input_json = {"async_task_batch_id": batch_id}
         if await self._should_wait_for_document_ready(job):
             await self.job_repository.save(job)
             # 同上：避免路由层访问 updated_at 时触发懒加载导致 MissingGreenlet。
@@ -252,10 +444,21 @@ class ExtractionService:
             jobs.append(await self.create_and_process_job(requested_by=requested_by, **job_params))
         return jobs
 
-    async def update_patient_ehr_folder(self, *, patient_id: str, requested_by: str | None = None) -> dict[str, Any]:
+    async def update_patient_ehr_folder(
+        self,
+        *,
+        patient_id: str,
+        requested_by: str | None = None,
+        target_form_keys: list[str] | None = None,
+        mode: str | None = None,
+    ) -> dict[str, Any]:
+        options = self._normalize_folder_update_options(target_form_keys=target_form_keys, mode=mode)
         batch = await self.task_progress_service.create_batch(
-            task_type="patient_ehr_folder_extract",
-            title="更新电子病历夹",
+            task_type=self._folder_batch_task_type(
+                folder_task_type="patient_ehr_folder_extract",
+                options=options,
+            ),
+            title=self._folder_batch_title(base_title="更新电子病历夹", options=options),
             scope_type="patient",
             patient_id=patient_id,
             requested_by=requested_by,
@@ -264,7 +467,12 @@ class ExtractionService:
         context = ehr.get("context")
         schema_json = ehr.get("schema")
         if context is None or not isinstance(schema_json, dict):
-            raise ExtractionNotFoundError("EHR schema context not found")
+            published_schema = await self.ehr_service.schema_service.get_latest_published("ehr")
+            if published_schema is None:
+                raise ExtractionNotFoundError(
+                    "未找到已发布的电子病历 Schema，请先在 Schema 模板管理中导入并发布 EHR 模板"
+                )
+            raise ExtractionNotFoundError("无法初始化患者电子病历上下文，请刷新页面后重试")
 
         documents = await self.document_repository.list_by_patient(patient_id, limit=1000)
         eligible_documents = [document for document in documents if self._document_ready_for_extraction(document)]
@@ -272,21 +480,33 @@ class ExtractionService:
             patient_id=patient_id,
             document_ids=[document.id for document in eligible_documents],
         )
-        extracted_document_ids = {
-            job.document_id
-            for job in existing_jobs
-            if job.job_type in {"patient_ehr", "targeted_schema"} and job.status in {"pending", "running", "completed"}
-        }
-        pending_documents = [document for document in eligible_documents if document.id not in extracted_document_ids]
+        existing_forms_by_document = self._existing_target_forms_by_document(
+            existing_jobs,
+            job_types={"patient_ehr", "targeted_schema"},
+        )
+        if options.target_form_keys or options.mode == "full":
+            pending_documents = eligible_documents
+            already_extracted_documents = 0
+            already_extracted_ids: set[str] = set()
+        else:
+            extracted_document_ids = {
+                job.document_id
+                for job in existing_jobs
+                if job.job_type in {"patient_ehr", "targeted_schema"} and job.status in {"pending", "running", "completed"}
+            }
+            pending_documents = [document for document in eligible_documents if document.id not in extracted_document_ids]
+            already_extracted_documents = len(extracted_document_ids)
+            already_extracted_ids = {str(document_id) for document_id in extracted_document_ids if document_id}
 
         jobs: list[ExtractionJob] = []
         skipped: list[dict[str, str]] = []
         for document in pending_documents:
-            plan_items = self.extraction_planner.plan(
+            plan_items = self._pending_plan_items_for_document(
                 document=document,
                 schema_json=schema_json,
-                input_json={"source": "patient_ehr_folder_update"},
-                source_roles={"primary"},
+                existing_forms_by_document=existing_forms_by_document,
+                options=options,
+                source_tag="patient_ehr_folder_update",
             )
             if not plan_items:
                 skipped.append({"document_id": document.id, "reason": "no primary source matched"})
@@ -311,6 +531,20 @@ class ExtractionService:
                     )
                 )
 
+        await self._persist_folder_batch_plan(
+            batch_id=batch.id,
+            options=options,
+            schema_version_id=context.schema_version_id,
+            schema_json=schema_json,
+            source_tag="patient_ehr_folder_update",
+            documents=documents,
+            eligible_documents=eligible_documents,
+            pending_documents=pending_documents,
+            already_extracted_document_ids=already_extracted_ids,
+            jobs=jobs,
+            skipped=skipped,
+        )
+
         if jobs:
             for job in jobs:
                 await self.task_progress_service.create_item_for_job(
@@ -330,7 +564,7 @@ class ExtractionService:
             "patient_id": patient_id,
             "documents_total": len(documents),
             "eligible_documents": len(eligible_documents),
-            "already_extracted_documents": len(extracted_document_ids),
+            "already_extracted_documents": already_extracted_documents,
             "planned_documents": len(pending_documents),
             "created_jobs": len(jobs),
             "jobs": jobs,
@@ -338,6 +572,8 @@ class ExtractionService:
             "completed_jobs": 0,
             "failed_jobs": 0,
             "skipped": skipped,
+            "target_form_keys": options.target_form_keys or [],
+            "mode": options.mode,
         }
 
     async def update_project_crf_folder(
@@ -346,10 +582,16 @@ class ExtractionService:
         project_id: str,
         project_patient_id: str,
         requested_by: str | None = None,
+        target_form_keys: list[str] | None = None,
+        mode: str | None = None,
     ) -> dict[str, Any]:
+        options = self._normalize_folder_update_options(target_form_keys=target_form_keys, mode=mode)
         batch = await self.task_progress_service.create_batch(
-            task_type="project_crf_folder_extract",
-            title="更新项目 CRF",
+            task_type=self._folder_batch_task_type(
+                folder_task_type="project_crf_folder_extract",
+                options=options,
+            ),
+            title=self._folder_batch_title(base_title="更新项目 CRF", options=options),
             scope_type="project_patient",
             project_id=project_id,
             project_patient_id=project_patient_id,
@@ -380,24 +622,38 @@ class ExtractionService:
             patient_id=patient_id,
             document_ids=[document.id for document in eligible_documents],
         )
-        extracted_document_ids = {
-            job.document_id
-            for job in existing_jobs
-            if job.job_type == "project_crf"
-            and job.project_id == project_id
-            and job.project_patient_id == project_patient_id
-            and job.status in {"pending", "running", "completed"}
-        }
-        pending_documents = [document for document in eligible_documents if document.id not in extracted_document_ids]
+        existing_forms_by_document = self._existing_target_forms_by_document(
+            existing_jobs,
+            job_types={"project_crf"},
+            project_id=project_id,
+            project_patient_id=project_patient_id,
+        )
+        if options.target_form_keys or options.mode == "full":
+            pending_documents = eligible_documents
+            extracted_document_ids: set[str] = set()
+            already_extracted_ids: set[str] = set()
+        else:
+            extracted_document_ids = {
+                str(job.document_id)
+                for job in existing_jobs
+                if job.job_type == "project_crf"
+                and job.project_id == project_id
+                and job.project_patient_id == project_patient_id
+                and job.status in {"pending", "running", "completed"}
+                and job.document_id is not None
+            }
+            pending_documents = [document for document in eligible_documents if str(document.id) not in extracted_document_ids]
+            already_extracted_ids = set(extracted_document_ids)
 
         jobs: list[ExtractionJob] = []
         skipped: list[dict[str, str]] = []
         for document in pending_documents:
-            plan_items = self.extraction_planner.plan(
+            plan_items = self._pending_plan_items_for_document(
                 document=document,
                 schema_json=schema_json,
-                input_json={"source": "project_crf_folder_update"},
-                source_roles={"primary"},
+                existing_forms_by_document=existing_forms_by_document,
+                options=options,
+                source_tag="project_crf_folder_update",
             )
             if not plan_items:
                 skipped.append({"document_id": document.id, "reason": "no primary source matched"})
@@ -416,7 +672,7 @@ class ExtractionService:
                         schema_version_id=context.schema_version_id,
                         target_form_key=item.target_form_key,
                         input_json={
-                            "source": "project_crf_folder_update",
+                            "source": "project_crf_targeted_extract" if options.target_form_keys else "project_crf_folder_update",
                             "form_keys": [item.target_form_key],
                             "planned_reason": item.reason,
                             "match_role": item.match_role,
@@ -424,6 +680,24 @@ class ExtractionService:
                         },
                     )
                 )
+
+        await self._persist_folder_batch_plan(
+            batch_id=batch.id,
+            options=options,
+            schema_version_id=context.schema_version_id,
+            schema_json=schema_json,
+            source_tag="project_crf_folder_update",
+            documents=documents,
+            eligible_documents=eligible_documents,
+            pending_documents=pending_documents,
+            already_extracted_document_ids=already_extracted_ids,
+            jobs=jobs,
+            skipped=skipped,
+            extra_stats={
+                "project_id": project_id,
+                "project_patient_id": project_patient_id,
+            },
+        )
 
         if jobs:
             if batch.patient_id is None:
@@ -468,6 +742,8 @@ class ExtractionService:
         project_id: str,
         project_patient_ids: list[str] | None = None,
         requested_by: str | None = None,
+        target_form_keys: list[str] | None = None,
+        mode: str | None = None,
     ) -> dict[str, Any]:
         from app.services.research_project_service import (
             ResearchProjectConflictError,
@@ -490,9 +766,13 @@ class ExtractionService:
                 raise ExtractionConflictError(str(error)) from error
             target_ids = [pp.id for pp in project_patients]
 
+        options = self._normalize_folder_update_options(target_form_keys=target_form_keys, mode=mode)
         batch = await self.task_progress_service.create_batch(
-            task_type="project_crf_folder_extract",
-            title="批量更新项目 CRF",
+            task_type=self._folder_batch_task_type(
+                folder_task_type="project_crf_folder_extract",
+                options=options,
+            ),
+            title=self._folder_batch_title(base_title="批量更新项目 CRF", options=options),
             scope_type="project",
             project_id=project_id,
             requested_by=requested_by,
@@ -506,6 +786,8 @@ class ExtractionService:
         agg_eligible_documents = 0
         agg_already_extracted_documents = 0
         agg_planned_documents = 0
+        combined_plan_documents: list[dict[str, Any]] = []
+        combined_plan_skipped: list[dict[str, str]] = []
 
         for project_patient_id in target_ids:
             try:
@@ -538,41 +820,55 @@ class ExtractionService:
                 patient_id=patient_id,
                 document_ids=[d.id for d in eligible_documents],
             )
-            extracted_document_ids = {
-                job.document_id
-                for job in existing_jobs
-                if job.job_type == "project_crf"
-                and job.project_id == project_id
-                and job.project_patient_id == project_patient_id
-                and job.status in {"pending", "running", "completed"}
-            }
-            pending_documents = [
-                d for d in eligible_documents if d.id not in extracted_document_ids
-            ]
+            existing_forms_by_document = self._existing_target_forms_by_document(
+                existing_jobs,
+                job_types={"project_crf"},
+                project_id=project_id,
+                project_patient_id=project_patient_id,
+            )
+            if options.target_form_keys or options.mode == "full":
+                pending_documents = eligible_documents
+                extracted_document_ids: set[str] = set()
+                patient_already_extracted_ids: set[str] = set()
+            else:
+                extracted_document_ids = {
+                    str(job.document_id)
+                    for job in existing_jobs
+                    if job.job_type == "project_crf"
+                    and job.project_id == project_id
+                    and job.project_patient_id == project_patient_id
+                    and job.status in {"pending", "running", "completed"}
+                    and job.document_id is not None
+                }
+                pending_documents = [d for d in eligible_documents if str(d.id) not in extracted_document_ids]
+                patient_already_extracted_ids = set(extracted_document_ids)
 
             agg_documents_total += len(documents)
             agg_eligible_documents += len(eligible_documents)
             agg_already_extracted_documents += len(extracted_document_ids)
             agg_planned_documents += len(pending_documents)
 
+            patient_jobs: list[ExtractionJob] = []
+            patient_skipped: list[dict[str, str]] = []
             for document in pending_documents:
-                plan_items = self.extraction_planner.plan(
+                plan_items = self._pending_plan_items_for_document(
                     document=document,
                     schema_json=schema_json,
-                    input_json={"source": "project_crf_folder_update"},
-                    source_roles={"primary"},
+                    existing_forms_by_document=existing_forms_by_document,
+                    options=options,
+                    source_tag="project_crf_folder_update",
                 )
                 if not plan_items:
-                    skipped_documents.append(
-                        {
-                            "project_patient_id": project_patient_id,
-                            "document_id": document.id,
-                            "reason": "no primary source matched",
-                        }
-                    )
+                    skip_entry = {
+                        "project_patient_id": project_patient_id,
+                        "document_id": document.id,
+                        "reason": "no primary source matched",
+                    }
+                    skipped_documents.append(skip_entry)
+                    patient_skipped.append({"document_id": document.id, "reason": skip_entry["reason"]})
                     continue
                 for item in plan_items:
-                    all_jobs.append(
+                    patient_jobs.append(
                         await self._create_pending_planned_job(
                             job_type="project_crf",
                             requested_by=requested_by,
@@ -585,7 +881,7 @@ class ExtractionService:
                             schema_version_id=context.schema_version_id,
                             target_form_key=item.target_form_key,
                             input_json={
-                                "source": "project_crf_folder_update",
+                                "source": "project_crf_targeted_extract" if options.target_form_keys else "project_crf_folder_update",
                                 "form_keys": [item.target_form_key],
                                 "planned_reason": item.reason,
                                 "match_role": item.match_role,
@@ -593,7 +889,52 @@ class ExtractionService:
                             },
                         )
                     )
+            all_jobs.extend(patient_jobs)
+            patient_plan = build_folder_plan_json(
+                options={"mode": options.mode, "target_form_keys": options.target_form_keys or []},
+                schema_version_id=context.schema_version_id,
+                source_tag="project_crf_folder_update",
+                documents_total=len(documents),
+                eligible_documents=eligible_documents,
+                pending_documents=pending_documents,
+                already_extracted_document_ids=patient_already_extracted_ids,
+                jobs=patient_jobs,
+                skipped=patient_skipped,
+                schema_json=schema_json,
+                planner=self.extraction_planner,
+                extra_stats={
+                    "project_id": project_id,
+                    "project_patient_id": project_patient_id,
+                },
+            )
+            for doc_entry in patient_plan.get("documents") or []:
+                doc_entry["project_patient_id"] = project_patient_id
+                combined_plan_documents.append(doc_entry)
+            combined_plan_skipped.extend(patient_skipped)
             processed_patients += 1
+
+        await self.task_progress_service.persist_plan_snapshot(
+            batch.id,
+            {
+                "options": {"mode": options.mode, "target_form_keys": options.target_form_keys or []},
+                "schema_version_id": None,
+                "source_tag": "project_crf_folder_update",
+                "stats": {
+                    "documents_total": agg_documents_total,
+                    "eligible_documents": agg_eligible_documents,
+                    "planned_jobs": len(all_jobs),
+                    "processed_patients": processed_patients,
+                    "skipped_patients": len(skipped_patients),
+                    "skipped_documents": len(skipped_documents),
+                    "already_extracted_documents": agg_already_extracted_documents,
+                    "pending_documents": agg_planned_documents,
+                },
+                "documents": combined_plan_documents,
+                "skipped": combined_plan_skipped,
+                "skipped_patients": skipped_patients,
+                "skipped_documents": skipped_documents,
+            },
+        )
 
         if all_jobs:
             for job in all_jobs:
@@ -687,6 +1028,53 @@ class ExtractionService:
         await self.job_repository.save(job)
         return job
 
+    STALE_PENDING_DEFAULT_HOURS = 24
+    STALE_PENDING_ERROR_MESSAGE = (
+        "Stale pending extraction job: no worker progress within the expected window. "
+        "Use retry to run again."
+    )
+
+    @Transactional()
+    async def abandon_stale_pending_jobs(
+        self,
+        *,
+        older_than_hours: int = STALE_PENDING_DEFAULT_HOURS,
+        limit: int = 500,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Mark long-idle pending jobs as failed so they can be retried via ``retry_job``."""
+        if older_than_hours < 0:
+            raise ExtractionServiceError("older_than_hours must be non-negative")
+        cutoff = datetime.utcnow() - timedelta(hours=older_than_hours)
+        jobs = await self.job_repository.list_stale_pending(older_than=cutoff, limit=limit)
+        if dry_run:
+            return {
+                "dry_run": True,
+                "older_than_hours": older_than_hours,
+                "cutoff": cutoff.isoformat(),
+                "count": len(jobs),
+                "job_ids": [job.id for job in jobs],
+            }
+
+        abandoned: list[str] = []
+        finished_at = datetime.utcnow()
+        for job in jobs:
+            job.status = "failed"
+            job.error_type = "stale"
+            job.error_message = self.STALE_PENDING_ERROR_MESSAGE
+            job.finished_at = finished_at
+            await self.job_repository.save(job)
+            await self.task_progress_service.mark_job_failed(job, error_message=job.error_message)
+            abandoned.append(job.id)
+
+        return {
+            "dry_run": False,
+            "older_than_hours": older_than_hours,
+            "cutoff": cutoff.isoformat(),
+            "count": len(abandoned),
+            "job_ids": abandoned,
+        }
+
     @Transactional()
     async def delete_job(self, job_id: str) -> None:
         job = await self.get_job(job_id)
@@ -703,7 +1091,7 @@ class ExtractionService:
         if job.context_id is not None and job.schema_version_id is not None:
             return
 
-        if job.job_type == "patient_ehr" and job.patient_id is not None:
+        if job.job_type in {"patient_ehr", "targeted_schema"} and job.patient_id is not None:
             ehr = await self.ehr_service.get_patient_ehr(job.patient_id, created_by=created_by)
             context = ehr.get("context")
             if context is not None:
@@ -728,6 +1116,93 @@ class ExtractionService:
                 job.schema_version_id = context.schema_version_id
                 if job.patient_id is None:
                     job.patient_id = context.patient_id
+
+    async def _build_run_input_snapshot(
+        self,
+        *,
+        job: ExtractionJob,
+        run_no: int,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        input_json = job.input_json if isinstance(job.input_json, dict) else {}
+        extractor = self._model_name_for_job(job)
+        target_form_key = getattr(job, "target_form_key", None)
+        snapshot: dict[str, Any] = {
+            "schema_version_id": getattr(job, "schema_version_id", None),
+            "extractor": extractor,
+            "target_form_key": target_form_key,
+            "plan": {
+                "planned_reason": input_json.get("planned_reason"),
+                "match_role": input_json.get("match_role"),
+                "form_keys": self._as_list(input_json.get("form_keys")),
+                "source": input_json.get("source"),
+            },
+            "field_filter": {
+                "target_form_keys": list(
+                    {
+                        *(self._as_list(input_json.get("form_keys"))),
+                        *([target_form_key] if target_form_key else []),
+                    }
+                ),
+                "target_field_paths": self._as_list(input_json.get("field_paths")),
+                "target_field_keys": self._as_list(input_json.get("field_keys")),
+                "target_group_keys": self._as_list(input_json.get("group_keys")),
+            },
+            "worker_meta": {"run_no": run_no, **(extra or {})},
+        }
+        if not self._uses_schema_extractor(job):
+            return snapshot
+
+        try:
+            document, _context = await self._resolve_schema_extraction_scope(job)
+        except (ExtractionNotFoundError, ExtractionConflictError):
+            return snapshot
+
+        schema_version = await self.ehr_service.schema_service.get_version(job.schema_version_id)
+        if schema_version is None:
+            return snapshot
+
+        all_fields = plan_schema_fields(schema_version.schema_json)
+        filtered_fields = self._filter_schema_fields(all_fields, job)
+        field_specs = [self.llm_ehr_extractor._field_spec(field) for field in filtered_fields]
+        text = extract_document_text(document)
+        reading_units = build_ocr_reading_units(document)
+        reading_corpus = flatten_reading_unit_corpus(reading_units)
+        if reading_corpus:
+            text = reading_corpus
+        text_source = "ocr_reading_units" if reading_units else ("ocr_text" if getattr(document, "ocr_text", None) else "parsed_content")
+        snapshot["document"] = {
+            "id": document.id,
+            "doc_type": document.doc_type or document.document_type,
+            "doc_subtype": document.doc_subtype or document.document_sub_type,
+            "doc_title": document.doc_title,
+            "metadata_json": document.metadata_json if isinstance(document.metadata_json, dict) else None,
+            "doc_terms": document_trace_terms(document),
+            "text_length": len(text or ""),
+            "text_source": text_source,
+            "reading_unit_count": len(reading_units),
+            "ocr_status": document.ocr_status,
+        }
+        snapshot["field_filter"]["matched_count"] = len(filtered_fields)
+        snapshot["field_filter"]["total_schema_fields"] = len(all_fields)
+        snapshot["field_specs"] = field_specs
+        if text or reading_units:
+            user_preview = self.llm_ehr_extractor._build_user_prompt(
+                state={
+                    "text": text,
+                    "field_specs": field_specs,
+                    "fields": filtered_fields,
+                    "reading_units": reading_units,
+                    "ocr_evidence_units": reading_units,
+                    "document_id": document.id,
+                    "document_meta": self.llm_ehr_extractor._document_meta(document),
+                }
+            )
+            snapshot["prompt_preview"] = {
+                "system_chars": len(self.llm_ehr_extractor._build_system_prompt(field_specs) or ""),
+                "user_chars": len(user_preview or ""),
+            }
+        return snapshot
 
     async def _process_job(
         self,
@@ -759,6 +1234,7 @@ class ExtractionService:
             stage_label="Worker 已启动",
             message="后台任务已开始执行",
             current_step=1,
+            payload_json={"run_no": next_run_no, "model_name": model_name},
             commit=True,
         )
 
@@ -776,8 +1252,8 @@ class ExtractionService:
             "job_id": job.id,
             "run_id": run.id,
             "document_id": job.document_id,
-            "project_id": job.project_id,
-            "requested_by": job.requested_by,
+            "project_id": getattr(job, "project_id", None),
+            "requested_by": getattr(job, "requested_by", None),
             "prompt_version": prompt_version,
         }
         job.progress = 20
@@ -790,11 +1266,17 @@ class ExtractionService:
             message="正在读取患者、项目和模板上下文",
             extraction_run_id=run.id,
             current_step=2,
+            payload_json={
+                "run_id": run.id,
+                "context_id": job.context_id,
+                "schema_version_id": job.schema_version_id,
+            },
             commit=True,
         )
         try:
             job.progress = 30
             await self.job_repository.save(job)
+            document_for_progress = await self.document_repository.get_visible_by_id(job.document_id) if job.document_id else None
             await self.task_progress_service.update_job_progress(
                 job,
                 progress=30,
@@ -802,8 +1284,22 @@ class ExtractionService:
                 stage_label="读取文档内容",
                 message="正在读取文档和抽取输入",
                 current_step=3,
+                payload_json={
+                    "document_id": job.document_id,
+                    "ocr_status": getattr(document_for_progress, "ocr_status", None) if document_for_progress else None,
+                },
                 commit=True,
             )
+            snapshot = await self._build_run_input_snapshot(
+                job=job,
+                run_no=next_run_no,
+                extra=input_snapshot_extra,
+            )
+            if input_snapshot_extra:
+                snapshot.update(input_snapshot_extra)
+            run.input_snapshot_json = snapshot
+            await self.run_repository.save(run)
+            field_count = len((run.input_snapshot_json or {}).get("field_specs") or [])
             job.progress = 45
             await self.job_repository.save(job)
             await self.task_progress_service.update_job_progress(
@@ -813,6 +1309,12 @@ class ExtractionService:
                 stage_label="AI 抽取中",
                 message="正在执行结构化抽取",
                 current_step=4,
+                payload_json={
+                    "run_id": run.id,
+                    "model_name": model_name,
+                    "extractor": model_name,
+                    "field_count": field_count,
+                },
                 commit=True,
             )
             output = await self._extract(
@@ -829,6 +1331,10 @@ class ExtractionService:
                 stage_label="校验抽取结果",
                 message="正在校验和规范化抽取结果",
                 current_step=5,
+                payload_json={
+                    "validation_status": output.get("validation_status") if isinstance(output, dict) else None,
+                    "attempt_count": output.get("attempt_count") if isinstance(output, dict) else None,
+                },
                 commit=True,
             )
             # `llm_call_logs.raw_response` is the source of truth for LLM I/O.
@@ -849,9 +1355,17 @@ class ExtractionService:
                 stage_label="写入候选值",
                 message="正在写入抽取结果和证据",
                 current_step=6,
+                payload_json={
+                    "field_candidate_count": len(parsed.get("fields") or []) if isinstance(parsed, dict) else 0,
+                },
                 commit=True,
             )
             await self._write_extracted_values(job=job, run=run, parsed_output=output)
+            await self.task_progress_service.update_job_progress(
+                job,
+                payload_json={"persisted": True},
+                commit=False,
+            )
 
             finished_at = datetime.utcnow()
             run.status = "completed"
@@ -869,9 +1383,10 @@ class ExtractionService:
             await session.rollback()
             # Re-flush LLM call logs in a fresh transaction; rollback above wiped them.
             await flush_llm_call_logs(llm_call_buffer, commit=True)
-            await self._mark_failed(job=job, run=run, error=error)
             if not raise_on_failure and self._is_transient_error(error):
+                await release_db_connection()
                 raise
+            await self._mark_failed(job=job, run=run, error=error)
             if raise_on_failure:
                 raise
             return job
@@ -937,7 +1452,14 @@ class ExtractionService:
             raise ExtractionConflictError("Running extraction job cannot be retried")
 
     def _is_transient_error(self, error: Exception) -> bool:
-        return bool(TRANSIENT_EXTRACTION_ERRORS and isinstance(error, TRANSIENT_EXTRACTION_ERRORS))
+        if TRANSIENT_EXTRACTION_ERRORS and isinstance(error, TRANSIENT_EXTRACTION_ERRORS):
+            return True
+        current: BaseException | None = error
+        while current is not None:
+            if current.__class__.__name__ in _TRANSIENT_DB_ORIG_EXCEPTIONS:
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     def _document_ready_for_extraction(self, document: Document) -> bool:
         if document.status == "deleted" or document.patient_id is None:
@@ -974,6 +1496,7 @@ class ExtractionService:
             if not fields:
                 raise ExtractionConflictError("No schema fields matched extraction target")
             if self._use_llm_ehr_extractor():
+                await release_db_connection()
                 return self.llm_ehr_extractor.extract(
                     text=extract_document_text(document),
                     fields=fields,
@@ -982,8 +1505,53 @@ class ExtractionService:
                     llm_call_buffer=llm_call_buffer,
                     llm_call_context=llm_call_context,
                 )
-            return self.ehr_extractor.extract(text=extract_document_text(document), fields=fields, document_id=document.id)
-        return self.extractor.extract(job=job)
+            text = extract_document_text(document)
+            output = self.ehr_extractor.extract(text=text, fields=fields, document_id=document.id)
+            if llm_call_buffer is not None:
+                context = dict(llm_call_context or {})
+                llm_call_buffer.append(
+                    {
+                        "call_id": context.get("call_id"),
+                        "job_id": context.get("job_id") or job.id,
+                        "run_id": context.get("run_id"),
+                        "document_id": document.id,
+                        "purpose": "rule_extract",
+                        "node_name": "simple_ehr_extractor",
+                        "model_name": "SimpleEhrExtractor",
+                        "prompt_version": context.get("prompt_version"),
+                        "user_prompt": json.dumps(
+                            {
+                                "field_count": len(fields),
+                                "field_paths": [field.field_path for field in fields[:50]],
+                                "text_length": len(text or ""),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "parsed_response": output,
+                        "status": "success",
+                        "started_at": datetime.utcnow(),
+                        "finished_at": datetime.utcnow(),
+                    }
+                )
+            return output
+        output = self.extractor.extract(job=job)
+        if llm_call_buffer is not None:
+            context = dict(llm_call_context or {})
+            llm_call_buffer.append(
+                {
+                    "job_id": context.get("job_id") or job.id,
+                    "run_id": context.get("run_id"),
+                    "document_id": job.document_id,
+                    "purpose": "mock_extract",
+                    "node_name": "mock_extractor",
+                    "model_name": "MockExtractor",
+                    "parsed_response": output,
+                    "status": "success",
+                    "started_at": datetime.utcnow(),
+                    "finished_at": datetime.utcnow(),
+                }
+            )
+        return output
 
     def _model_name_for_job(self, job: ExtractionJob) -> str:
         if self._uses_schema_extractor(job):
@@ -1006,9 +1574,9 @@ class ExtractionService:
             self._validate_job_context(job=job, context=context, document=document)
             if job.schema_version_id is None:
                 job.schema_version_id = context.schema_version_id
-        elif job.job_type == "patient_ehr":
+        elif job.job_type in {"patient_ehr", "targeted_schema"}:
             if job.patient_id is None:
-                raise ExtractionConflictError("patient_ehr extraction requires patient_id or context_id")
+                raise ExtractionConflictError(f"{job.job_type} extraction requires patient_id or context_id")
         else:
             raise ExtractionConflictError(f"{job.job_type} extraction requires context_id")
 
@@ -1021,8 +1589,8 @@ class ExtractionService:
     def _validate_job_context(self, *, job: ExtractionJob, context: DataContext, document: Document) -> None:
         if job.job_type == "project_crf" and context.context_type != "project_crf":
             raise ExtractionConflictError("project_crf extraction requires project CRF context")
-        if job.job_type == "patient_ehr" and context.context_type != "patient_ehr":
-            raise ExtractionConflictError("patient_ehr extraction requires patient EHR context")
+        if job.job_type in {"patient_ehr", "targeted_schema"} and context.context_type != "patient_ehr":
+            raise ExtractionConflictError(f"{job.job_type} extraction requires patient EHR context")
         if getattr(job, "project_id", None) is not None and context.project_id != job.project_id:
             raise ExtractionConflictError("Data context does not belong to project")
         if getattr(job, "project_patient_id", None) is not None and context.project_patient_id != job.project_patient_id:
@@ -1146,6 +1714,7 @@ class ExtractionService:
                 extraction_run_id=run.id,
                 source_document_id=job.document_id,
                 evidences=entry["evidences"],
+                auto_select_if_empty=self._should_auto_select_field(entry["evidences"]),
             )
 
     def _build_field_evidences(
@@ -1172,7 +1741,7 @@ class ExtractionService:
                 evidences.append(
                     {
                         "document_id": document_id,
-                        "evidence_type": field.get("evidence_type") or "document_text",
+                        "evidence_type": self._resolve_evidence_type(evidence),
                         "quote_text": self._resolved_evidence_quote(evidence=evidence, field=field),
                         "evidence_score": field.get("confidence"),
                         "page_no": evidence.get("page_no"),
@@ -1192,13 +1761,37 @@ class ExtractionService:
         return [
             {
                 "document_id": document_id,
-                "evidence_type": field.get("evidence_type") or "document_text",
+                "evidence_type": self._resolve_evidence_type(resolved_evidence),
                 "quote_text": self._resolved_evidence_quote(evidence=resolved_evidence, field=field),
                 "evidence_score": field.get("confidence"),
                 "page_no": resolved_evidence.get("page_no"),
                 "bbox_json": resolved_evidence.get("bbox_json"),
             }
         ]
+
+    def _resolve_evidence_type(self, evidence: dict[str, Any]) -> str:
+        bbox_json = evidence.get("bbox_json")
+        location = bbox_json if isinstance(bbox_json, dict) else {}
+        if location.get("fallback_strategy") == "sibling_page_hint":
+            return "document_page_hint"
+        if evidence_location_is_trusted(location):
+            if location.get("match_strategy") == "ocr_value_fuzzy":
+                return "document_fuzzy"
+            return "document_source_id"
+        if isinstance(location, dict) and location.get("match_strategy") == "ocr_value_fuzzy":
+            return "document_fuzzy_low_confidence"
+        if evidence.get("quote_text"):
+            return "document_text"
+        return "document_text"
+
+    def _should_auto_select_field(self, evidences: list[dict[str, Any]]) -> bool:
+        for evidence in evidences or []:
+            if not isinstance(evidence, dict):
+                continue
+            bbox_json = evidence.get("bbox_json")
+            if isinstance(bbox_json, dict) and evidence_location_is_trusted(bbox_json):
+                return True
+        return False
 
     def _apply_sibling_evidence_fallback(self, field_entries: list[dict[str, Any]]) -> None:
         located_by_group: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1224,15 +1817,26 @@ class ExtractionService:
                 if self._evidence_has_location(evidence):
                     continue
                 evidence["page_no"] = sibling_evidence.get("page_no")
-                bbox_json = sibling_evidence.get("bbox_json")
-                if isinstance(bbox_json, dict):
+                sibling_bbox = sibling_evidence.get("bbox_json")
+                sibling_page = sibling_evidence.get("page_no")
+                if sibling_page is not None:
+                    evidence["page_no"] = sibling_page
                     evidence["bbox_json"] = {
-                        **bbox_json,
-                        "fallback_strategy": "sibling_field_location",
+                        "page_no": sibling_page,
+                        "renderable": False,
+                        "fallback_strategy": "sibling_page_hint",
                         "fallback_from_quote_text": sibling_evidence.get("quote_text"),
+                        "coord_warning": "sibling_page_only",
                     }
-                else:
-                    evidence["bbox_json"] = bbox_json
+                elif isinstance(sibling_bbox, dict) and sibling_bbox.get("page_no") is not None:
+                    evidence["page_no"] = sibling_bbox.get("page_no")
+                    evidence["bbox_json"] = {
+                        "page_no": sibling_bbox.get("page_no"),
+                        "renderable": False,
+                        "fallback_strategy": "sibling_page_hint",
+                        "fallback_from_quote_text": sibling_evidence.get("quote_text"),
+                        "coord_warning": "sibling_page_only",
+                    }
 
     def _field_evidence_group_key(self, entry: dict[str, Any]) -> tuple[str, str] | None:
         field = entry.get("field")
@@ -1245,12 +1849,22 @@ class ExtractionService:
 
     def _first_located_evidence(self, evidences: list[dict[str, Any]]) -> dict[str, Any] | None:
         for evidence in evidences:
-            if isinstance(evidence, dict) and self._evidence_has_location(evidence):
+            if not isinstance(evidence, dict):
+                continue
+            bbox_json = evidence.get("bbox_json")
+            if isinstance(bbox_json, dict) and evidence_location_is_trusted(bbox_json):
+                return evidence
+            if evidence.get("page_no") is not None:
                 return evidence
         return None
 
     def _evidence_has_location(self, evidence: dict[str, Any]) -> bool:
-        return evidence.get("page_no") is not None or evidence.get("bbox_json") is not None
+        bbox_json = evidence.get("bbox_json")
+        if isinstance(bbox_json, dict) and evidence_location_is_trusted(bbox_json):
+            return True
+        if evidence.get("page_no") is not None and isinstance(bbox_json, dict) and bbox_json.get("fallback_strategy"):
+            return True
+        return False
 
     def _resolved_evidence_quote(self, *, evidence: dict[str, Any], field: dict[str, Any]) -> str | None:
         matched_text = evidence.get("source_text") or evidence.get("text")

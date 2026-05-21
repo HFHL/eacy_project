@@ -91,6 +91,28 @@ services:
     networks:
       - eacy
 
+  celery-beat:
+    image: eacy-backend:prod
+    restart: unless-stopped
+    env_file:
+      - ${EACY_ENV_FILE:-.env.prod}
+    environment:
+      ENV: prod
+      DEBUG: "false"
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - beat
+      - --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - eacy
+
   worker-metadata:
     image: eacy-backend:prod
     restart: unless-stopped
@@ -105,7 +127,7 @@ services:
       - app.workers.celery_app.celery_app
       - worker
       - -Q
-      - metadata
+      - metadata,maintenance
       - --loglevel=info
       - --concurrency=${METADATA_CONCURRENCY:-1}
       - --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}

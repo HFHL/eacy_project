@@ -414,74 +414,23 @@
 
   .design-tree {
     flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden; // 隐藏横向滚动条
-    
-    // 树整体样式 - 紧凑布局
-    .ant-tree {
-      overflow: hidden;
-      
-      // 减少树节点左侧padding
-      .ant-tree-treenode {
-        padding-left: 4px !important;
-        padding-right: 4px;
-      }
+    overflow: hidden;
+
+    .eacy-tree-view__row {
+      min-height: 28px;
+      padding-top: 4px;
+      padding-bottom: 4px;
     }
 
-    // 树节点列表
-    .ant-tree-list {
+    .eacy-tree-view__label {
       overflow: hidden;
     }
 
-    // 缩进单元宽度减小
-    .ant-tree-indent-unit {
-      width: 16px !important; // 默认是24px，减小到16px
-    }
-    
-    // 切换图标紧凑
-    .ant-tree-switcher {
-      flex-shrink: 0;
-      width: 20px !important; // 默认是24px
-      margin-right: 0;
-    }
-
-    // 节点图标紧凑
-    .ant-tree-iconEle {
-      flex-shrink: 0;
-      width: 18px !important;
-      margin-right: 4px !important;
-    }
-    
-    .ant-tree-node-content-wrapper {
-      display: flex;
-      align-items: center;
-      flex: 1;
-      min-width: 0;
-      padding: 0 4px 0 0 !important; // 减少内部padding
-      overflow: hidden;
-      
-      &:hover {
-        background: #f5f5f5;
-      }
-    }
-
-    .ant-tree-node-selected {
-      background: #e6f7ff !important;
-    }
-
-    // 确保树节点标题填满宽度并支持文本省略
-    .ant-tree-title {
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-    }
-
-    // 文件夹标题样式
     .folder-title-wrapper {
       min-height: 24px;
       min-width: 0;
       overflow: hidden;
-      
+
       .ant-btn-link {
         font-size: 12px;
         padding: 0 4px;
@@ -489,7 +438,6 @@
       }
     }
 
-    // 表单标题样式
     .group-title-wrapper {
       min-height: 24px;
       min-width: 0;

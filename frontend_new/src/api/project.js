@@ -356,8 +356,29 @@ const wrapList = (items = [], pagination = {}) => emptySuccess(items, {
   },
 })
 
+const buildCrfGroupsFromSummary = (groupStats = {}) => {
+  const groups = {}
+  Object.entries(groupStats || {}).forEach(([groupId, stats]) => {
+    if (!stats || typeof stats !== 'object') return
+    groups[groupId] = {
+      group_id: groupId,
+      group_name: stats.group_name || groupId,
+      completeness: Number(stats.percent) || 0,
+      filled_count: Number(stats.filled) || 0,
+      total_count: Number(stats.total) || 0,
+      fields: {},
+      records: [],
+      is_repeatable: false,
+    }
+  })
+  return groups
+}
+
 const projectPatientToDetail = (item = {}, crf = null) => {
-  const crfGroups = crf ? buildCrfGroupsFromSchema(crf.schema, crf.current_values || {}) : {}
+  let crfGroups = crf ? buildCrfGroupsFromSchema(crf.schema, crf.current_values || {}) : {}
+  if (!crf && item.crf_group_stats && typeof item.crf_group_stats === 'object') {
+    crfGroups = buildCrfGroupsFromSummary(item.crf_group_stats)
+  }
   const crfCompleteness = crf
     ? computeOverallCompletenessFromGroups(crfGroups)
     : (item.crf_completeness ?? 0)
@@ -487,43 +508,41 @@ export const getProject = async (projectId = '') => {
   if (!projectId) return emptySuccess(null)
   const project = await request.get(`${PROJECTS_ENDPOINT}/${projectId}`)
   const aliased = withProjectAliases(project)
-  // 若页面读取的 template_info / template_scope_config.template_id 尚未填充，
-  // 则通过 template-bindings 接口补齐。注意：extra_json.crf_template_id 可能已有值，
-  // 但这两个字段才是 ProjectDatasetView "模板 · {name}" 按钮真正读取的来源。
-  const needTemplateInfo = !aliased.template_info?.template_id
-    && !aliased.template_scope_config?.template_id
-  if (needTemplateInfo) {
-    try {
-      const bindings = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings`)
-      const list = Array.isArray(bindings) ? bindings : []
-      const primary = list.find((b) => b?.status === 'active' && b?.binding_type === 'primary_crf')
-        || list.find((b) => b?.status === 'active')
-      const templateId = primary?.template_id || aliased.crf_template_id
-      if (templateId) {
-        let templateName = ''
-        try {
-          const template = await request.get(`/schema-templates/${templateId}`)
-          templateName = template?.template_name || template?.name || ''
-        } catch (error) {
-          console.warn('[project] 解析模板名称失败:', error)
-        }
-        aliased.crf_template_id = templateId
-        aliased.template_scope_config = {
-          ...(aliased.template_scope_config || {}),
-          template_id: templateId,
-          template_name: templateName || aliased.template_scope_config?.template_name || '',
-          schema_version_id: primary?.schema_version_id,
-        }
-        aliased.template_info = {
-          ...(aliased.template_info || {}),
-          template_id: templateId,
-          template_name: templateName,
-          schema_version_id: primary?.schema_version_id,
-        }
+  // 以 template-bindings 的 active 绑定为准；删除模板后会解除绑定并清空 extra_json 中的模板引用。
+  try {
+    const bindings = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings`)
+    const list = Array.isArray(bindings) ? bindings : []
+    const primary = list.find((b) => b?.status === 'active' && b?.binding_type === 'primary_crf')
+      || list.find((b) => b?.status === 'active')
+    const templateId = primary?.template_id || null
+    if (templateId) {
+      let templateName = ''
+      try {
+        const template = await request.get(`/schema-templates/${templateId}`)
+        templateName = template?.template_name || template?.name || ''
+      } catch (error) {
+        console.warn('[project] 解析模板名称失败:', error)
       }
-    } catch (error) {
-      console.warn('[project] 获取项目模板绑定失败:', error)
+      aliased.crf_template_id = templateId
+      aliased.template_scope_config = {
+        ...(aliased.template_scope_config || {}),
+        template_id: templateId,
+        template_name: templateName || aliased.template_scope_config?.template_name || '',
+        schema_version_id: primary?.schema_version_id,
+      }
+      aliased.template_info = {
+        ...(aliased.template_info || {}),
+        template_id: templateId,
+        template_name: templateName,
+        schema_version_id: primary?.schema_version_id,
+      }
+    } else {
+      aliased.crf_template_id = null
+      aliased.template_scope_config = {}
+      aliased.template_info = {}
     }
+  } catch (error) {
+    console.warn('[project] 获取项目模板绑定失败:', error)
   }
   return emptySuccess(aliased)
 }
@@ -549,18 +568,30 @@ export const toggleProjectStatus = async (projectId = '', status = 'active') => 
 export const getProjectMembers = async () => emptyList()
 export const addProjectMember = async () => emptySuccess(null)
 export const removeProjectMember = async () => emptySuccess(null)
-export const getProjectPatients = async (projectId = '') => {
+export const getProjectPatients = async (projectId = '', params = {}) => {
   if (!projectId) return wrapList([])
-  const patients = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients`)
-  // 列表页右侧概览需要每个患者的 CRF groups 完成度，因此在这里并行拉取 CRF。
-  // 后端列表接口 ProjectPatientResponse 不带 crf_data，因此必须二次取 CRF 才能
-  // 让 adaptProjectPatient.calcGroupStats / overviewColumns 显示出真实条数。
+  const patients = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients`, params)
   const list = Array.isArray(patients) ? patients : []
-  const enriched = await Promise.all(list.map(async (patient) => {
-    const crf = await fetchProjectPatientCrf(projectId, patient.id)
-    return mergePatientProfile(patient, crf)
-  }))
-  return wrapList(enriched)
+  const enriched = list.map((patient) => projectPatientToDetail(patient, null))
+  return wrapList(enriched, {
+    page: params.page,
+    page_size: params.page_size,
+    total: list.length,
+  })
+}
+
+export const fetchProjectPatientsCrfGroupFields = async (
+  projectId = '',
+  { groupId = '', projectPatientIds = [] } = {},
+) => {
+  if (!projectId || !groupId) return emptySuccess({ items: [] })
+  const ids = Array.from(new Set((Array.isArray(projectPatientIds) ? projectPatientIds : []).filter(Boolean)))
+  if (!ids.length) return emptySuccess({ items: [] })
+  const payload = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/patients/crf-group-fields`, {
+    group_id: groupId,
+    project_patient_ids: ids,
+  })
+  return emptySuccess(payload)
 }
 export const getProjectPatientDetail = async (projectId = '', patientId = '') => {
   const projectPatient = await resolveProjectPatient(projectId, patientId)
@@ -668,25 +699,54 @@ export const selectProjectCrfFieldCandidate = async (projectId = '', projectPati
   const payload = await request.post(crfFieldUrl(projectId, projectPatientId, fieldPath, '/select-candidate'), { candidate_id: candidateId })
   return emptySuccess(payload)
 }
-export const updateProjectCrfFolder = async (projectId = '', projectPatientId = '') => {
+export const updateProjectCrfFolder = async (projectId = '', projectPatientId = '', options = {}) => {
   if (!projectId || !projectPatientId) return emptySuccess({ created_jobs: 0, job_ids: [] })
-  const payload = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/patients/${projectPatientId}/crf/update-folder`)
+  const {
+    targetFormKeys = null,
+    mode = 'incremental',
+  } = options || {}
+  const body = {
+    ...(Array.isArray(targetFormKeys) && targetFormKeys.length > 0
+      ? { target_form_keys: targetFormKeys.filter(Boolean) }
+      : {}),
+    ...(mode ? { mode } : {}),
+  }
+  const payload = await request.post(
+    `${PROJECTS_ENDPOINT}/${projectId}/patients/${projectPatientId}/crf/update-folder`,
+    body,
+  )
+  const targeted = Array.isArray(targetFormKeys) && targetFormKeys.length > 0
   return emptySuccess({
     ...payload,
     task_id: payload.batch_id || payload.job_ids?.[0] || '',
-    message: `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
+    message: targeted
+      ? `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 靶向抽取任务`
+      : `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
   })
 }
-export const updateProjectCrfFolderBatch = async (projectId = '', projectPatientIds = null) => {
+export const updateProjectCrfFolderBatch = async (projectId = '', projectPatientIds = null, options = {}) => {
   if (!projectId) return emptySuccess({ created_jobs: 0, job_ids: [] })
-  const body = Array.isArray(projectPatientIds) && projectPatientIds.length > 0
-    ? { project_patient_ids: projectPatientIds.filter(Boolean) }
-    : {}
+  const {
+    targetFormKeys = null,
+    mode = 'incremental',
+  } = options || {}
+  const body = {
+    ...(Array.isArray(projectPatientIds) && projectPatientIds.length > 0
+      ? { project_patient_ids: projectPatientIds.filter(Boolean) }
+      : {}),
+    ...(Array.isArray(targetFormKeys) && targetFormKeys.length > 0
+      ? { target_form_keys: targetFormKeys.filter(Boolean) }
+      : {}),
+    ...(mode ? { mode } : {}),
+  }
   const payload = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/crf/update-folder`, body)
+  const targeted = Array.isArray(targetFormKeys) && targetFormKeys.length > 0
   return emptySuccess({
     ...payload,
     task_id: payload.batch_id || payload.job_ids?.[0] || '',
-    message: `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
+    message: targeted
+      ? `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 靶向抽取任务`
+      : `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
   })
 }
 export const enrollPatient = async (projectId = '', data = {}) => {
@@ -921,10 +981,6 @@ export const saveProjectTemplateDesigner = async (projectId = '', payload = {}) 
     skipped: 0,
   })
 }
-export const getProjectExtractionTasks = async () => emptyList()
-export const getActiveExtractionTask = async () => emptySuccess(null)
-export const cancelCrfExtraction = async () => emptySuccess(null)
-export const resetCrfExtraction = async () => emptySuccess(null)
 export const applyTemplateVersion = async () => emptySuccess(null)
 export const exportProjectCrfFile = async (projectId = '', payload = {}) => {
   if (!projectId) return new Blob([])
@@ -975,10 +1031,6 @@ export default {
   getCrfExtractionProgress,
   getProjectTemplateDesigner,
   saveProjectTemplateDesigner,
-  getProjectExtractionTasks,
-  getActiveExtractionTask,
-  cancelCrfExtraction,
-  resetCrfExtraction,
   applyTemplateVersion,
   exportProjectCrfFile,
 }

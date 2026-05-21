@@ -3,7 +3,12 @@ from datetime import datetime
 import re
 
 from app.models import SchemaTemplate, SchemaTemplateVersion
-from app.repositories import SchemaTemplateRepository, SchemaTemplateVersionRepository
+from app.repositories import (
+    ProjectTemplateBindingRepository,
+    ResearchProjectRepository,
+    SchemaTemplateRepository,
+    SchemaTemplateVersionRepository,
+)
 from core.db import Transactional
 
 
@@ -24,9 +29,13 @@ class SchemaService:
         self,
         template_repository: SchemaTemplateRepository | None = None,
         version_repository: SchemaTemplateVersionRepository | None = None,
+        binding_repository: ProjectTemplateBindingRepository | None = None,
+        project_repository: ResearchProjectRepository | None = None,
     ):
         self.template_repository = template_repository or SchemaTemplateRepository()
         self.version_repository = version_repository or SchemaTemplateVersionRepository()
+        self.binding_repository = binding_repository or ProjectTemplateBindingRepository()
+        self.project_repository = project_repository or ResearchProjectRepository()
 
     async def list_templates(
         self,
@@ -152,11 +161,43 @@ class SchemaService:
             }
         )
 
+    async def list_active_project_usages(self, template_id: str) -> list[dict[str, str]]:
+        template = await self.get_template(template_id)
+        if template is None:
+            raise SchemaNotFoundError("Schema template not found")
+        return await self.binding_repository.list_active_projects_by_template(template_id)
+
+    async def _clear_project_template_refs(self, project_id: str) -> None:
+        project = await self.project_repository.get_by_id(project_id)
+        if project is None:
+            return
+        extra = dict(project.extra_json or {})
+        extra.pop("crf_template_id", None)
+        extra.pop("template_scope_config", None)
+        extra.pop("template_info", None)
+        project.extra_json = extra or None
+        project.updated_at = datetime.utcnow()
+        await self.project_repository.save(project)
+
+    async def _unbind_active_projects_for_template(self, template_id: str) -> int:
+        bindings = await self.binding_repository.list_active_bindings_by_template(template_id)
+        if not bindings:
+            return 0
+        project_ids = list({binding.project_id for binding in bindings})
+        for binding in bindings:
+            binding.status = "disabled"
+            binding.updated_at = datetime.utcnow()
+            await self.binding_repository.save(binding)
+        for project_id in project_ids:
+            await self._clear_project_template_refs(project_id)
+        return len(project_ids)
+
     @Transactional()
     async def archive_template(self, template_id: str) -> SchemaTemplate:
         template = await self.get_template(template_id)
         if template is None:
             raise SchemaNotFoundError("Schema template not found")
+        await self._unbind_active_projects_for_template(template_id)
         template.status = "archived"
         template.updated_at = datetime.utcnow()
         return await self.template_repository.save(template)

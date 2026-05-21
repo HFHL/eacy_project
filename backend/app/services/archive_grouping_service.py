@@ -77,6 +77,27 @@ def extract_identifier_values(raw_identifiers: Any) -> list[str]:
     return list(values)
 
 
+def extract_id_card_from_result(result: dict[str, Any]) -> str:
+    raw_identifiers = result.get("唯一标识符")
+    if not isinstance(raw_identifiers, list):
+        return ""
+    for item in raw_identifiers:
+        if not isinstance(item, dict):
+            continue
+        identifier_type = normalize_string(item.get("标识符类型") or item.get("type"))
+        value = normalize_string(
+            item.get("标识符编号")
+            or item.get("value")
+            or item.get("identifier")
+            or item.get("编号")
+        )
+        if not value:
+            continue
+        if "身份证" in identifier_type:
+            return value.replace(" ", "").upper()
+    return ""
+
+
 def parse_document_identity(document: Document) -> DocumentIdentityInfo:
     result = get_metadata_result(document.metadata_json)
     identifiers = extract_identifier_values(result.get("唯一标识符"))

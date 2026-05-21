@@ -26,7 +26,7 @@ redis_ping_ok() {
 }
 
 if ! redis_ping_ok; then
-  echo "Redis 127.0.0.1:${REDIS_P} 不可用，请先启动 Redis（例如 backend/docker 下 docker compose up -d redis）" >&2
+  echo "Redis 127.0.0.1:${REDIS_P} 不可用，请先启动本机 Redis（brew services / docker run redis 等）" >&2
   exit 1
 fi
 
@@ -50,7 +50,7 @@ echo "ENV=${ENV} BACKEND_PORT=${BACKEND_PORT} FRONTEND_PORT=${FRONTEND_PORT}"
 echo "VITE_DEV_API_PROXY_TARGET=${PROXY_URL}"
 
 # 避免重复启动：若 pid 文件存在且进程仍存活则退出
-for name in backend celery frontend; do
+for name in backend celery celery-beat frontend; do
   f="${EACY_RUN}/${name}.pid"
   if [ -f "$f" ]; then
     pid="$(cat "$f")"
@@ -71,9 +71,14 @@ echo $! >"${EACY_RUN}/backend.pid"
 nohup env ENV="${ENV}" DEBUG="${DEBUG}" PYTHONUNBUFFERED=1 \
   .venv/bin/celery -A app.workers.celery_app.celery_app worker \
   -n "eacy-eacyproject@%h" \
-  -Q ocr,metadata,extraction --loglevel=info --concurrency=4 --max-tasks-per-child=20 \
+  -Q ocr,metadata,extraction,maintenance --loglevel=info --concurrency=4 --max-tasks-per-child=20 \
   >>"${EACY_LOG}/celery.log" 2>&1 &
 echo $! >"${EACY_RUN}/celery.pid"
+
+nohup env ENV="${ENV}" DEBUG="${DEBUG}" PYTHONUNBUFFERED=1 \
+  .venv/bin/celery -A app.workers.celery_app.celery_app beat --loglevel=info \
+  >>"${EACY_LOG}/celery-beat.log" 2>&1 &
+echo $! >"${EACY_RUN}/celery-beat.pid"
 
 VITE_BIN="${EACY_ROOT}/node_modules/.bin/vite"
 if [ ! -x "$VITE_BIN" ]; then

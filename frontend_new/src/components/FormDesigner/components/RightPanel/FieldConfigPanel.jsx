@@ -312,6 +312,15 @@ const FieldConfigPanel = ({
           <TextArea rows={3} placeholder="请输入抽取提示词" />
         </Form.Item>
 
+        <Form.Item
+          label="不参与 AI 抽取"
+          name="skipExtraction"
+          valuePropName="checked"
+          tooltip="开启后，自动抽取将跳过该字段，保留手工填写值"
+        >
+          <Switch checkedChildren="跳过" unCheckedChildren="参与" />
+        </Form.Item>
+
         <SectionTitle title="验证规则" />
 
         <Form.Item

@@ -82,6 +82,39 @@ class FakeResearchProjectService:
     async def list_project_patients(self, project_id, **kwargs):
         return [patient for patient in self.project_patients.values() if patient.project_id == project_id]
 
+    async def list_project_patients_with_summary(self, project_id, **kwargs):
+        patients = await self.list_project_patients(project_id, **kwargs)
+        summaries = []
+        for patient in patients:
+            summaries.append(
+                {
+                    "id": patient.id,
+                    "project_id": patient.project_id,
+                    "patient_id": patient.patient_id,
+                    "enroll_no": getattr(patient, "enroll_no", None),
+                    "status": patient.status,
+                    "enrolled_at": getattr(patient, "enrolled_at", None),
+                    "withdrawn_at": getattr(patient, "withdrawn_at", None),
+                    "extra_json": getattr(patient, "extra_json", None),
+                    "created_at": getattr(patient, "created_at", None),
+                    "updated_at": getattr(patient, "updated_at", None),
+                    "patient_name": "",
+                    "patient_gender": None,
+                    "patient_age": None,
+                    "patient_birth_date": None,
+                    "document_count": 0,
+                    "crf_completeness": 0,
+                    "crf_group_stats": {},
+                }
+            )
+        return summaries
+
+    async def batch_crf_group_fields(self, project_id, group_id, project_patient_ids, **kwargs):
+        return [
+            {"project_patient_id": pp_id, "fields": {}}
+            for pp_id in (project_patient_ids or [])
+        ]
+
     async def enroll_patient(self, **params):
         project_patient = SimpleNamespace(
             id="project-patient-1",

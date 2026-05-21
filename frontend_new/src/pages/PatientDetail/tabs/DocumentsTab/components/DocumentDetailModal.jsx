@@ -2,7 +2,7 @@
  * 文档详情弹窗组件
  * 双栏布局：左侧文档预览，右侧字段编辑
  */
-import React, { useState, useEffect, forwardRef, useImperativeHandle } from 'react'
+import React, { useState, useEffect, forwardRef, useImperativeHandle, useRef } from 'react'
 import { 
   Modal, 
   Row, 
@@ -25,7 +25,9 @@ import {
   Dropdown,
   Descriptions,
   Drawer,
-  Segmented
+  Segmented,
+  Alert,
+  Progress
 } from 'antd'
 import { 
   CloseOutlined, 
@@ -74,7 +76,7 @@ import FieldEditor from './FieldEditor'
 import StatusIndicator from './StatusIndicator'
 import ConflictDetailModal from './ConflictDetailModal'
 import { DOC_TYPE_CATEGORIES } from '../../../../../components/FormDesigner/core/docTypes'
-import { extractEhrDataAsync, extractDocumentMetadata, getDocumentDetail, getDocumentOperationHistory, getDocumentTempUrl, getDocumentPdfStreamUrl, getFreshDocumentPdfStreamUrl, reparseDocumentSync, unarchiveDocument, updateDocumentMetadata, deleteDocument } from '../../../../../api/document'
+import { extractEhrDataAsync, extractDocumentMetadata, getDocumentDetail, getDocumentOperationHistory, getDocumentTempUrl, getDocumentPdfStreamUrl, getFreshDocumentPdfStreamUrl, getFreshDocumentStreamUrl, getFileStatusesByIds, getExtractionJob, isOcrPagePreviewResponse, isOfficeDocumentLike, reparseDocumentSync, unarchiveDocument, updateDocumentMetadata, deleteDocument } from '../../../../../api/document'
 import { buildDeleteContent, fetchEvidenceImpactSafe } from '../../../../../utils/documentDeleteConfirm'
 import { mergeEhrData } from '../../../../../api/patient'
 import { getFieldLabel, isArrayField, isEmptyValue, normalizeDisplayValue, EHR_FIELD_GROUPS } from './ehrFieldLabels'
@@ -86,6 +88,99 @@ import PdfPageWithHighlight from '../../../../../components/PdfPageWithHighlight
 
 const { Title, Text, Paragraph } = Typography
 const { Panel } = Collapse
+
+const METADATA_POLL_INTERVAL_MS = 2000
+const METADATA_POLL_MAX_WAIT_MS = 15 * 60 * 1000
+const EXTRACT_POLL_INTERVAL_MS = 2000
+const EXTRACT_POLL_MAX_WAIT_MS = 15 * 60 * 1000
+
+const isPdfFileType = (type, name, url = '') => {
+  const t = String(type || '').toLowerCase()
+  const n = String(name || '').toLowerCase()
+  const u = String(url || '').toLowerCase()
+  return (
+    t === 'pdf'
+    || t === '.pdf'
+    || t.includes('application/pdf')
+    || n.endsWith('.pdf')
+    || u.includes('.pdf?')
+    || u.split('?')[0].endsWith('.pdf')
+  )
+}
+
+const resolveMetaStatus = (documentDetail, document) => (
+  documentDetail?.meta_status
+  ?? documentDetail?.metaStatus
+  ?? document?.meta_status
+  ?? document?.metaStatus
+  ?? ''
+)
+
+const isMetadataInProgress = (metaStatus) => (
+  ['queued', 'running'].includes(String(metaStatus || '').toLowerCase())
+)
+
+const computeMetadataStage = (metaStatus) => {
+  const meta = String(metaStatus || '').toLowerCase()
+  if (meta === 'failed') {
+    return { kind: 'error', percent: 100, message: '元数据抽取失败' }
+  }
+  if (meta === 'skipped') {
+    return { kind: 'warning', percent: 100, message: '元数据抽取已跳过' }
+  }
+  if (meta === 'completed') {
+    return { kind: 'success', percent: 100, message: '元数据抽取完成' }
+  }
+  if (meta === 'running') {
+    return { kind: 'progress', percent: 65, message: '正在抽取元数据…' }
+  }
+  if (meta === 'queued') {
+    return { kind: 'progress', percent: 35, message: '元数据抽取排队中…' }
+  }
+  return null
+}
+
+const resolveBoundPatientId = (documentDetail, document, patientIdProp) => (
+  documentDetail?.patient_id
+  ?? documentDetail?.patientId
+  ?? documentDetail?.linked_patients?.[0]?.patient_id
+  ?? document?.patient_id
+  ?? document?.patientId
+  ?? patientIdProp
+  ?? ''
+)
+
+const resolveExtractStatus = (documentDetail, document) => (
+  documentDetail?.extract_status
+  ?? documentDetail?.extractStatus
+  ?? document?.extract_status
+  ?? document?.extractStatus
+  ?? ''
+)
+
+const isExtractInProgress = (extractStatus) => (
+  ['pending', 'running', 'queued'].includes(String(extractStatus || '').toLowerCase())
+)
+
+const computeExtractStage = (extractStatus, progress = null) => {
+  const status = String(extractStatus || '').toLowerCase()
+  if (['failed', 'timeout'].includes(status)) {
+    return { kind: 'error', percent: 100, message: '病历抽取失败' }
+  }
+  if (status === 'cancelled') {
+    return { kind: 'warning', percent: 100, message: '病历抽取已取消' }
+  }
+  if (['completed', 'succeeded'].includes(status)) {
+    return { kind: 'success', percent: 100, message: '病历抽取完成' }
+  }
+  if (status === 'running') {
+    return { kind: 'progress', percent: progress ?? 65, message: '正在抽取病历字段…' }
+  }
+  if (status === 'pending' || status === 'queued') {
+    return { kind: 'progress', percent: progress ?? 25, message: '病历抽取排队中…' }
+  }
+  return null
+}
 
 const DocumentDetailModal = forwardRef(({ 
   visible, 
@@ -109,6 +204,13 @@ const DocumentDetailModal = forwardRef(({
   const [editedFields, setEditedFields] = useState({})
   const [extracting, setExtracting] = useState(false)
   const [extractingMetadata, setExtractingMetadata] = useState(false)
+  const [metadataPollingActive, setMetadataPollingActive] = useState(false)
+  const metadataCompletionNotifiedRef = useRef(false)
+  const [extractionPollingActive, setExtractionPollingActive] = useState(false)
+  const [activeExtractionJobId, setActiveExtractionJobId] = useState(null)
+  const [extractionPollSnapshot, setExtractionPollSnapshot] = useState({ status: '', progress: null })
+  const extractionCompletionNotifiedRef = useRef(false)
+  const historyLoadedForDocRef = useRef(null)
   const [mergeModalVisible, setMergeModalVisible] = useState(false)
   const [extractResult, setExtractResult] = useState(null)
   const [merging, setMerging] = useState(false)
@@ -134,6 +236,9 @@ const DocumentDetailModal = forwardRef(({
   // 文档预览URL
   const [previewUrl, setPreviewUrl] = useState(null)
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState('')
+  const [previewSource, setPreviewSource] = useState('native')
+  const [ocrPageNo, setOcrPageNo] = useState(1)
+  const [ocrPageCount, setOcrPageCount] = useState(0)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewImageLoading, setPreviewImageLoading] = useState(false)
   const [previewError, setPreviewError] = useState(false)
@@ -199,6 +304,9 @@ const DocumentDetailModal = forwardRef(({
         setCurrentStatus(document?.status)
       }
       setActiveCollapseKey([]) // 重置折叠状态
+      setActiveTab('metadata')
+      setOperationHistory(null)
+      historyLoadedForDocRef.current = null
     }
   }, [visible, document?.id, showTaskStatus, refreshTrigger])
 
@@ -232,17 +340,24 @@ const DocumentDetailModal = forwardRef(({
     }
   }, [documentDetail, detailLoading, showTaskStatus])
 
-  // 加载操作历史（弹窗打开时就加载，和抽取记录一样）
+  // 加载操作历史（切到「操作历史」Tab 时再拉）
   useEffect(() => {
-    if (visible && document?.id) {
-      fetchOperationHistory(document.id)
-    }
-  }, [visible, document?.id])
+    if (!visible || !document?.id || activeTab !== 'history') return
+    if (historyLoadedForDocRef.current === document.id) return
+    historyLoadedForDocRef.current = document.id
+    fetchOperationHistory(document.id)
+  }, [visible, document?.id, activeTab])
 
   useEffect(() => {
     let cancelled = false
     async function loadPdfUrl() {
       if (!visible || !document?.id) {
+        setPdfPreviewUrl('')
+        return
+      }
+      const rawFileType = documentDetail?.file_type || document?.fileType || document?.file_type || ''
+      const fileName = documentDetail?.file_name || document?.fileName || document?.file_name || ''
+      if (!isPdfFileType(rawFileType, fileName)) {
         setPdfPreviewUrl('')
         return
       }
@@ -257,19 +372,36 @@ const DocumentDetailModal = forwardRef(({
     return () => {
       cancelled = true
     }
-  }, [visible, document?.id])
+  }, [
+    visible,
+    document?.id,
+    document?.fileType,
+    document?.file_type,
+    document?.fileName,
+    document?.file_name,
+    documentDetail?.file_type,
+    documentDetail?.file_name,
+  ])
 
   // 获取文档预览URL
-  const fetchPreviewUrl = async (documentId) => {
+  const fetchPreviewUrl = async (documentId, pageNo = 1) => {
     if (!documentId) return
     
     setPreviewLoading(true)
     setPreviewError(false)
     try {
-      const urlResponse = await getDocumentTempUrl(documentId, 3600)
+      const urlResponse = await getDocumentTempUrl(documentId, 3600, { page: pageNo })
       if (urlResponse.success && urlResponse.data?.temp_url) {
-        setPreviewUrl(urlResponse.data.temp_url)
-        setPreviewImageLoading(true)  // 重置图片加载状态
+        const data = urlResponse.data
+        const resolvedPageNo = Number(data.page_no || pageNo)
+        const previewSrc = isOcrPagePreviewResponse(data)
+          ? await getFreshDocumentStreamUrl(documentId, { page: resolvedPageNo })
+          : data.temp_url
+        setPreviewUrl(previewSrc)
+        setPreviewSource(data.preview_source || 'native')
+        setOcrPageCount(Number(data.ocr_page_count || documentDetail?.ocr_page_count || 0))
+        setOcrPageNo(resolvedPageNo)
+        setPreviewImageLoading(true)
       } else {
         // 如果获取临时URL失败，尝试使用 documentDetail 中的 file_path
         const filePath = documentDetail?.file_path || document?.file_path
@@ -294,9 +426,36 @@ const DocumentDetailModal = forwardRef(({
     }
   }
 
+  const currentMetaStatus = resolveMetaStatus(documentDetail, document)
+  const metadataInProgress = metadataPollingActive || isMetadataInProgress(currentMetaStatus)
+  const metadataStage = computeMetadataStage(
+    metadataInProgress && !currentMetaStatus ? 'queued' : currentMetaStatus
+  )
+
+  const boundPatientId = resolveBoundPatientId(documentDetail, document, patientId)
+  const currentExtractStatus = extractionPollSnapshot.status || resolveExtractStatus(documentDetail, document)
+  const recordsExtractInProgress = (documentDetail?.extraction_records || []).some(
+    (record) => isExtractInProgress(record.status)
+  )
+  const extractInProgress = extractionPollingActive
+    || isExtractInProgress(currentExtractStatus)
+    || recordsExtractInProgress
+  const extractStage = extractInProgress
+    ? computeExtractStage(currentExtractStatus || 'pending', extractionPollSnapshot.progress)
+    : computeExtractStage(currentExtractStatus)
+
+  const getExtractDisabledReason = () => {
+    if (!document?.isParsed) return '文档尚未完成 OCR 解析，请先进行解析'
+    if (!boundPatientId) return '文档尚未绑定患者，请先归档或选择患者'
+    if (extractInProgress) return '病历抽取进行中'
+    return ''
+  }
+  const extractDisabledReason = getExtractDisabledReason()
+  const canStartExtract = !extractDisabledReason && !extracting && !detailLoading
+
   // 获取文档详情（包含 content_list 和抽取记录列表）
-  const fetchDocumentDetail = async (documentId) => {
-    setDetailLoading(true)
+  const fetchDocumentDetail = async (documentId, { silent = false } = {}) => {
+    if (!silent) setDetailLoading(true)
     try {
       const response = await getDocumentDetail(documentId, {
         include_content: false,  // 不需要 parsed_content（太大）
@@ -307,17 +466,167 @@ const DocumentDetailModal = forwardRef(({
       
       if (response.success && response.data) {
         setDocumentDetail(response.data)
-        // 获取详情后，获取预览URL
-        fetchPreviewUrl(documentId)
+        if (!silent) {
+          const rawType = response.data?.file_type || document?.fileType || document?.file_type || ''
+          const fileName = response.data?.file_name || document?.fileName || document?.file_name || ''
+          if (!isPdfFileType(rawType, fileName)) {
+            fetchPreviewUrl(documentId)
+          }
+        }
       } else {
         console.error('获取文档详情失败:', response.message)
       }
     } catch (error) {
       console.error('获取文档详情失败:', error)
     } finally {
-      setDetailLoading(false)
+      if (!silent) setDetailLoading(false)
     }
   }
+
+  // 弹窗打开或详情加载后，若元数据任务仍在进行则自动轮询
+  useEffect(() => {
+    if (!visible || !document?.id) {
+      setMetadataPollingActive(false)
+      metadataCompletionNotifiedRef.current = false
+      return
+    }
+    if (isMetadataInProgress(resolveMetaStatus(documentDetail, document))) {
+      setMetadataPollingActive(true)
+    }
+  }, [visible, document?.id, documentDetail?.meta_status, documentDetail?.metaStatus])
+
+  // 元数据 / 病历抽取：合并为单路轮询，共享一次 status 查询
+  useEffect(() => {
+    if (!visible || !document?.id) return undefined
+    if (!metadataPollingActive && !extractionPollingActive) return undefined
+
+    let cancelled = false
+    const startAt = Date.now()
+
+    const tick = async () => {
+      if (cancelled) return
+      const elapsed = Date.now() - startAt
+      if (metadataPollingActive && elapsed >= METADATA_POLL_MAX_WAIT_MS) {
+        setMetadataPollingActive(false)
+        message.warning('元数据抽取超时，请稍后刷新查看结果')
+        return
+      }
+      if (extractionPollingActive && elapsed >= EXTRACT_POLL_MAX_WAIT_MS) {
+        setExtractionPollingActive(false)
+        setActiveExtractionJobId(null)
+        setExtractionPollSnapshot({ status: '', progress: null })
+        message.warning('病历抽取超时，请稍后刷新查看结果')
+        return
+      }
+
+      try {
+        let statusItem = null
+        if (metadataPollingActive || extractionPollingActive) {
+          const res = await getFileStatusesByIds([document.id])
+          if (cancelled) return
+          statusItem = res?.data?.items?.[0] || null
+          if (statusItem) {
+            setDocumentDetail((prev) => (prev ? { ...prev, ...statusItem } : prev))
+          }
+        }
+
+        if (metadataPollingActive && statusItem) {
+          const nextMetaStatus = statusItem.meta_status ?? statusItem.metaStatus
+          const stage = computeMetadataStage(nextMetaStatus)
+          if (stage && stage.kind !== 'progress') {
+            setMetadataPollingActive(false)
+            await fetchDocumentDetail(document.id, { silent: true })
+            onRefresh?.()
+            if (!metadataCompletionNotifiedRef.current) {
+              metadataCompletionNotifiedRef.current = true
+              if (stage.kind === 'success') message.success('元数据抽取完成')
+              else if (stage.kind === 'error') message.error(stage.message)
+              else if (stage.kind === 'warning') message.warning(stage.message)
+            }
+          }
+        }
+
+        if (extractionPollingActive) {
+          let nextStatus = ''
+          let nextProgress = null
+
+          if (activeExtractionJobId) {
+            const jobRes = await getExtractionJob(activeExtractionJobId)
+            const job = jobRes?.data
+            if (job) {
+              nextStatus = job.status || ''
+              nextProgress = job.progress ?? null
+            }
+          } else if (statusItem) {
+            nextStatus = statusItem.extract_status ?? statusItem.extractStatus ?? ''
+          }
+
+          if (!nextStatus) return
+
+          setExtractionPollSnapshot({ status: nextStatus, progress: nextProgress })
+          const stage = computeExtractStage(nextStatus, nextProgress)
+          if (!stage || stage.kind === 'progress') return
+
+          setExtractionPollingActive(false)
+          setActiveExtractionJobId(null)
+          setExtractionPollSnapshot({ status: '', progress: null })
+          await fetchDocumentDetail(document.id, { silent: true })
+          onExtractSuccess?.()
+          onRefresh?.()
+
+          if (!extractionCompletionNotifiedRef.current) {
+            extractionCompletionNotifiedRef.current = true
+            if (stage.kind === 'success') message.success('病历抽取完成')
+            else if (stage.kind === 'error') message.error(stage.message)
+            else if (stage.kind === 'warning') message.warning(stage.message)
+          }
+        }
+      } catch (error) {
+        console.warn('轮询文档任务状态失败:', error)
+      }
+    }
+
+    tick()
+    const timer = setInterval(tick, METADATA_POLL_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [
+    visible,
+    document?.id,
+    metadataPollingActive,
+    extractionPollingActive,
+    activeExtractionJobId,
+  ])
+
+  // 弹窗打开或详情加载后，若病历抽取仍在进行则自动轮询
+  useEffect(() => {
+    if (!visible || !document?.id) {
+      setExtractionPollingActive(false)
+      setActiveExtractionJobId(null)
+      setExtractionPollSnapshot({ status: '', progress: null })
+      extractionCompletionNotifiedRef.current = false
+      return
+    }
+    const status = resolveExtractStatus(documentDetail, document)
+    if (isExtractInProgress(status)) {
+      setExtractionPollingActive(true)
+    }
+    const activeRecord = (documentDetail?.extraction_records || []).find(
+      (record) => isExtractInProgress(record.status)
+    )
+    if (activeRecord?.extraction_id) {
+      setActiveExtractionJobId(activeRecord.extraction_id)
+      setExtractionPollingActive(true)
+    }
+  }, [
+    visible,
+    document?.id,
+    documentDetail?.extract_status,
+    documentDetail?.extractStatus,
+    documentDetail?.extraction_records,
+  ])
 
   // 暴露给父组件：强制重新拉取详情（如更换患者成功后刷新 tag）
   useImperativeHandle(ref, () => ({
@@ -559,7 +868,7 @@ const DocumentDetailModal = forwardRef(({
         }
       } catch (error) {
         console.error('保存元数据失败:', error)
-        message.error('保存失败，请稍后重试')
+        message.error(error?.message || error?.data?.detail || '保存失败，请稍后重试')
       } finally {
         setSavingMetadata(false)
       }
@@ -582,7 +891,7 @@ const DocumentDetailModal = forwardRef(({
     return editedFields[field.fieldId]?.confidence ?? field.confidence
   }
 
-  // 处理重新解析（同步，不改变状态机状态）
+  // 处理重新解析（异步 OCR 任务）
   const handleReparse = async () => {
     if (!document?.id) {
       message.error('文档信息不存在')
@@ -591,24 +900,19 @@ const DocumentDetailModal = forwardRef(({
     
     setReparsing(true)
     try {
-      console.log('开始同步重新解析，文档ID:', document.id)
       const response = await reparseDocumentSync(document.id, { parserType: 'textin' })
-      console.log('同步重新解析响应:', response)
       
       if (response.success) {
-        message.success(`重新解析完成，共 ${response.data?.content_blocks || 0} 个内容块`)
-        // 立即刷新文档详情以显示新的OCR内容
+        message.success('OCR 任务已提交，正在后台解析…')
         if (document?.id) {
           await fetchDocumentDetail(document.id)
         }
       } else {
-        console.error('重新解析失败:', response.message)
-        message.error(response.message || '重新解析失败，请稍后重试')
+        message.error(response.message || '提交 OCR 任务失败，请稍后重试')
       }
     } catch (error) {
-      console.error('重新解析异常:', error)
-      const errorMsg = error.response?.data?.message || error.message || '重新解析失败'
-      message.error(`重新解析失败: ${errorMsg}`)
+      const errorMsg = error.response?.data?.message || error.message || '提交 OCR 任务失败'
+      message.error(`提交 OCR 任务失败: ${errorMsg}`)
     } finally {
       setReparsing(false)
     }
@@ -628,8 +932,12 @@ const DocumentDetailModal = forwardRef(({
     try {
       const response = await extractDocumentMetadata(document.id)
       if (response.success) {
-        message.success('元数据抽取任务已启动，请稍后在文档信息中查看更新结果')
-        if (document?.id) fetchDocumentDetail(document.id)
+        metadataCompletionNotifiedRef.current = false
+        if (response.data) {
+          setDocumentDetail((prev) => (prev ? { ...prev, ...response.data } : response.data))
+        }
+        setMetadataPollingActive(true)
+        message.success('元数据抽取任务已启动')
       } else {
         message.error(response.message || '元数据抽取任务启动失败')
       }
@@ -647,33 +955,36 @@ const DocumentDetailModal = forwardRef(({
       message.error('文档信息不存在')
       return
     }
-    
-    if (!document.isParsed) {
-      message.warning('文档尚未完成 OCR 解析，请先进行解析')
+
+    if (extractDisabledReason) {
+      message.warning(extractDisabledReason)
       return
     }
-    
+
     setExtracting(true)
     try {
-      console.log('开始异步 AI 抽取，文档ID:', document.id)
-      const response = await extractEhrDataAsync(document.id)
-      console.log('异步 AI 抽取响应:', response)
+      const response = await extractEhrDataAsync(document.id, {
+        patientId: boundPatientId,
+        source: (documentDetail?.extraction_records?.length || 0) > 0
+          ? 'document_reextract'
+          : 'document_detail_manual',
+      })
 
       if (response.success) {
-        message.success('已启动异步抽取任务，请稍后在抽取记录中查看结果')
-        // 通知父组件刷新，以便后续重新拉取抽取记录
-        onExtractSuccess?.()
-        // 可选：立即刷新一次文档详情，后续由轮询/WS 更新
-        if (document?.id) {
-          fetchDocumentDetail(document.id)
+        extractionCompletionNotifiedRef.current = false
+        const jobId = response.data?.id || response.data?.task_id
+        if (jobId) {
+          setActiveExtractionJobId(jobId)
         }
+        setExtractionPollSnapshot({ status: 'pending', progress: 10 })
+        setExtractionPollingActive(true)
+        message.success('病历抽取任务已启动')
+        fetchDocumentDetail(document.id, { silent: true })
       } else {
-        console.error('AI 抽取任务启动失败:', response.message)
         message.error(response.message || '抽取任务启动失败，请稍后重试')
       }
     } catch (error) {
-      console.error('AI 抽取异常:', error)
-      const errorMsg = error.response?.data?.message || error.message || 'AI 抽取失败'
+      const errorMsg = error.response?.data?.message || error.data?.detail || error.message || 'AI 抽取失败'
       message.error(`抽取失败: ${errorMsg}`)
     } finally {
       setExtracting(false)
@@ -837,7 +1148,13 @@ const DocumentDetailModal = forwardRef(({
     }
 
     const fileTypeDisplay = rawFileType.startsWith('.') ? rawFileType.substring(1).toUpperCase() : rawFileType.toUpperCase()
-    const canRenderPreview = isPDF(rawFileType, fileName, previewUrl) ? Boolean(pdfPreviewUrl) : Boolean(previewUrl)
+    const usesOcrPagePreview = previewSource === 'ocr_page'
+      || documentDetail?.preview_source === 'ocr_page'
+      || isOcrPagePreviewResponse({ preview_source: previewSource })
+    const resolvedOcrPageCount = ocrPageCount || Number(documentDetail?.ocr_page_count || 0)
+    const canRenderPreview = isPdfFileType(rawFileType, fileName, previewUrl)
+      ? Boolean(pdfPreviewUrl)
+      : (usesOcrPagePreview ? Boolean(previewUrl) : Boolean(previewUrl))
 
     return (
       <div className="document-preview-area">
@@ -860,24 +1177,28 @@ const DocumentDetailModal = forwardRef(({
               </div>
             </div>
           ) : canRenderPreview ? (
-            <div style={{ 
-              width: '100%', 
-              height: '100%', 
-              display: 'flex', 
-              alignItems: 'center', 
-              justifyContent: 'center',
+            <div style={{
+              width: '100%',
+              height: '100%',
+              minWidth: 0,
+              minHeight: 0,
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'stretch',
               overflow: 'auto',
-              padding: '16px'
+              padding: 16,
             }}>
-              {isPDF(rawFileType, fileName, previewUrl) ? (
+              {isPdfFileType(rawFileType, fileName, previewUrl) ? (
                 <div style={{
                   width: '100%',
-                  height: '100%',
+                  minWidth: 0,
+                  flex: '1 1 auto',
                   minHeight: 500,
                   overflow: 'auto',
                   display: 'flex',
-                  justifyContent: 'center',
-                  alignItems: 'flex-start',
+                  flexDirection: 'column',
+                  alignItems: 'stretch',
                   padding: 12,
                   border: `1px solid ${appThemeToken.colorBorder}`,
                   borderRadius: 8,
@@ -885,17 +1206,45 @@ const DocumentDetailModal = forwardRef(({
                 }}>
                   <PdfPageWithHighlight
                     pdfUrl={pdfPreviewUrl}
-                    maxWidth={900}
                     renderAllPages
                   />
                 </div>
-              ) : isImage(rawFileType, fileName, previewUrl) ? (
+              ) : isImage(rawFileType, fileName, previewUrl) || usesOcrPagePreview ? (
                 <div style={{ 
                   width: '100%', 
                   height: '100%', 
                   display: 'flex', 
                   flexDirection: 'column'
                 }}>
+                  {usesOcrPagePreview && resolvedOcrPageCount > 1 && (
+                    <div style={{
+                      padding: '8px 16px',
+                      background: appThemeToken.colorFillTertiary,
+                      borderBottom: `1px solid ${appThemeToken.colorBorder}`,
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      gap: 12,
+                    }}>
+                      <Button
+                        size="small"
+                        disabled={ocrPageNo <= 1 || previewLoading}
+                        onClick={() => fetchPreviewUrl(document.id, ocrPageNo - 1)}
+                      >
+                        上一页
+                      </Button>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        第 {ocrPageNo} / {resolvedOcrPageCount} 页
+                      </Text>
+                      <Button
+                        size="small"
+                        disabled={ocrPageNo >= resolvedOcrPageCount || previewLoading}
+                        onClick={() => fetchPreviewUrl(document.id, ocrPageNo + 1)}
+                      >
+                        下一页
+                      </Button>
+                    </div>
+                  )}
                   {/* 图片工具栏 */}
                   {!previewError && !previewLoading && !detailLoading && (
                     <div className="image-toolbar" style={{ 
@@ -1062,7 +1411,9 @@ const DocumentDetailModal = forwardRef(({
                   </div>
                   <div className="preview-note" style={{ marginTop: 16 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      不支持预览此文件类型
+                      {isOfficeDocumentLike({ fileType: rawFileType, fileName, mimeType: documentDetail?.mime_type })
+                        ? 'Word 文档需完成 OCR 解析后才能预览页面内容'
+                        : '不支持预览此文件类型'}
                     </Text>
                     <br />
                     <Button 
@@ -1183,22 +1534,46 @@ const DocumentDetailModal = forwardRef(({
       { fieldId: 'effectiveDate', fieldName: '生效时间', value: effectiveDateValue, uiComponentHint: 'datepicker' }
     ]
 
+    const metadataProgressAlert = metadataStage && (metadataInProgress || metadataStage.kind === 'error') ? (
+      <Alert
+        type={metadataStage.kind === 'error' ? 'error' : 'info'}
+        showIcon
+        message={metadataStage.message}
+        description={(
+          <Progress
+            percent={metadataStage.percent}
+            size="small"
+            status={
+              metadataStage.kind === 'error'
+                ? 'exception'
+                : metadataInProgress
+                  ? 'active'
+                  : 'success'
+            }
+          />
+        )}
+        style={{ marginBottom: 16 }}
+      />
+    ) : null
+
     return (
       <div className="metadata-fields">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <Title level={5} style={{ margin: 0 }}>元数据字段</Title>
-          <Tooltip title={!document.isParsed ? '文档尚未完成 OCR 解析，请先进行解析' : '仅重新抽取文档元数据（文档类型、患者名等），不包含病历字段'}>
+          <Tooltip title={!document.isParsed ? '文档尚未完成 OCR 解析，请先进行解析' : metadataInProgress ? '元数据抽取进行中' : '仅重新抽取文档元数据（文档类型、患者名等），不包含病历字段'}>
             <Button
               size="small"
-              icon={extractingMetadata ? <Spin size="small" /> : <ExperimentOutlined />}
+              icon={metadataInProgress ? <Spin size="small" /> : <ExperimentOutlined />}
               onClick={handleExtractMetadata}
-              loading={extractingMetadata}
-              disabled={!document.isParsed || extractingMetadata || detailLoading}
+              loading={extractingMetadata || metadataInProgress}
+              disabled={!document.isParsed || extractingMetadata || detailLoading || metadataInProgress}
             >
-              重新提取
+              {metadataInProgress ? '抽取中' : '重新提取'}
             </Button>
           </Tooltip>
         </div>
+
+        {metadataProgressAlert}
         
         {/* 唯一标识符列表 (特殊处理) */}
         <div className="identifiers-section" style={{ marginBottom: 24, padding: 16, background: appThemeToken.colorFillTertiary, borderRadius: 8 }}>
@@ -1675,6 +2050,13 @@ const DocumentDetailModal = forwardRef(({
             </Text>
           </div>
           <div className="extraction-status">
+            {record.target_mode === 'targeted_section' && record.target_form_key ? (
+              <Tag color="purple" style={{ marginRight: 8 }}>
+                靶向 · {record.target_form_key}
+              </Tag>
+            ) : record.job_type ? (
+              <Tag style={{ marginRight: 8 }}>{record.job_type}</Tag>
+            ) : null}
             {/* 显示冲突数量（如果有），点击可查看详情 */}
             {conflictCount > 0 && (
               <Tag 
@@ -1849,43 +2231,62 @@ const DocumentDetailModal = forwardRef(({
     // 从文档详情 API 获取抽取记录列表
     const extractionRecords = documentDetail?.extraction_records || []
     const extractionCount = documentDetail?.extraction_count || 0
+    const hasExtractionRecords = extractionRecords.length > 0
+
+    const extractProgressAlert = extractStage && (extractInProgress || extractStage.kind === 'error') ? (
+      <Alert
+        type={extractStage.kind === 'error' ? 'error' : 'info'}
+        showIcon
+        message={extractStage.message}
+        description={(
+          <Progress
+            percent={extractStage.percent}
+            size="small"
+            status={
+              extractStage.kind === 'error'
+                ? 'exception'
+                : extractInProgress
+                  ? 'active'
+                  : 'success'
+            }
+          />
+        )}
+        style={{ marginBottom: 16 }}
+      />
+    ) : null
+
+    const renderExtractActionButton = (primary = false) => (
+      <Tooltip title={extractDisabledReason || (hasExtractionRecords ? '重新抽取病历结构化字段' : '开始抽取病历结构化字段')}>
+        <Button
+          type={primary ? 'primary' : 'default'}
+          size={primary ? 'middle' : 'small'}
+          style={primary ? { marginTop: 16 } : undefined}
+          icon={extractInProgress ? <Spin size="small" /> : <ExperimentOutlined />}
+          onClick={handleExtract}
+          loading={extracting || extractInProgress}
+          disabled={!canStartExtract}
+        >
+          {extractInProgress ? '抽取中' : (hasExtractionRecords ? '重新抽取' : '开始抽取')}
+        </Button>
+      </Tooltip>
+    )
 
     return (
       <div className="extracted-fields">
-        {extractionRecords.length === 0 ? (
+        {extractProgressAlert}
+        {!hasExtractionRecords ? (
           <div className="ocr-content-empty">
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="文档尚未进行 AI 抽取"
+              description={boundPatientId ? '文档尚未进行 AI 抽取' : '文档尚未绑定患者，请先归档后再抽取'}
             />
-            {document.isParsed && (
-              <Button 
-                type="primary" 
-                style={{ marginTop: 16 }}
-                icon={<ExperimentOutlined />}
-                onClick={handleExtract}
-                loading={extracting}
-              >
-                开始抽取
-              </Button>
-            )}
+            {renderExtractActionButton(true)}
           </div>
         ) : (
           <>
-            {/* 抽取记录标题栏 + 重新抽取按钮 */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <Title level={5} style={{ margin: 0 }}>抽取记录 ({extractionCount})</Title>
-              <Tooltip title={!document.isParsed ? '文档尚未完成 OCR 解析，请先进行解析' : ''}>
-                <Button
-                  size="small"
-                  icon={extracting ? <Spin size="small" /> : <ExperimentOutlined />}
-                  onClick={handleExtract}
-                  loading={extracting}
-                  disabled={!document.isParsed || extracting}
-                >
-                  重新抽取
-                </Button>
-              </Tooltip>
+              {renderExtractActionButton(false)}
             </div>
             <div className="extraction-records-list">
               {extractionRecords.map((record, index) => renderExtractionRecord(record, index))}
@@ -2442,7 +2843,12 @@ const DocumentDetailModal = forwardRef(({
   const tabItems = [
     {
       key: 'metadata',
-      label: '文档信息',
+      label: (
+        <Space size={4}>
+          <span>文档信息</span>
+          {metadataInProgress ? <Spin size="small" /> : null}
+        </Space>
+      ),
       children: renderMetadataFields()
     },
     {
@@ -2461,7 +2867,7 @@ const DocumentDetailModal = forwardRef(({
         <Space size={4}>
           <ExperimentOutlined />
           <span>抽取记录</span>
-          {detailLoading ? (
+          {detailLoading || extractInProgress ? (
             <Spin size="small" style={{ marginLeft: 4 }} />
           ) : (documentDetail?.extraction_count || 0) > 0 ? (
             <Badge count={documentDetail?.extraction_count || 0} size="small" style={{ marginLeft: 4 }} />
@@ -2512,6 +2918,7 @@ const DocumentDetailModal = forwardRef(({
       }
       open={visible}
       onCancel={onClose}
+      destroyOnClose
       width="90%"
       centered
       footer={
@@ -2562,6 +2969,7 @@ const DocumentDetailModal = forwardRef(({
           <Col span={14} style={{ height: '100%' }}>
             <div className="document-fields" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
               <Tabs
+                destroyInactiveTabPane
                 activeKey={activeTab}
                 onChange={setActiveTab}
                 items={tabItems}

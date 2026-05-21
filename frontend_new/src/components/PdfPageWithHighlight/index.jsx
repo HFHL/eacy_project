@@ -36,6 +36,24 @@ const { Text } = Typography
 const DEFAULT_BBOX_SCALE = 1000
 const DEFAULT_PAGE_WIDTH = 900
 const MIN_PAGE_WIDTH = 240
+
+/** 是否按父容器宽度铺满（不传 maxWidth、传 "100%" 等均视为铺满） */
+const isFillParentMaxWidth = (maxWidth) =>
+  maxWidth == null || maxWidth === '100%' || maxWidth === 'none'
+
+/** 根据容器实测宽度与 maxWidth 上限计算单页渲染宽度 */
+const resolveBasePageWidth = (containerWidth, maxWidth) => {
+  const measured = containerWidth > 0 ? Math.floor(containerWidth) : null
+  if (isFillParentMaxWidth(maxWidth)) {
+    return measured ? Math.max(MIN_PAGE_WIDTH, measured) : DEFAULT_PAGE_WIDTH
+  }
+  if (typeof maxWidth === 'number' && Number.isFinite(maxWidth) && maxWidth > 0) {
+    const cap = Math.floor(maxWidth)
+    if (!measured) return Math.max(MIN_PAGE_WIDTH, cap)
+    return Math.max(MIN_PAGE_WIDTH, Math.min(measured, cap))
+  }
+  return measured ? Math.max(MIN_PAGE_WIDTH, measured) : DEFAULT_PAGE_WIDTH
+}
 const MIN_ZOOM = 0.5
 const MAX_ZOOM = 3
 const ZOOM_STEP = 0.2
@@ -56,7 +74,7 @@ export function PdfPageWithHighlight({
   pageNumber = null,
   bbox,
   locations,
-  maxWidth = 480,
+  maxWidth,
   loading: externalLoading = false,
   bboxScale = DEFAULT_BBOX_SCALE,
   onLoaded,
@@ -120,19 +138,10 @@ export function PdfPageWithHighlight({
     return () => observer.disconnect()
   }, [])
 
-  const basePageWidth = useMemo(() => {
-    const measuredWidth = containerWidth ? Math.floor(containerWidth) : null
-    const maxNumericWidth = typeof maxWidth === 'number' ? maxWidth : null
-    const fallbackWidth = maxNumericWidth || DEFAULT_PAGE_WIDTH
-
-    if (!measuredWidth) return fallbackWidth
-
-    const boundedWidth = maxNumericWidth
-      ? Math.min(measuredWidth, maxNumericWidth)
-      : measuredWidth
-
-    return Math.max(MIN_PAGE_WIDTH, boundedWidth)
-  }, [containerWidth, maxWidth])
+  const basePageWidth = useMemo(
+    () => resolveBasePageWidth(containerWidth, maxWidth),
+    [containerWidth, maxWidth],
+  )
 
   const pageWidth = Math.round(basePageWidth * zoom)
 
@@ -484,7 +493,7 @@ export function PdfPageWithHighlight({
       }}
     >
       {renderToolbar()}
-      <div ref={scrollRef}>
+      <div ref={scrollRef} style={{ width: '100%', minWidth: 0 }}>
         <Document
           file={pdfUrl}
           loading={
@@ -506,7 +515,7 @@ export function PdfPageWithHighlight({
           onLoadSuccess={onDocumentLoadSuccess}
           onLoadError={(err) => setError(err?.message || 'PDF 加载失败')}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: '100%', gap: 16 }}>
             {showLoading && null}
             {measurementReady && pageNumbers.map((pageNo) => (
               <div
@@ -515,8 +524,9 @@ export function PdfPageWithHighlight({
                 data-page-number={pageNo}
                 style={{
                   position: 'relative',
-                  display: 'inline-block',
-                  width: pageWidth,
+                  width: '100%',
+                  maxWidth: pageWidth,
+                  margin: '0 auto',
                   background: '#fff',
                   borderRadius: 4,
                   boxShadow: '0 2px 8px rgba(0,0,0,0.1)',

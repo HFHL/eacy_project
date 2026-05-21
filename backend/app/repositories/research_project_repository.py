@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from app.models import ProjectPatient, ProjectTemplateBinding, ResearchProject
 from core.db import session
@@ -18,10 +18,24 @@ class ResearchProjectRepository(BaseRepo[ResearchProject]):
         result = await session.execute(query)
         return result.scalars().first()
 
+    def _apply_search_filter(self, query, search: str | None):
+        keyword = (search or "").strip()
+        if not keyword:
+            return query
+        pattern = f"%{keyword}%"
+        return query.where(
+            or_(
+                ResearchProject.project_name.ilike(pattern),
+                ResearchProject.description.ilike(pattern),
+                ResearchProject.project_code.ilike(pattern),
+            )
+        )
+
     async def list_projects(
         self,
         *,
         status: str | None = None,
+        search: str | None = None,
         limit: int = 100,
         offset: int = 0,
         owner_id: str | None = None,
@@ -33,11 +47,18 @@ class ResearchProjectRepository(BaseRepo[ResearchProject]):
             query = query.where(ResearchProject.status == status)
         else:
             query = query.where(ResearchProject.status != "deleted")
+        query = self._apply_search_filter(query, search)
         query = query.order_by(ResearchProject.created_at.desc())
         result = await session.execute(query.limit(limit).offset(offset))
         return list(result.scalars().all())
 
-    async def count_projects(self, *, status: str | None = None, owner_id: str | None = None) -> int:
+    async def count_projects(
+        self,
+        *,
+        status: str | None = None,
+        search: str | None = None,
+        owner_id: str | None = None,
+    ) -> int:
         query = select(func.count()).select_from(ResearchProject)
         if owner_id is not None:
             query = query.where(ResearchProject.owner_id == owner_id)
@@ -45,6 +66,7 @@ class ResearchProjectRepository(BaseRepo[ResearchProject]):
             query = query.where(ResearchProject.status == status)
         else:
             query = query.where(ResearchProject.status != "deleted")
+        query = self._apply_search_filter(query, search)
         result = await session.execute(query)
         return int(result.scalar_one())
 
@@ -68,6 +90,14 @@ class ProjectPatientRepository(BaseRepo[ProjectPatient]):
             .where(ProjectPatient.project_id == project_id)
             .order_by(ProjectPatient.created_at.desc())
         )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_by_ids(self, project_patient_ids: list[str]) -> list[ProjectPatient]:
+        if not project_patient_ids:
+            return []
+        unique_ids = list({str(item) for item in project_patient_ids if item})
+        query = select(ProjectPatient).where(ProjectPatient.id.in_(unique_ids))
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -156,3 +186,32 @@ class ProjectTemplateBindingRepository(BaseRepo[ProjectTemplateBinding]):
         )
         result = await session.execute(query)
         return list(result.scalars().all())
+
+    async def list_active_bindings_by_template(self, template_id: str) -> list[ProjectTemplateBinding]:
+        query = (
+            select(ProjectTemplateBinding)
+            .where(ProjectTemplateBinding.template_id == template_id)
+            .where(ProjectTemplateBinding.status == "active")
+            .order_by(ProjectTemplateBinding.created_at.desc())
+        )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_active_projects_by_template(self, template_id: str) -> list[dict[str, str]]:
+        """返回仍激活绑定指定模板的项目（去重）。"""
+        query = (
+            select(ResearchProject.id, ResearchProject.project_name)
+            .join(
+                ProjectTemplateBinding,
+                ProjectTemplateBinding.project_id == ResearchProject.id,
+            )
+            .where(ProjectTemplateBinding.template_id == template_id)
+            .where(ProjectTemplateBinding.status == "active")
+            .distinct()
+            .order_by(ResearchProject.project_name.asc())
+        )
+        result = await session.execute(query)
+        return [
+            {"id": str(row.id), "project_name": row.project_name or "未命名项目"}
+            for row in result.all()
+        ]

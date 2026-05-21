@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { message } from 'antd'
 import dayjs from 'dayjs'
-import { getPatientDetail, updatePatient, getPatientDocuments, generateAiSummary, getAiSummary } from '@/api/patient'
+import { getPatientDetail, updatePatient, getPatientDocuments, generateAiSummary, getAiSummary, saveAiSummary } from '@/api/patient'
 import { maskPhone, maskIdCard, maskAddress } from '@/utils/sensitiveUtils'
 import { syncPatientStatsAfterDocumentChange as runPatientStatSync } from '../utils/patientStatSync'
 
@@ -298,19 +298,17 @@ export const usePatientData = (patientId = null) => {
     }
   }, [patientId])
 
-  // 当 patientId 变化时获取数据；变更/卸载时取消上一次仍在飞的请求，避免错位回填
+  // 首屏仅拉患者详情；文档列表与 AI 综述由 PatientDetail 按 Tab 按需触发
   useEffect(() => {
     if (patientId) {
       fetchPatientDetail()
-      fetchPatientDocuments()
-      fetchAiSummary()
     }
     return () => {
       detailAbortRef.current?.abort()
       documentsAbortRef.current?.abort()
       aiSummaryAbortRef.current?.abort()
     }
-  }, [patientId, fetchPatientDetail, fetchPatientDocuments, fetchAiSummary])
+  }, [patientId, fetchPatientDetail])
 
   // 编辑病情综述
   const handleEditSummary = (summaryForm) => {
@@ -323,10 +321,27 @@ export const usePatientData = (patientId = null) => {
   const handleSaveSummary = async (summaryForm) => {
     try {
       const values = await summaryForm.validateFields()
+      if (!patientId) {
+        message.warning('请先保存患者信息')
+        return false
+      }
+      const res = await saveAiSummary(patientId, values.content)
+      if (!res.success) {
+        message.error(res.message || '病情综述保存失败')
+        return false
+      }
       setAiSummary({
         ...aiSummary,
-        content: values.content,
-        lastUpdate: new Date().toLocaleString()
+        content: res.data?.content || values.content,
+        lastUpdate: res.data?.generated_at
+          ? new Date(res.data.generated_at).toLocaleString()
+          : new Date().toLocaleString(),
+        sourceDocuments: (res.data?.source_documents || aiSummary.sourceDocuments || []).map((d, idx) => ({
+          id: d.id,
+          name: d.name,
+          ref: d.ref || `[${idx + 1}]`,
+          type: d.type || '',
+        })),
       })
       setSummaryEditMode(false)
       message.success('病情综述已保存')

@@ -14,24 +14,11 @@ import { useEhrLayout } from './hooks/useEhrLayout'
 import { useEhrFieldGroups } from './hooks/useEhrFieldGroups'
 import { useEhrFieldEdit } from './hooks/useEhrFieldEdit'
 // 导入API
-import { extractEhrData, extractEhrDataTargeted, getFreshDocumentPdfStreamUrl, getDocumentTempUrl, uploadDocument } from '@/api/document'
+import { extractEhrData, extractEhrDataTargeted, resolveTraceDocumentPreviewUrl, uploadDocument } from '@/api/document'
 import { getEhrFieldEvidence, getEhrFieldHistory, getPatientEhr } from '@/api/patient'
+import { hasRenderablePolygon } from '@/api/_evidence'
 import { upsertTask } from '@/utils/taskStore'
 import { appThemeToken } from '@/styles/themeTokens'
-
-const isPdfFileLike = ({ fileType, fileName, fileUrl } = {}) => {
-  const type = String(fileType || '').toLowerCase()
-  const name = String(fileName || '').toLowerCase()
-  const url = String(fileUrl || '').toLowerCase()
-  const cleanUrl = url.split('?')[0].split('#')[0]
-  return (
-    type === 'pdf' ||
-    type === '.pdf' ||
-    type.includes('application/pdf') ||
-    name.endsWith('.pdf') ||
-    cleanUrl.endsWith('.pdf')
-  )
-}
 
 const EhrTab = ({
   // 患者ID（用于保存病历字段）
@@ -257,7 +244,7 @@ const EhrTab = ({
         const evidences = evidenceRes.success && Array.isArray(evidenceRes.data) ? evidenceRes.data : []
         const evidenceLocations = evidences
           .map(item => item.source_location)
-          .filter(loc => loc && Array.isArray(loc.polygon) && loc.polygon.length >= 8)
+          .filter(loc => hasRenderablePolygon(loc))
         setFieldHistory(history)
 
         // 2. 优先使用 evidence 的 TextIn polygon；历史事件仅用于定位来源文档和变更信息
@@ -277,24 +264,18 @@ const EhrTab = ({
           }
           setImageLoading(true)
           try {
-            const urlRes = await getDocumentTempUrl(traceDocumentId)
-            console.log('文档URL响应:', urlRes)
-            if (urlRes.success && urlRes.data?.temp_url) {
-              const isPdf = isPdfFileLike({
-                fileType: urlRes.data.file_type || urlRes.data.mime_type,
-                fileName: urlRes.data.file_name,
-                fileUrl: urlRes.data.temp_url,
-              })
+            const tracePageNo = evidenceLocations[0]?.page || evidenceLocations[0]?.page_no || 1
+            const preview = await resolveTraceDocumentPreviewUrl(traceDocumentId, { pageNo: tracePageNo })
+            console.log('文档预览响应:', preview)
+            if (preview?.url) {
               if (evidenceLocations.length > 0) {
                 setSourceLocation(evidenceLocations.map(location => ({
                   ...location,
-                  file_name: urlRes.data.file_name,
-                  mime_type: urlRes.data.mime_type,
+                  file_name: preview.fileName,
+                  mime_type: preview.mimeType,
                 })))
               }
-              setDocumentImageUrl(isPdf
-                ? await getFreshDocumentPdfStreamUrl(traceDocumentId)
-                : urlRes.data.temp_url)
+              setDocumentImageUrl(preview.url)
             }
           } catch (urlError) {
             console.error('获取文档URL失败:', urlError)
@@ -308,16 +289,12 @@ const EhrTab = ({
             setFallbackDocument(matched)
             setImageLoading(true)
             try {
-              const urlRes = await getDocumentTempUrl(matched.id)
-              if (urlRes.success && urlRes.data?.temp_url) {
-                const isPdf = isPdfFileLike({
-                  fileType: urlRes.data.file_type || urlRes.data.mime_type,
-                  fileName: urlRes.data.file_name || matched.name || matched.fileName,
-                  fileUrl: urlRes.data.temp_url,
-                })
-                setDocumentImageUrl(isPdf
-                  ? await getFreshDocumentPdfStreamUrl(matched.id)
-                  : urlRes.data.temp_url)
+              const preview = await resolveTraceDocumentPreviewUrl(matched.id, {
+                fileName: matched.name || matched.fileName,
+                fileType: matched.fileType || matched.file_type,
+              })
+              if (preview?.url) {
+                setDocumentImageUrl(preview.url)
               }
             } catch (urlError) {
               console.error('获取兜底文档URL失败:', urlError)
@@ -340,9 +317,9 @@ const EhrTab = ({
     if (!documentId) return
     
     try {
-      const urlRes = await getDocumentTempUrl(documentId)
-      if (urlRes.success && urlRes.data?.temp_url) {
-        window.open(urlRes.data.temp_url, '_blank')
+      const preview = await resolveTraceDocumentPreviewUrl(documentId)
+      if (preview?.url) {
+        window.open(preview.url, '_blank')
       } else {
         message.error('获取文档URL失败')
       }

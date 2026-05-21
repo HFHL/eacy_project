@@ -4,17 +4,17 @@
  *   2) 显式 dispatch addNotification 到 Redux store（持久化进通知中心）
  *   3) 派发刷新事件
  *
- * 只有这 4 类长耗时后端任务才会进入通知中心：
+ * 经全局轮询写入通知中心的任务类型：
  *   - patient_extract        电子病历抽取（整患者）
  *   - ehr_targeted_extract   病历靶向抽取
  *   - project_crf_targeted   科研项目靶向抽取
  *   - ehr_folder_batch       电子病历夹批次更新（按 batchId 轮询）
+ * 另由页面本地轮询写入：patient_extract（患者详情）、project_crf_batch（科研项目）、ehr_folder_batch（文档 Tab）
  */
 import { message } from 'antd'
-import store from '@/store'
-import { addNotification } from '@/store/slices/uiSlice'
 import { getAllTasks, upsertTask, claimExtractionNotifyOnce } from './taskStore'
 import { getExtractionTaskStatus, getTaskBatchProgress } from '@/api/patient'
+import { TASK_TYPE_LABEL, pushTaskNotification, claimBatchNotifyOnce } from './taskNotifications'
 
 const POLL_MS = 4000
 
@@ -31,13 +31,6 @@ const POLLABLE_TYPES = new Set([
   'ehr_targeted_extract',
   'project_crf_targeted',
 ])
-
-const TASK_TYPE_LABEL = {
-  patient_extract: '电子病历抽取',
-  ehr_targeted_extract: '病历靶向抽取',
-  project_crf_targeted: '科研项目靶向抽取',
-  ehr_folder_batch: '电子病历夹更新',
-}
 
 let intervalId = null
 let tickPromise = null
@@ -60,21 +53,10 @@ function needsPollingTask(task) {
   return !isTerminalStatus(task.status)
 }
 
-function batchNotifyKey(batchId) {
-  return `eacy_ehr_batch_notified_${batchId}`
-}
-
-function shouldNotifyBatch(batchId) {
-  const k = batchNotifyKey(batchId)
-  if (sessionStorage.getItem(k)) return false
-  sessionStorage.setItem(k, '1')
-  return true
-}
-
-function dispatchPatientRefresh(patientId) {
+function dispatchPatientRefresh(patientId, reason = 'all') {
   const id = String(patientId || '')
   if (!id) return
-  window.dispatchEvent(new CustomEvent('patient-detail-refresh', { detail: { patientId: id } }))
+  window.dispatchEvent(new CustomEvent('patient-detail-refresh', { detail: { patientId: id, reason } }))
 }
 
 function dispatchProjectCrfRefresh(projectId, projectPatientId) {
@@ -87,31 +69,6 @@ function dispatchProjectCrfRefresh(projectId, projectPatientId) {
       },
     })
   )
-}
-
-/**
- * 把一条任务终态写入通知中心（持久化、可在铃铛查看）。
- * @param {object} params
- * @param {'success'|'warning'|'error'} params.type
- * @param {string} params.taskType    任务类型 key（用于 source 标识）
- * @param {string} params.title       通知主标题
- * @param {string} params.description 通知详情
- */
-function pushTaskNotification({ type, taskType, title, description }) {
-  try {
-    store.dispatch(
-      addNotification({
-        type,
-        title,
-        description,
-        source: `task:${taskType}`,
-        timestamp: new Date().toISOString(),
-        route: typeof window !== 'undefined' ? window.location?.pathname : undefined,
-      })
-    )
-  } catch (_) {
-    // 派发失败不影响 toast 与轮询主流程
-  }
 }
 
 function settleExtractionTask(task, data) {
@@ -143,7 +100,7 @@ function settleExtractionTask(task, data) {
       const desc = targetLabel ? `病历靶向抽取已完成（${targetLabel}）` : '病历靶向抽取已完成'
       message.success(desc)
       pushTaskNotification({ type: 'success', taskType: task.type, title: taskLabel, description: desc })
-      dispatchPatientRefresh(task.patient_id)
+      dispatchPatientRefresh(task.patient_id, 'ehr')
     } else if (task.type === 'patient_extract') {
       const successCount = data.success_count ?? data.succeeded_items
       const failCount = data.error_count ?? data.fail_count ?? data.failed_items ?? 0
@@ -155,7 +112,7 @@ function settleExtractionTask(task, data) {
       if (failCount > 0) message.warning(msg)
       else message.success(msg)
       pushTaskNotification({ type: notifyType, taskType: task.type, title: taskLabel, description: msg })
-      dispatchPatientRefresh(task.patient_id)
+      dispatchPatientRefresh(task.patient_id, 'all')
     }
   } else if (status === 'completed_with_errors') {
     const fail = data.error_count ?? data.fail_count ?? data.failed_items ?? 0
@@ -165,7 +122,7 @@ function settleExtractionTask(task, data) {
     if (task.type === 'project_crf_targeted') {
       dispatchProjectCrfRefresh(task.project_id, task.project_patient_id || task.patient_id)
     } else {
-      dispatchPatientRefresh(task.patient_id)
+      dispatchPatientRefresh(task.patient_id, task.type === 'patient_extract' ? 'all' : 'ehr')
     }
   } else if (status === 'failed' || status === 'cancelled') {
     const desc = data.message || data.error_message || '后台抽取任务失败'
@@ -174,7 +131,7 @@ function settleExtractionTask(task, data) {
     if (task.type === 'project_crf_targeted') {
       dispatchProjectCrfRefresh(task.project_id, task.project_patient_id || task.patient_id)
     } else {
-      dispatchPatientRefresh(task.patient_id)
+      dispatchPatientRefresh(task.patient_id, task.type === 'patient_extract' ? 'all' : 'ehr')
     }
   }
 
@@ -234,7 +191,7 @@ async function pollEhrFolderBatchesFromStorage() {
       const terminal = ['succeeded', 'completed', 'completed_with_errors', 'failed', 'cancelled'].includes(st)
       if (!terminal) continue
 
-      if (shouldNotifyBatch(batchId)) {
+      if (claimBatchNotifyOnce(batchId)) {
         let notifyType = 'success'
         let desc = '电子病历夹更新完成'
         if (st === 'succeeded' || st === 'completed') {
@@ -260,7 +217,7 @@ async function pollEhrFolderBatchesFromStorage() {
           title: folderLabel,
           description: desc,
         })
-        dispatchPatientRefresh(patientId)
+        dispatchPatientRefresh(patientId, 'ehr')
       }
       localStorage.removeItem(key)
     }

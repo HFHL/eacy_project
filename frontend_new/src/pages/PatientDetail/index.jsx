@@ -93,7 +93,15 @@ import SchemaEhrTab from './tabs/SchemaEhrTab'
 import { extractEhrData, uploadAndArchiveAsync, getFileStatusesByIds, deleteDocument } from '@/api/document'
 import { startPatientExtraction, getExtractionTaskStatus, getFieldConflicts, resolveFieldConflict } from '@/api/patient'
 import { getTasksByPatient, upsertTask, removeTask, claimExtractionNotifyOnce } from '@/utils/taskStore'
+import { TASK_TYPE_LABEL, pushTaskNotification } from '@/utils/taskNotifications'
 import { maskPhone, maskIdCard, maskAddress, maskName } from '@/utils/sensitiveUtils'
+import {
+  MAX_UPLOAD_FILE_SIZE_MB,
+  MAX_UPLOAD_FILES_PER_BATCH,
+  UPLOAD_FILE_ACCEPT,
+  validateUploadBatch,
+  validateUploadFile,
+} from '@/constants/uploadLimits'
 
 const { Title, Text } = Typography
 const { Search } = Input
@@ -135,6 +143,7 @@ const PatientDetail = () => {
     loading,
     fetchPatientDetail,
     fetchPatientDocuments,
+    fetchAiSummary,
     syncPatientStatsAfterDocumentChange
   } = usePatientData(patientId)
   
@@ -182,7 +191,28 @@ const PatientDetail = () => {
   const [selectedEhrDocument, setSelectedEhrDocument] = useState(null)
   const [activeTab, setActiveTab] = useState('ehr-schema')
   const [reExtracting, setReExtracting] = useState(false) // 重新抽取中状态
-  
+  const documentsTabLoadedRef = useRef(false)
+  const aiSummaryTabLoadedRef = useRef(false)
+
+  // 按 Tab 按需加载：避免首屏同时拉文档列表与 AI 综述
+  React.useEffect(() => {
+    documentsTabLoadedRef.current = false
+    aiSummaryTabLoadedRef.current = false
+  }, [patientId])
+
+  React.useEffect(() => {
+    if (!patientId || activeTab !== 'documents') return
+    if (documentsTabLoadedRef.current) return
+    documentsTabLoadedRef.current = true
+    fetchPatientDocuments()
+  }, [patientId, activeTab, fetchPatientDocuments])
+
+  React.useEffect(() => {
+    if (!patientId || activeTab !== 'ai-summary') return
+    if (aiSummaryTabLoadedRef.current) return
+    aiSummaryTabLoadedRef.current = true
+    fetchAiSummary()
+  }, [patientId, activeTab, fetchAiSummary])
   
   const [form] = Form.useForm()
   const [conflictForm] = Form.useForm()
@@ -919,24 +949,24 @@ const PatientDetail = () => {
   const [conflicts, setConflicts] = useState([])
   const [conflictsLoading, setConflictsLoading] = useState(false)
   const [conflictResolvingId, setConflictResolvingId] = useState(null)
-  React.useEffect(() => {
-    let cancelled = false
-    async function load() {
-      if (!patientId) return
-      setConflictsLoading(true)
-      try {
-        const res = await getFieldConflicts(patientId, 'pending')
-        const list = res?.data?.conflicts || []
-        if (!cancelled) setConflicts(list)
-      } catch (e) {
-        if (!cancelled) setConflicts([])
-      } finally {
-        if (!cancelled) setConflictsLoading(false)
-      }
+
+  const loadConflicts = React.useCallback(async () => {
+    if (!patientId) return
+    setConflictsLoading(true)
+    try {
+      const res = await getFieldConflicts(patientId, 'pending')
+      setConflicts(res?.data?.conflicts || [])
+    } catch {
+      setConflicts([])
+    } finally {
+      setConflictsLoading(false)
     }
-    load()
-    return () => { cancelled = true }
   }, [patientId])
+
+  React.useEffect(() => {
+    if (!conflictResolveVisible || !patientId) return
+    loadConflicts()
+  }, [conflictResolveVisible, patientId, loadConflicts])
 
   // 变更日志（TODO: 从 API 获取）
   const changeLogs = []
@@ -1155,7 +1185,7 @@ const PatientDetail = () => {
           loadTaskItems()
           
           // 检查任务是否完成
-          if (status === 'completed' || status === 'completed_with_errors') {
+          if (status === 'completed' || status === 'completed_with_errors' || status === 'succeeded') {
             // 任务完成
             const successCount = taskData.success_count || 0
             const failCount = uiFailCount
@@ -1167,21 +1197,38 @@ const PatientDetail = () => {
             }
             
             if (claimExtractionNotifyOnce(taskId)) {
-              if (failCount > 0) {
-                message.warning({ content: `${successMsg}（${failCount} 个失败）`, key: 'extraction', duration: 5 })
+              const hasFailures = failCount > 0 || status === 'completed_with_errors'
+              const notifyDesc = status === 'completed_with_errors'
+                ? `抽取已完成，但有 ${failCount || 0} 项失败`
+                : (failCount > 0 ? `${successMsg}（${failCount} 个失败）` : successMsg)
+              if (hasFailures) {
+                message.warning({ content: notifyDesc, key: 'extraction', duration: 5 })
               } else {
                 message.success({ content: successMsg, key: 'extraction', duration: 5 })
               }
+              pushTaskNotification({
+                type: hasFailures ? 'warning' : 'success',
+                taskType: 'patient_extract',
+                title: TASK_TYPE_LABEL.patient_extract,
+                description: notifyDesc,
+              })
             }
 
             // 刷新数据
             fetchPatientDocuments?.()
             setReExtracting(false)
             
-          } else if (status === 'failed') {
+          } else if (status === 'failed' || status === 'cancelled') {
             // 任务失败
+            const failDesc = taskData.message || taskData.error_message || '抽取任务失败'
             if (claimExtractionNotifyOnce(taskId)) {
-              message.error({ content: taskData.message || '抽取任务失败', key: 'extraction', duration: 5 })
+              message.error({ content: failDesc, key: 'extraction', duration: 5 })
+              pushTaskNotification({
+                type: 'error',
+                taskType: 'patient_extract',
+                title: TASK_TYPE_LABEL.patient_extract,
+                description: failDesc,
+              })
             }
             setReExtracting(false)
             
@@ -1395,13 +1442,20 @@ const PatientDetail = () => {
     const handleRefreshFromRail = (event) => {
       const targetPatientId = String(event?.detail?.patientId || '')
       if (!targetPatientId || String(patientId) !== targetPatientId) return
-      fetchPatientDetail?.()
-      fetchPatientDocuments?.()
-      syncPatientStatsAfterDocumentChange?.()
+      const reason = event?.detail?.reason || 'all'
+      if (reason === 'all' || reason === 'documents') {
+        if (documentsTabLoadedRef.current || activeTab === 'documents') {
+          syncPatientStatsAfterDocumentChange?.()
+        } else {
+          fetchPatientDetail?.()
+        }
+      } else if (reason === 'stats') {
+        fetchPatientDetail?.()
+      }
     }
     window.addEventListener('patient-detail-refresh', handleRefreshFromRail)
     return () => window.removeEventListener('patient-detail-refresh', handleRefreshFromRail)
-  }, [patientId, fetchPatientDetail, fetchPatientDocuments])
+  }, [patientId, activeTab, fetchPatientDetail, syncPatientStatsAfterDocumentChange])
 
   React.useEffect(() => {
     if (!taskCenterVisible || !patientId) return
@@ -1642,6 +1696,7 @@ const PatientDetail = () => {
           {/* Tab页面布局：不再限定高度，子页内容随浏览器滚动展开 */}
           <div style={{ flex: 1, minHeight: 0 }}>
             <Tabs
+          destroyInactiveTabPane
           defaultActiveKey="ehr-schema"
           activeKey={activeTab}
           onChange={setActiveTab}
@@ -1658,7 +1713,6 @@ const PatientDetail = () => {
                 <SchemaEhrTab
                   patientId={patientId}
                   patientDocuments={documents}
-                  onUploadDocument={() => setUploadVisible(true)}
                   onSave={async (data, type) => console.log('Schema保存', type, data)}
                   onDataChange={(data) => console.log('Schema数据变更', data)}
                 />
@@ -1669,7 +1723,7 @@ const PatientDetail = () => {
               label: (
                 <Space>
                   <FileTextOutlined />
-                  文档（{documents.length}）
+                  文档（{documents.length || patientInfo.documentCount || 0}）
                 </Space>
               ),
               children: (
@@ -1684,7 +1738,6 @@ const PatientDetail = () => {
                   handleReExtract={handleReExtract}
                   handleDeleteDocument={handleDeleteDocument}
                   setUploadVisible={setUploadVisible}
-                  setExtractionVisible={setExtractionVisible}
                   onRefresh={() => {
                     fetchPatientDocuments()
                   }}
@@ -2006,6 +2059,14 @@ const PatientDetail = () => {
                 message.warning('请先选择要上传的文件')
                 return
               }
+
+              const batchCheck = validateUploadBatch(
+                uploadFileList.map((item) => item.originFileObj || item)
+              )
+              if (!batchCheck.ok) {
+                message.error(batchCheck.message)
+                return
+              }
               
               setUploading(true)
               
@@ -2109,25 +2170,19 @@ const PatientDetail = () => {
           multiple
           fileList={uploadFileList}
           beforeUpload={(file) => {
-            // 验证文件类型
-            const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg']
-            const fileExt = file.name.split('.').pop()?.toLowerCase()
-            const allowedExts = ['pdf', 'jpg', 'jpeg', 'png']
-            
-            if (!allowedTypes.includes(file.type) && !allowedExts.includes(fileExt)) {
-              message.error(`不支持的文件类型: ${file.name}`)
-              return Upload.LIST_IGNORE
-            }
-            
-            // 验证文件大小（50MB）
-            if (file.size > 50 * 1024 * 1024) {
-              message.error(`文件过大: ${file.name}，最大支持50MB`)
+            const validation = validateUploadFile(file)
+            if (!validation.ok) {
+              message.error(validation.message)
               return Upload.LIST_IGNORE
             }
             
             return false // 阻止自动上传
           }}
           onChange={({ fileList }) => {
+            if (fileList.length > MAX_UPLOAD_FILES_PER_BATCH) {
+              message.error(`单次最多上传 ${MAX_UPLOAD_FILES_PER_BATCH} 个文件`)
+              return
+            }
             setUploadFileList(fileList)
           }}
           onRemove={(file) => {
@@ -2144,14 +2199,14 @@ const PatientDetail = () => {
           showUploadList={{
             showRemoveIcon: !uploading
           }}
-          accept=".pdf,.jpg,.jpeg,.png"
+          accept={UPLOAD_FILE_ACCEPT}
         >
           <p className="ant-upload-drag-icon">
             <UploadOutlined />
           </p>
           <p className="ant-upload-text">点击或拖拽文件到此处上传</p>
           <p className="ant-upload-hint">
-            支持 PDF、JPG、PNG 格式，单个文件最大 50MB
+            支持 PDF、JPG、PNG、DOCX 等格式，单个文件最大 {MAX_UPLOAD_FILE_SIZE_MB}MB，单次最多 {MAX_UPLOAD_FILES_PER_BATCH} 个
           </p>
         </Upload.Dragger>
         

@@ -73,6 +73,16 @@ class SchemaTemplateListResponse(BaseModel):
     page_size: int
 
 
+class SchemaTemplateProjectUsageItem(BaseModel):
+    id: str
+    project_name: str
+
+
+class SchemaTemplateProjectUsageResponse(BaseModel):
+    items: list[SchemaTemplateProjectUsageItem] = Field(default_factory=list)
+    total: int = 0
+
+
 def get_schema_service() -> SchemaService:
     return SchemaService()
 
@@ -116,6 +126,25 @@ async def create_schema_template(
     except (SchemaNotFoundError, SchemaConflictError) as error:
         _raise_schema_error(error)
     return SchemaTemplateResponse.model_validate(template)
+
+
+@router.get(
+    "/schema-templates/{template_id}/project-usage",
+    response_model=SchemaTemplateProjectUsageResponse,
+)
+async def get_schema_template_project_usage(
+    template_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: SchemaService = Depends(get_schema_service),
+) -> SchemaTemplateProjectUsageResponse:
+    try:
+        items = await service.list_active_project_usages(template_id)
+    except SchemaNotFoundError as error:
+        _raise_schema_error(error)
+    return SchemaTemplateProjectUsageResponse(
+        items=[SchemaTemplateProjectUsageItem.model_validate(item) for item in items],
+        total=len(items),
+    )
 
 
 @router.get("/schema-templates/{template_id}", response_model=SchemaTemplateDetailResponse)

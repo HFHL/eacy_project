@@ -176,7 +176,13 @@ class StructuredValueService:
             await self.add_evidence(value_event_id=event.id, **evidence)
 
         if auto_select_if_empty:
-            await self.select_current_value(event=event, selected_by=None, review_status="unreviewed")
+            current = await self.current_repository.get_by_field(
+                context_id=context_id,
+                record_instance_id=record_instance_id,
+                field_path=field_path,
+            )
+            if current is None:
+                await self.select_current_value(event=event, selected_by=None, review_status="unreviewed")
 
         return event
 

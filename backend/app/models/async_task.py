@@ -37,6 +37,7 @@ class AsyncTaskBatch(TimestampMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime)
+    plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class AsyncTaskItem(TimestampMixin, Base):

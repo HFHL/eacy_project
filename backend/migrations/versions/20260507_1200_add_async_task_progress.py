@@ -16,7 +16,16 @@ branch_labels = None
 depends_on = None
 
 
+def _table_names(bind) -> set[str]:
+    return set(sa.inspect(bind).get_table_names())
+
+
 def upgrade():
+    bind = op.get_bind()
+    existing = _table_names(bind)
+    if "async_task_batches" in existing:
+        return
+
     op.create_table(
         "async_task_batches",
         sa.Column("id", sa.Uuid(as_uuid=False), primary_key=True),

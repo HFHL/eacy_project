@@ -8,7 +8,7 @@ import httpx
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
 from app.core.security import decode_access_token
@@ -16,7 +16,9 @@ from app.repositories.extraction_job_repository import ExtractionJobRepository, 
 from app.repositories.field_value_repository import FieldValueEvidenceRepository
 from app.repositories.patient_repository import PatientRepository
 from app.services.document_metadata_service import DocumentMetadataService
+from app.services.document_preview_utils import document_uses_ocr_page_preview, get_ocr_page_count
 from app.services.document_service import DocumentService
+from app.services.textin_image_bytes import decode_binary_image_content
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -31,6 +33,23 @@ class DocumentUpdate(BaseModel):
     ocr_text: str | None = None
     ocr_payload_json: dict[str, Any] | None = None
     ocr_status: str | None = Field(default=None, max_length=50)
+
+    @field_validator("effective_at", mode="before")
+    @classmethod
+    def parse_effective_at(cls, value: Any) -> datetime | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if len(text) == 10 and text[4] == "-" and text[7] == "-":
+                return datetime.fromisoformat(f"{text}T00:00:00")
+            normalized = text.replace("Z", "+00:00")
+            if " " in normalized and "T" not in normalized:
+                normalized = normalized.replace(" ", "T", 1)
+            return datetime.fromisoformat(normalized)
+        return value
 
 
 class DocumentArchiveRequest(BaseModel):
@@ -104,6 +123,8 @@ class DocumentResponse(BaseModel):
     linked_patients: list[LinkedPatientSummary] = Field(default_factory=list)
     extraction_records: list[ExtractionRecordItem] = Field(default_factory=list)
     extraction_count: int = 0
+    preview_source: str | None = None
+    ocr_page_count: int | None = None
 
 
 class BoundPatientSummary(BaseModel):
@@ -186,6 +207,11 @@ class DocumentArchiveTreeResponse(BaseModel):
     archived_patients: list[dict[str, Any]]
 
 
+class DocumentArchiveCountsResponse(BaseModel):
+    total: int
+    counts: dict[str, int]
+
+
 class DocumentGroupDocumentsResponse(BaseModel):
     items: list[DocumentSummaryResponse]
     group: dict[str, Any]
@@ -200,6 +226,20 @@ class DocumentGroupArchiveResponse(BaseModel):
     archived_document_ids: list[str]
 
 
+class DocumentMatchInfoResponse(BaseModel):
+    document_id: str
+    group_id: str | None = None
+    document_metadata: dict[str, Any] = Field(default_factory=dict)
+    extracted_info: dict[str, Any] = Field(default_factory=dict)
+    matched_patient_id: str | None = None
+    match_score: float | int = 0
+    confidence: float | int = 0
+    match_result: str = "uncertain"
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    ai_recommendation: str | None = None
+    ai_reason: str | None = None
+
+
 class DocumentPreviewUrlResponse(BaseModel):
     document_id: str
     url: str
@@ -209,6 +249,10 @@ class DocumentPreviewUrlResponse(BaseModel):
     storage_provider: str | None = None
     mime_type: str | None = None
     file_name: str
+    file_type: str | None = None
+    preview_source: str = "native"
+    page_no: int | None = None
+    ocr_page_count: int | None = None
 
 
 def build_content_list(ocr_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -258,6 +302,10 @@ def document_response(
         parsed_content = json.dumps(payload, ensure_ascii=False)
 
     records = extraction_records or []
+    payload_data = document.ocr_payload_json if isinstance(document.ocr_payload_json, dict) else None
+    uses_ocr_pages = document_uses_ocr_page_preview(document)
+    ocr_page_count = get_ocr_page_count(payload_data) if uses_ocr_pages else None
+    preview_source = "ocr_page" if uses_ocr_pages and ocr_page_count else "native"
     return DocumentResponse.model_validate(
         {
             **document.__dict__,
@@ -269,6 +317,8 @@ def document_response(
             "linked_patients": linked_patients or [],
             "extraction_records": records,
             "extraction_count": len(records),
+            "preview_source": preview_source if uses_ocr_pages else "native",
+            "ocr_page_count": ocr_page_count,
         }
     )
 
@@ -305,6 +355,8 @@ async def build_extraction_records(document_id: str) -> list[dict[str, Any]]:
             {
                 "extraction_id": job_id,
                 "job_type": job.job_type,
+                "target_form_key": job.target_form_key,
+                "target_mode": "targeted_section" if job.target_form_key else "full_document",
                 "status": job.status,
                 "created_at": job.created_at,
                 "extracted_ehr_data": parsed,
@@ -480,6 +532,14 @@ async def list_documents(
     page_size: int = Query(default=20, ge=1, le=100),
     patient_id: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    tab: str | None = Query(default=None, description="Semantic tab filter: all, parse, todo, archived"),
+    task_stage: str | None = Query(default=None, description="Processing stage filter: processing, error, pending_archive, archived"),
+    keyword: str | None = Query(default=None),
+    document_types: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    order_by: str = Query(default="created_at"),
+    order_direction: str = Query(default="desc"),
     current_user: CurrentUser = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentListResponse:
@@ -488,6 +548,14 @@ async def list_documents(
         page_size=page_size,
         patient_id=patient_id,
         status=status_filter,
+        tab=tab,
+        task_stage=task_stage,
+        keyword=keyword,
+        document_types=document_types,
+        date_from=date_from,
+        date_to=date_to,
+        order_by=order_by,
+        order_direction=order_direction,
         uploaded_by=user_scope_id(current_user),
     )
     extract_status_map = await build_extract_status_map(documents)
@@ -516,6 +584,17 @@ async def get_file_list_tree(
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentArchiveTreeResponse:
     return DocumentArchiveTreeResponse.model_validate(await service.get_archive_tree(refresh=refresh, uploaded_by=user_scope_id(current_user)))
+
+
+@router.get("/v2/counts", response_model=DocumentArchiveCountsResponse)
+async def get_file_list_counts(
+    refresh: bool = Query(default=False),
+    current_user: CurrentUser = Depends(get_current_user),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentArchiveCountsResponse:
+    return DocumentArchiveCountsResponse.model_validate(
+        await service.get_archive_counts(refresh=refresh, uploaded_by=user_scope_id(current_user))
+    )
 
 
 @router.post("/statuses", response_model=DocumentStatusesResponse)
@@ -586,6 +665,26 @@ async def confirm_group_archive(
     )
 
 
+@router.get("/{document_id}/match-info", response_model=DocumentMatchInfoResponse)
+async def get_document_match_info(
+    document_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentMatchInfoResponse:
+    payload = await service.get_document_match_info(document_id, uploaded_by=user_scope_id(current_user))
+    return DocumentMatchInfoResponse.model_validate(payload)
+
+
+@router.post("/{document_id}/match-info/refresh", response_model=DocumentMatchInfoResponse)
+async def refresh_document_match_info(
+    document_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentMatchInfoResponse:
+    payload = await service.refresh_document_match_info(document_id, uploaded_by=user_scope_id(current_user))
+    return DocumentMatchInfoResponse.model_validate(payload)
+
+
 @router.get("/{document_id}", response_model=DocumentResponse)
 async def get_document(
     document_id: str,
@@ -610,10 +709,16 @@ async def get_document(
 async def get_document_preview_url(
     document_id: str,
     expires_in: int = Query(default=3600, ge=1, le=86400),
+    page: int | None = Query(default=None, ge=1),
     current_user: CurrentUser = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentPreviewUrlResponse:
-    payload = await service.get_preview_url(document_id, expires_in=expires_in, uploaded_by=user_scope_id(current_user))
+    payload = await service.get_preview_url(
+        document_id,
+        expires_in=expires_in,
+        page_no=page,
+        uploaded_by=user_scope_id(current_user),
+    )
     return DocumentPreviewUrlResponse.model_validate(payload)
 
 
@@ -621,15 +726,39 @@ async def stream_document_response(
     document_id: str,
     current_user: CurrentUser,
     service: DocumentService,
+    *,
+    page_no: int | None = None,
 ) -> StreamingResponse:
     document = await service.get_stream_document(document_id, uploaded_by=user_scope_id(current_user))
-    preview = await service.get_preview_url(document_id, uploaded_by=user_scope_id(current_user))
+    preview = await service.get_preview_url(
+        document_id,
+        page_no=page_no,
+        uploaded_by=user_scope_id(current_user),
+    )
     filename = Path(document.original_filename or document.file_name or "document.pdf").name
-    content_type = document.mime_type or "application/pdf"
-    if (document.file_ext or "").lower() == ".pdf":
-        content_type = "application/pdf"
+    if preview.get("preview_source") == "ocr_page":
+        page = preview.get("page_no") or page_no or 1
+        filename = f"page-{page}.jpg"
+        content_type = preview.get("mime_type") or "image/jpeg"
+    else:
+        content_type = preview.get("mime_type") or document.mime_type or "application/octet-stream"
+        if (document.file_ext or "").lower() == ".pdf":
+            content_type = "application/pdf"
+
+    is_ocr_page = preview.get("preview_source") == "ocr_page"
+    ocr_page_body: bytes | None = None
+    if is_ocr_page:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+            response = await client.get(preview["temp_url"])
+            response.raise_for_status()
+            ocr_page_body, decoded_type = decode_binary_image_content(response.content, content_type=content_type)
+            if decoded_type:
+                content_type = decoded_type
 
     async def iter_file():
+        if ocr_page_body is not None:
+            yield ocr_page_body
+            return
         async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
             async with client.stream("GET", preview["temp_url"]) as upstream:
                 upstream.raise_for_status()
@@ -651,19 +780,21 @@ async def stream_document_response(
 @router.get("/{document_id}/stream")
 async def stream_document(
     document_id: str,
+    page: int | None = Query(default=None, ge=1),
     current_user: CurrentUser = Depends(get_stream_current_user),
     service: DocumentService = Depends(get_document_service),
 ):
-    return await stream_document_response(document_id, current_user, service)
+    return await stream_document_response(document_id, current_user, service, page_no=page)
 
 
 @router.get("/{document_id}/pdf-stream")
 async def pdf_stream_document(
     document_id: str,
+    page: int | None = Query(default=None, ge=1),
     current_user: CurrentUser = Depends(get_stream_current_user),
     service: DocumentService = Depends(get_document_service),
 ):
-    return await stream_document_response(document_id, current_user, service)
+    return await stream_document_response(document_id, current_user, service, page_no=page)
 
 
 @router.patch("/{document_id}", response_model=DocumentResponse)
@@ -673,7 +804,11 @@ async def update_document(
     current_user: CurrentUser = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentResponse:
-    document = await service.update_document(document_id, **payload.model_dump(exclude_unset=True))
+    document = await service.update_document(
+        document_id,
+        uploaded_by=user_scope_id(current_user),
+        **payload.model_dump(exclude_unset=True),
+    )
     return document_response(document)
 
 
@@ -693,7 +828,7 @@ async def trigger_document_metadata(
     current_user: CurrentUser = Depends(get_current_user),
     service: DocumentMetadataService = Depends(get_document_metadata_service),
 ) -> DocumentResponse:
-    document = await service.queue_document_metadata(document_id)
+    document = await service.queue_document_metadata(document_id, uploaded_by=user_scope_id(current_user))
     return document_response(document)
 
 

@@ -16,9 +16,10 @@ class Config(BaseSettings):
     DEBUG: bool = True
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
+    # 必填：远程 PostgreSQL（见项目根 .env.example）。无本地 MySQL 默认。
     DATABASE_URL: str | None = None
-    WRITER_DB_URL: str = "mysql+aiomysql://fastapi:fastapi@localhost:3306/fastapi"
-    READER_DB_URL: str = "mysql+aiomysql://fastapi:fastapi@localhost:3306/fastapi"
+    WRITER_DB_URL: str = ""
+    READER_DB_URL: str = ""
     DB_POOL_SIZE: int = 1
     DB_MAX_OVERFLOW: int = 1
     DB_POOL_TIMEOUT: int = 5
@@ -33,6 +34,12 @@ class Config(BaseSettings):
         validation_alias=AliasChoices("CELERY_BACKEND_URL", "CELERY_RESULT_BACKEND"),
     )
     CELERY_TASK_ALWAYS_EAGER: bool = False
+    # Celery Beat: mark idle pending extraction jobs as failed (retryable).
+    STALE_PENDING_ABANDON_ENABLED: bool = True
+    STALE_PENDING_ABANDON_HOURS: int = 24
+    STALE_PENDING_ABANDON_LIMIT: int = 500
+    STALE_PENDING_ABANDON_CRON_HOUR: int = 3
+    STALE_PENDING_ABANDON_CRON_MINUTE: int = 0
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     DOCUMENT_STORAGE_PROVIDER: str = "oss"
@@ -46,8 +53,11 @@ class Config(BaseSettings):
     TEXTIN_APP_ID: str | None = None
     TEXTIN_SECRET_CODE: str | None = None
     TEXTIN_API_URL: str | None = None
+    TEXTIN_PARSE_MODE: str = "auto"
+    TEXTIN_GET_IMAGE: str = "page"
     TEXTIN_TIMEOUT_SECONDS: float = 120.0
     DOCUMENT_OCR_AUTO_ENQUEUE: bool = True
+    DOCUMENT_MAX_FILE_SIZE_BYTES: int = 100 * 1024 * 1024
     OPENAI_API_KEY: str | None = None
     OPENAI_API_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_MODEL: str = "gpt-4o-mini"
@@ -57,6 +67,8 @@ class Config(BaseSettings):
     EACY_EXTRACTION_STRATEGY: str = "simple"
     EXTRACTION_LLM_TIMEOUT_SECONDS: float = 180.0
     EXTRACTION_LLM_TEMPERATURE: float = 0.0
+    EXTRACTION_FIELD_BATCH_SIZE: int = 35
+    EXTRACTION_OCR_EVIDENCE_UNIT_LIMIT: int = 400
 
     # SMTP（用于注册/找回密码邮箱验证码）
     SMTP_HOST: str | None = None
@@ -77,19 +89,24 @@ class Config(BaseSettings):
     VERIFICATION_CODE_DEBUG_FALLBACK: bool = True
 
     @model_validator(mode="after")
-    def use_database_url_when_writer_reader_are_default(self):
+    def resolve_db_urls(self):
         if self.DATABASE_URL:
-            default_url = Config.model_fields["WRITER_DB_URL"].default
-            if self.WRITER_DB_URL == default_url:
+            if not self.WRITER_DB_URL:
                 self.WRITER_DB_URL = self.DATABASE_URL
-            if self.READER_DB_URL == default_url:
+            if not self.READER_DB_URL:
                 self.READER_DB_URL = self.DATABASE_URL
+        elif not self.WRITER_DB_URL:
+            raise ValueError(
+                "DATABASE_URL is required (remote PostgreSQL). "
+                "Copy .env.example to .env and set DATABASE_URL=postgresql+asyncpg://..."
+            )
+        if not self.READER_DB_URL:
+            self.READER_DB_URL = self.WRITER_DB_URL
         return self
 
 
 class TestConfig(Config):
-    WRITER_DB_URL: str = "mysql+aiomysql://fastapi:fastapi@localhost:3306/fastapi_test"
-    READER_DB_URL: str = "mysql+aiomysql://fastapi:fastapi@localhost:3306/fastapi_test"
+    ...
 
 
 class LocalConfig(Config):

@@ -22,7 +22,15 @@ eacy_frontend_port() {
 
 _port_in_use() {
   local p="$1"
-  ss -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}$"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}$"
+    return $?
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${p}" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  return 1
 }
 
 # 若端口被占用则递增，直到空闲（最多尝试 50 次）

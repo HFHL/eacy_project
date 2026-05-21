@@ -27,7 +27,7 @@ created: 2026-04-28
 
 - `backend/pyproject.toml` 已包含 `celery = "^5.3.6"`、`redis = "^5.0.1"`。
 - `backend/core/config.py` 已有 `CELERY_BROKER_URL`、`CELERY_BACKEND_URL`、`REDIS_HOST`、`REDIS_PORT`。
-- `backend/docker/docker-compose.yml` 只启动 MySQL 和 Redis，没有 RabbitMQ；默认 `CELERY_BROKER_URL` 却是 `amqp://user:bitnami@localhost:5672/`，当前本地服务与默认 broker 配置不一致。
+- 数据库为远程 PostgreSQL（`DATABASE_URL`）；本地仅需 Redis。Celery broker 使用 `redis://localhost:6379/1`（与 `core/config.py` 一致）。
 - `backend/app/workers/` 目前只有空包，尚未实现 Celery app、task、worker 入口。
 - `backend/app/services/extraction_service.py` 的 `create_and_process_job()` 会在 HTTP 请求内同步完成：创建 job、创建 run、调用 `MockExtractor`、写入结构化字段、把 job 置为 `completed`。
 - `backend/app/api/v1/extraction/router.py` 的 `POST /api/v1/extraction-jobs` 返回 `202`，但实际已经同步处理完成，不是真异步。

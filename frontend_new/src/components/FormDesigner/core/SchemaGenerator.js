@@ -306,6 +306,9 @@ export class SchemaGenerator {
     if (field.extractionPrompt) {
       schema["x-extraction-prompt"] = field.extractionPrompt;
     }
+    if (field.skipExtraction) {
+      schema["x-skip-extraction"] = true;
+    }
     schema["x-nullable"] = field.nullable !== false;
     if (field.config) {
       schema["x-extended-config"] = field.config;

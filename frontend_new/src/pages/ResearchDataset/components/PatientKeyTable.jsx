@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react'
-import { Button, Checkbox, Progress, Space, Table, Tooltip, Typography } from 'antd'
-import { FileTextOutlined, PlayCircleOutlined } from '@ant-design/icons'
+import { Button, Checkbox, Progress, Space, Table, Tag, Tooltip, Typography } from 'antd'
+import { FileTextOutlined, LoadingOutlined, PlayCircleOutlined } from '@ant-design/icons'
 
 const { Text } = Typography
 
@@ -29,7 +29,8 @@ const maskPatientName = (name) => {
  *  onToggleSelectAll: (checked: boolean) => void;
  *  onToggleSelectPatient: (patientId: string, checked: boolean) => void;
  *  onNavigatePatient: (patientId: string) => void;
- *  onExtractPatient: (patientId: string) => void;
+ *  onExtractPatient: (patient: Record<string, any>) => void;
+ *  patientExtractionById?: Record<string, { status?: string; progress?: number; label?: string; modeLabel?: string }>;
  *  pagination: Record<string, any>;
  *  onPageChange: (page: number, pageSize: number) => void;
  *  loading: boolean;
@@ -46,6 +47,7 @@ const PatientKeyTable = ({
   onToggleSelectPatient,
   onNavigatePatient,
   onExtractPatient,
+  patientExtractionById = {},
   pagination,
   onPageChange,
   loading,
@@ -143,31 +145,75 @@ const PatientKeyTable = ({
         title: '文档操作',
         key: 'actions',
         dataIndex: 'actions',
-        width: 72,
+        width: 88,
         onCell: (record) => buildMergedCell(record),
         render: (_unused, record) => (
           isFirstExpandedRow(record) ? (
-          <Space size={0}>
-            <Text type="secondary" style={{ fontSize: 12, minWidth: 10, textAlign: 'right' }}>
-              {record.document_count}
-            </Text>
-            <Tooltip title="查看文档">
-              <Button
-                type="text"
-                size="small"
-                icon={<FileTextOutlined />}
-                onClick={() => onNavigatePatient(record.patient_id)}
-              />
-            </Tooltip>
-            <Tooltip title="抽取患者数据">
-              <Button
-                type="text"
-                size="small"
-                icon={<PlayCircleOutlined />}
-                onClick={() => onExtractPatient(record.patient_id)}
-              />
-            </Tooltip>
-          </Space>
+          <div className="project-dataset-v2-extract-cell">
+            <Space size={0}>
+              <Text type="secondary" style={{ fontSize: 12, minWidth: 10, textAlign: 'right' }}>
+                {record.document_count}
+              </Text>
+              <Tooltip title="查看文档">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<FileTextOutlined />}
+                  onClick={() => onNavigatePatient(record.patient_id)}
+                />
+              </Tooltip>
+              {(() => {
+                const rowStatus = patientExtractionById[record.patient_id]
+                const isSubmitting = rowStatus?.status === 'submitting'
+                const isRunning = rowStatus && ['submitting', 'running', 'queued', 'pending'].includes(rowStatus.status)
+                const tooltipTitle = rowStatus?.label
+                  ? `${rowStatus.modeLabel || '抽取'} · ${rowStatus.label}`
+                  : '抽取患者数据'
+                return (
+                  <Tooltip title={tooltipTitle}>
+                    <Button
+                      type="text"
+                      size="small"
+                      disabled={isSubmitting || isRunning}
+                      icon={isSubmitting || isRunning
+                        ? <LoadingOutlined spin />
+                        : <PlayCircleOutlined />}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onExtractPatient(record)
+                      }}
+                    />
+                  </Tooltip>
+                )
+              })()}
+            </Space>
+            {patientExtractionById[record.patient_id] ? (
+              <div style={{ marginTop: 4, minWidth: 72 }}>
+                <Progress
+                  percent={Math.max(8, Math.round(Number(patientExtractionById[record.patient_id].progress) || 0))}
+                  size="small"
+                  showInfo={false}
+                  status={
+                    patientExtractionById[record.patient_id].status === 'failed' ? 'exception'
+                      : patientExtractionById[record.patient_id].status === 'completed' ? 'success'
+                        : 'active'
+                  }
+                />
+                <Tag
+                  bordered={false}
+                  color={
+                    patientExtractionById[record.patient_id].status === 'submitting' ? 'processing'
+                      : patientExtractionById[record.patient_id].status === 'failed' ? 'error'
+                        : patientExtractionById[record.patient_id].status === 'completed' ? 'success'
+                          : 'blue'
+                  }
+                  style={{ marginTop: 2, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}
+                >
+                  {patientExtractionById[record.patient_id].label || '抽取中'}
+                </Tag>
+              </div>
+            ) : null}
+          </div>
           ) : null
         ),
       },
@@ -184,6 +230,7 @@ const PatientKeyTable = ({
     isAllCurrentPageSelected,
     isSomeCurrentPageSelected,
     onExtractPatient,
+    patientExtractionById,
     onNavigatePatient,
     onToggleSelectAll,
     onToggleSelectPatient,

@@ -157,9 +157,10 @@ class PatientService:
             return {}
 
         patient_ids = [patient.id for patient in patients]
+        # 全局 scoped session 不支持同一连接上的并发查询（见 backend/README.md）
         doc_counts = await self.document_repository.count_by_patients(patient_ids, uploaded_by=uploaded_by)
-
         contexts = await self.context_repository.list_latest_patient_ehrs_by_patients(patient_ids)
+
         # list_latest_patient_ehrs_by_patients 已按 created_at desc 排序，按首次出现的 patient_id 取最新
         latest_context_by_patient: dict[str, Any] = {}
         for context in contexts:

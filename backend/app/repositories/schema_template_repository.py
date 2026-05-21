@@ -31,6 +31,8 @@ class SchemaTemplateRepository(BaseRepo[SchemaTemplate]):
             query = query.where(SchemaTemplate.template_type == template_type)
         if status is not None:
             query = query.where(SchemaTemplate.status == status)
+        else:
+            query = query.where(SchemaTemplate.status != "archived")
         result = await session.execute(query.limit(limit).offset(offset))
         return list(result.scalars().all())
 
@@ -48,6 +50,8 @@ class SchemaTemplateRepository(BaseRepo[SchemaTemplate]):
             query = query.where(SchemaTemplate.template_type == template_type)
         if status is not None:
             query = query.where(SchemaTemplate.status == status)
+        else:
+            query = query.where(SchemaTemplate.status != "archived")
         result = await session.execute(query)
         return int(result.scalar_one())
 

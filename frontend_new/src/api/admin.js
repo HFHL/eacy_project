@@ -18,4 +18,7 @@ export const getAdminDocuments = async (params = {}) => wrap(await request.get('
 export const getAdminStats = async () => wrap(await request.get('/admin/stats'))
 export const getAdminExtractionTasks = async (params = {}) => wrap(await request.get('/admin/extraction-tasks', params))
 export const getAdminExtractionTaskDetail = async (taskId) => wrap(await request.get(`/admin/extraction-tasks/${encodeURIComponent(taskId)}`))
+export const getAdminExtractionTaskTrace = async (taskId, params = {}) =>
+  wrap(await request.get(`/admin/extraction-tasks/${encodeURIComponent(taskId)}/trace`, params))
 export const getAdminExtractionTaskEvents = async (taskId, params = {}) => wrap(await request.get(`/admin/extraction-tasks/${encodeURIComponent(taskId)}/events`, params))
+export const getAdminLlmCallDetail = async (callId) => wrap(await request.get(`/admin/llm-calls/${encodeURIComponent(callId)}`))

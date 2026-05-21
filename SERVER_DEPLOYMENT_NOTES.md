@@ -180,30 +180,7 @@ scripts/daemon-stop.sh
 
 `REDIS_PORT` 来自 `.env`，默认 `6379`。如果 Redis 不可用，`scripts/daemon-start.sh` 会直接退出。
 
-项目提供了开发用 Docker Compose：
-
-```bash
-backend/docker/docker-compose.yml
-```
-
-包含：
-
-- MySQL 8.0，端口 `3306`
-- Redis 6.2，端口 `6379`
-
-启动依赖服务：
-
-```bash
-docker compose -f backend/docker/docker-compose.yml up -d
-```
-
-停止依赖服务：
-
-```bash
-docker compose -f backend/docker/docker-compose.yml down
-```
-
-当前 `.env` 中还配置了远程 PostgreSQL 连接、Redis、Celery broker/result backend。文档中不记录具体密码或密钥。
+数据库为**远程 PostgreSQL**（根目录 `.env` 的 `DATABASE_URL`），无本地 MySQL compose。本地开发仅需 Redis（默认 `6379`）。配置模板见 `.env.example`。
 
 ## Windows 一键启动方式（开发用，非当前生产）
 
@@ -221,8 +198,7 @@ start-all.ps1
 
 PowerShell 脚本行为：
 
-- 可选启动 Docker 中的 MySQL/Redis：`-WithDocker`
-- 可跳过 Docker：`-SkipDocker`
+- 默认检查本地 Redis 端口（可用 `-SkipDocker` 跳过）
 - 默认执行数据库迁移：`alembic upgrade head`
 - 可跳过迁移：`-SkipMigrate`
 - 默认启动 Celery
@@ -273,7 +249,7 @@ ps -eo pid,ppid,cmd | grep -E 'uvicorn|vite|celery|npm|node|python' | grep -v gr
 查看端口监听：
 
 ```bash
-ss -tlnp | grep -E ':8000|:9091|:5173|:6379|:3306|:5432'
+ss -tlnp | grep -E ':8000|:9091|:5173|:6379|:5432'
 ```
 
 查看日志：

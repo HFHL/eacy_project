@@ -634,6 +634,7 @@ const DocumentList = ({
   selectedDocumentId,
   onDocumentSelect,
   onUploadDocument,
+  onPickExistingDocument,
   onViewDocumentDetail
 }) => {
   // eslint-disable-next-line no-console
@@ -776,6 +777,17 @@ const DocumentList = ({
           上传文档
         </Button>
       )}
+      {onPickExistingDocument && (
+        <Button
+          type="link"
+          size="small"
+          onClick={onPickExistingDocument}
+          block
+          style={{ marginTop: 4, padding: 0, height: 'auto' }}
+        >
+          从已有文档抽取
+        </Button>
+      )}
     </div>
   )
 }
@@ -800,6 +812,7 @@ const CategoryTree = ({
   selectedDocument = null,
   onDocumentSelect,
   onUploadDocument,
+  onPickExistingDocument,
 
   // Repeatable 表单相关
   onAddRepeatableInstance,
@@ -1369,6 +1382,7 @@ const CategoryTree = ({
               selectedDocumentId={selectedDocument?.id}
               onDocumentSelect={onDocumentSelect}
               onUploadDocument={onUploadDocument}
+              onPickExistingDocument={onPickExistingDocument}
               onViewDocumentDetail={handleViewDocumentDetail}
             />
           </div>
@@ -1492,4 +1506,4 @@ const CategoryTree = ({
   )
 }
 
-export default CategoryTree
+export default React.memo(CategoryTree)

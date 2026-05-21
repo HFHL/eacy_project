@@ -2,12 +2,14 @@
  * 文档管理Tab组件 - 重构版
  * 使用卡片式布局显示和管理患者相关文档
  */
-import React, { useState, useRef, useEffect } from 'react'
-import { Row, Col, Button, Space, Empty, Spin, Typography, Modal, List, Avatar, Progress, Alert, Descriptions, Divider, Tag, Input, message, Card } from 'antd'
-import { UploadOutlined, PlayCircleOutlined, FileTextOutlined, TeamOutlined, EyeOutlined, CheckOutlined, UserAddOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons'
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { Row, Col, Button, Space, Empty, Spin, Typography, Modal, List, Avatar, Progress, Alert, Descriptions, Divider, Tag, Input, message, Card, Form, Checkbox, Radio } from 'antd'
+import { UploadOutlined, FileTextOutlined, TeamOutlined, EyeOutlined, CheckOutlined, UserAddOutlined, LoadingOutlined, ReloadOutlined, AimOutlined } from '@ant-design/icons'
 import { getDocumentAiMatchInfo, changeArchivePatient, archiveDocument } from '../../../../api/document'
-import { getPatientList, getTaskBatchProgress, updatePatientEhrFolder } from '../../../../api/patient'
+import { getPatientList, getPatientEhrSchemaOnly, getTaskBatchProgress, updatePatientEhrFolder } from '../../../../api/patient'
+import { buildTargetFormGroupsFromSchema } from '../SchemaEhrTab/schemaFormShared'
 import { appThemeToken } from '../../../../styles/themeTokens'
+import { TASK_TYPE_LABEL, pushTaskNotification, claimBatchNotifyOnce } from '../../../../utils/taskNotifications'
 
 // 导入新组件
 import DocumentCard from './components/DocumentCard'
@@ -28,7 +30,6 @@ const DocumentsTab = ({
   handleReExtract,
   handleDeleteDocument,
   setUploadVisible,
-  setExtractionVisible,
   onRefresh
 }) => {
   const [selectedDocuments, setSelectedDocuments] = useState([])
@@ -48,6 +49,11 @@ const DocumentsTab = ({
   const [matchInfoLoading, setMatchInfoLoading] = useState(false)
   const [updatingEhrFolder, setUpdatingEhrFolder] = useState(false)
   const [ehrFolderBatch, setEhrFolderBatch] = useState(null)
+  const [targetedModalVisible, setTargetedModalVisible] = useState(false)
+  const [targetedModalGroups, setTargetedModalGroups] = useState([])
+  const [targetedModalMode, setTargetedModalMode] = useState('incremental')
+  const [schemaLoading, setSchemaLoading] = useState(false)
+  const [patientSchema, setPatientSchema] = useState(null)
   /** 患者匹配弹窗模式：archive=未绑定文档选择患者归档，change=已归档文档更换患者 */
   const [matchModalMode, setMatchModalMode] = useState('change')
   
@@ -57,6 +63,8 @@ const DocumentsTab = ({
   const detailModalRef = useRef(null)
   const listScrollContainerRef = useRef(null) // 列表独立滚动容器，刷新时保留其 scrollTop
   const ehrFolderPollTimerRef = useRef(null)
+  const ehrFolderPollOwnerRef = useRef(null)
+  const ehrFolderPollSeqRef = useRef(0)
   
   // 使用文档筛选Hook
   const {
@@ -230,7 +238,11 @@ const DocumentsTab = ({
     window.open(`/document/ocr-viewer/${documentId}`, '_blank')
   }
 
-  const stopEhrFolderPolling = () => {
+  const stopEhrFolderPolling = ({ invalidate = true } = {}) => {
+    if (invalidate) {
+      ehrFolderPollSeqRef.current += 1
+      ehrFolderPollOwnerRef.current = null
+    }
     if (ehrFolderPollTimerRef.current) {
       clearTimeout(ehrFolderPollTimerRef.current)
       ehrFolderPollTimerRef.current = null
@@ -239,65 +251,156 @@ const DocumentsTab = ({
 
   const isTerminalBatchStatus = (status) => ['succeeded', 'completed', 'completed_with_errors', 'failed', 'cancelled'].includes(status)
 
-  const pollEhrFolderBatch = async (batchId) => {
-    if (!batchId) return
-    stopEhrFolderPolling()
+  const pollEhrFolderBatch = useCallback(async (batchId, ownerPatientId) => {
+    const ownerId = ownerPatientId || patientId
+    if (!batchId || !ownerId) return
+
+    if (ehrFolderPollTimerRef.current) {
+      clearTimeout(ehrFolderPollTimerRef.current)
+      ehrFolderPollTimerRef.current = null
+    }
+
+    const pollSeq = ehrFolderPollSeqRef.current
+    ehrFolderPollOwnerRef.current = ownerId
+
     try {
       const response = await getTaskBatchProgress(batchId)
+      if (pollSeq !== ehrFolderPollSeqRef.current || ehrFolderPollOwnerRef.current !== ownerId) return
+
       const batch = response?.data || response
-      setEhrFolderBatch(batch)
-      localStorage.setItem(`eacy_ehr_folder_batch_${patientId}`, batchId)
+      setEhrFolderBatch({ ...batch, patientId: ownerId, batchId })
+      setUpdatingEhrFolder(!isTerminalBatchStatus(batch?.status))
+      localStorage.setItem(`eacy_ehr_folder_batch_${ownerId}`, batchId)
+
       if (isTerminalBatchStatus(batch?.status)) {
+        if (pollSeq !== ehrFolderPollSeqRef.current || ehrFolderPollOwnerRef.current !== ownerId) return
         setUpdatingEhrFolder(false)
         const effectiveBatchId = batch?.batch_id || batchId
-        const notifyBatchOnce = (id) => {
-          const sid = String(id || '')
-          if (!sid) return true
-          const k = `eacy_ehr_batch_notified_${sid}`
-          if (sessionStorage.getItem(k)) return false
-          sessionStorage.setItem(k, '1')
-          return true
-        }
+        const folderTitle = TASK_TYPE_LABEL.ehr_folder_batch
         if (batch?.status === 'succeeded' || batch?.status === 'completed') {
-          if (notifyBatchOnce(effectiveBatchId)) message.success('电子病历夹更新完成')
+          if (claimBatchNotifyOnce(effectiveBatchId)) {
+            const desc = '电子病历夹更新完成'
+            message.success(desc)
+            pushTaskNotification({ type: 'success', taskType: 'ehr_folder_batch', title: folderTitle, description: desc })
+          }
         } else if (batch?.status === 'completed_with_errors') {
-          if (notifyBatchOnce(effectiveBatchId)) message.warning(`电子病历夹更新完成，失败 ${batch.failed_items || 0} 个任务`)
+          if (claimBatchNotifyOnce(effectiveBatchId)) {
+            const desc = `电子病历夹更新完成，失败 ${batch.failed_items || 0} 个任务`
+            message.warning(desc)
+            pushTaskNotification({ type: 'warning', taskType: 'ehr_folder_batch', title: folderTitle, description: desc })
+          }
         } else if (batch?.status === 'failed') {
-          if (notifyBatchOnce(effectiveBatchId)) message.error('电子病历夹更新失败')
+          if (claimBatchNotifyOnce(effectiveBatchId)) {
+            const desc = '电子病历夹更新失败'
+            message.error(desc)
+            pushTaskNotification({ type: 'error', taskType: 'ehr_folder_batch', title: folderTitle, description: desc })
+          }
+        } else if (claimBatchNotifyOnce(effectiveBatchId)) {
+          const desc = '电子病历夹更新已结束'
+          message.warning(desc)
+          pushTaskNotification({ type: 'warning', taskType: 'ehr_folder_batch', title: folderTitle, description: desc })
         }
         try {
-          localStorage.removeItem(`eacy_ehr_folder_batch_${patientId}`)
+          localStorage.removeItem(`eacy_ehr_folder_batch_${ownerId}`)
         } catch {
           // ignore
         }
-        onRefresh?.()
+        if (String(ownerId) === String(patientId)) {
+          onRefresh?.()
+        }
         return
       }
-      ehrFolderPollTimerRef.current = setTimeout(() => pollEhrFolderBatch(batchId), 2500)
+
+      ehrFolderPollTimerRef.current = setTimeout(() => {
+        pollEhrFolderBatch(batchId, ownerId)
+      }, 2500)
     } catch (error) {
+      if (pollSeq !== ehrFolderPollSeqRef.current || ehrFolderPollOwnerRef.current !== ownerId) return
       setUpdatingEhrFolder(false)
       console.error('查询电子病历夹更新进度失败:', error)
     }
-  }
+  }, [patientId, onRefresh])
 
-  const handleUpdateEhrFolder = async () => {
-    if (!patientId || updatingEhrFolder) return
+  const targetFormGroups = useMemo(
+    () => buildTargetFormGroupsFromSchema(patientSchema),
+    [patientSchema],
+  )
+
+  const startEhrFolderUpdate = async (options = {}) => {
+    const ownerId = patientId
+    if (!ownerId || updatingEhrFolder) return
     setUpdatingEhrFolder(true)
     try {
-      const response = await updatePatientEhrFolder(patientId)
+      const response = await updatePatientEhrFolder(ownerId, options)
       message.success(response?.message || '已提交电子病历夹更新任务')
       const batchId = response?.data?.batch_id || response?.data?.task_id
       if (batchId) {
-        setEhrFolderBatch({ batch_id: batchId, status: 'queued', progress: 5, message: response?.data?.message })
-        pollEhrFolderBatch(batchId)
+        try {
+          localStorage.setItem(`eacy_ehr_folder_batch_${ownerId}`, batchId)
+        } catch {
+          // ignore
+        }
+        setEhrFolderBatch({ batch_id: batchId, batchId, patientId: ownerId, status: 'queued', progress: 5, message: response?.data?.message })
+        pollEhrFolderBatch(batchId, ownerId)
       } else {
-        onRefresh?.()
+        if (String(ownerId) === String(patientId)) {
+          setUpdatingEhrFolder(false)
+          onRefresh?.()
+        }
       }
     } catch (error) {
-      message.error(error?.message || '更新电子病历夹失败')
-    } finally {
-      setUpdatingEhrFolder(false)
+      if (String(ownerId) === String(patientId)) {
+        setUpdatingEhrFolder(false)
+      }
+      const detail = error?.message || error?.data?.detail || ''
+      const hint = typeof detail === 'string' && detail.includes('电子病历 Schema')
+        ? detail
+        : (detail || '更新电子病历夹失败')
+      message.error(hint)
     }
+  }
+
+  const handleUpdateEhrFolder = () => startEhrFolderUpdate({ mode: 'incremental' })
+
+  const handleOpenTargetedEhrFolderModal = async () => {
+    let schema = patientSchema
+    if (!buildTargetFormGroupsFromSchema(schema).length) {
+      setSchemaLoading(true)
+      try {
+        const response = await getPatientEhrSchemaOnly(patientId)
+        const schemaCandidate = response?.data?.schema
+        const hasSchema =
+          schemaCandidate &&
+          typeof schemaCandidate === 'object' &&
+          Object.keys(schemaCandidate.properties || {}).length > 0
+        schema = hasSchema ? schemaCandidate : null
+        setPatientSchema(schema)
+      } catch (error) {
+        console.error('加载患者 Schema 失败:', error)
+        schema = null
+      } finally {
+        setSchemaLoading(false)
+      }
+    }
+    if (!buildTargetFormGroupsFromSchema(schema).length) {
+      message.warning('未加载到病历表单结构，请稍后在病历 Tab 确认 Schema 已就绪')
+      return
+    }
+    setTargetedModalGroups([])
+    setTargetedModalMode('incremental')
+    setTargetedModalVisible(true)
+  }
+
+  const handleSubmitTargetedEhrFolder = async () => {
+    if (targetedModalGroups.length === 0) {
+      message.warning('请至少选择一个字段组')
+      return
+    }
+    setTargetedModalVisible(false)
+    await startEhrFolderUpdate({
+      targetFormKeys: targetedModalGroups,
+      mode: targetedModalMode,
+    })
   }
 
   // 搜索患者（带防抖和版本控制）
@@ -485,11 +588,30 @@ const DocumentsTab = ({
     return configs[confidence] || { color: 'default', label: '未知' }
   }
 
-  // 组件卸载时清理定时器
+  const activeEhrFolderBatch = useMemo(() => (
+    ehrFolderBatch && String(ehrFolderBatch.patientId) === String(patientId)
+      ? ehrFolderBatch
+      : null
+  ), [ehrFolderBatch, patientId])
+
+  // 切换患者时重置进度状态，并恢复当前患者未完成的批次轮询
   useEffect(() => {
-    const savedBatchId = patientId ? localStorage.getItem(`eacy_ehr_folder_batch_${patientId}`) : ''
-    if (savedBatchId) pollEhrFolderBatch(savedBatchId)
-  }, [patientId])
+    stopEhrFolderPolling({ invalidate: true })
+    setEhrFolderBatch(null)
+    setUpdatingEhrFolder(false)
+
+    if (!patientId) return undefined
+
+    const savedBatchId = localStorage.getItem(`eacy_ehr_folder_batch_${patientId}`)
+    if (savedBatchId) {
+      setUpdatingEhrFolder(true)
+      pollEhrFolderBatch(savedBatchId, patientId)
+    }
+
+    return () => {
+      stopEhrFolderPolling({ invalidate: true })
+    }
+  }, [patientId, pollEhrFolderBatch])
 
   // 组件卸载时清理定时器
   useEffect(() => {
@@ -497,7 +619,7 @@ const DocumentsTab = ({
       if (searchTimerRef.current) {
         clearTimeout(searchTimerRef.current)
       }
-      stopEhrFolderPolling()
+      stopEhrFolderPolling({ invalidate: true })
     }
   }, [])
 
@@ -536,45 +658,39 @@ const DocumentsTab = ({
               >
                 上传文档
               </Button>
-              <Button 
-                icon={<PlayCircleOutlined />}
-                onClick={() => setExtractionVisible?.(true)}
-              >
-                批量抽取
-              </Button>
             </Space>
           </Col>
         </Row>
       </div> */}
 
-      {ehrFolderBatch ? (
+      {activeEhrFolderBatch ? (
         <Card size="small" style={{ marginBottom: 16 }}>
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             <Row justify="space-between" align="middle">
               <Col>
                 <Space>
                   <Text strong>电子病历夹更新</Text>
-                  <Tag color={isTerminalBatchStatus(ehrFolderBatch.status) ? (ehrFolderBatch.failed_items ? 'orange' : 'green') : 'blue'}>
-                    {ehrFolderBatch.status || 'queued'}
+                  <Tag color={isTerminalBatchStatus(activeEhrFolderBatch.status) ? (activeEhrFolderBatch.failed_items ? 'orange' : 'green') : 'blue'}>
+                    {activeEhrFolderBatch.status || 'queued'}
                   </Tag>
                 </Space>
               </Col>
               <Col>
                 <Text type="secondary">
-                  {(ehrFolderBatch.succeeded_items || 0)}/{ehrFolderBatch.total_items || 0}
-                  {ehrFolderBatch.failed_items ? ` · 失败 ${ehrFolderBatch.failed_items}` : ''}
+                  {(activeEhrFolderBatch.succeeded_items || 0)}/{(activeEhrFolderBatch.total_items || 0)}
+                  {activeEhrFolderBatch.failed_items ? ` · 失败 ${activeEhrFolderBatch.failed_items}` : ''}
                 </Text>
               </Col>
             </Row>
             <Progress
-              percent={Math.min(100, Math.max(0, Number(ehrFolderBatch.progress || 0)))}
-              status={ehrFolderBatch.failed_items ? 'exception' : (isTerminalBatchStatus(ehrFolderBatch.status) ? 'success' : 'active')}
+              percent={Math.min(100, Math.max(0, Number(activeEhrFolderBatch.progress || 0)))}
+              status={activeEhrFolderBatch.failed_items ? 'exception' : (isTerminalBatchStatus(activeEhrFolderBatch.status) ? 'success' : 'active')}
             />
-            <Text type="secondary">{ehrFolderBatch.message || '后台正在更新电子病历夹'}</Text>
-            {Array.isArray(ehrFolderBatch.items) && ehrFolderBatch.items.length > 0 ? (
+            <Text type="secondary">{activeEhrFolderBatch.message || '后台正在更新电子病历夹'}</Text>
+            {Array.isArray(activeEhrFolderBatch.items) && activeEhrFolderBatch.items.length > 0 ? (
               <List
                 size="small"
-                dataSource={ehrFolderBatch.items.slice(0, 5)}
+                dataSource={activeEhrFolderBatch.items.slice(0, 5)}
                 renderItem={(item) => (
                   <List.Item>
                     <Space style={{ width: '100%', justifyContent: 'space-between' }}>
@@ -615,18 +731,19 @@ const DocumentsTab = ({
               >
                 更新电子病历夹
               </Button>
+              <Button
+                icon={<AimOutlined />}
+                loading={updatingEhrFolder || schemaLoading}
+                onClick={handleOpenTargetedEhrFolderModal}
+              >
+                专项抽取
+              </Button>
               <Button 
                 type="primary" 
                 icon={<UploadOutlined />}
                 onClick={() => setUploadVisible?.(true)}
               >
                 上传文档
-              </Button>
-              <Button 
-                icon={<PlayCircleOutlined />}
-                onClick={() => setExtractionVisible?.(true)}
-              >
-                批量抽取
               </Button>
             </Space>
           </Col>
@@ -1046,6 +1163,79 @@ const DocumentsTab = ({
             </Row>
           ) : null}
         </Spin>
+      </Modal>
+
+      <Modal
+        title="病历专项抽取"
+        open={targetedModalVisible}
+        onCancel={() => setTargetedModalVisible(false)}
+        footer={[
+          <Button key="cancel" onClick={() => setTargetedModalVisible(false)}>
+            取消
+          </Button>,
+          <Button
+            key="start"
+            type="primary"
+            disabled={targetedModalGroups.length === 0 || updatingEhrFolder}
+            onClick={handleSubmitTargetedEhrFolder}
+          >
+            开始抽取
+          </Button>,
+        ]}
+        width={600}
+      >
+        <Alert
+          message="专项抽取任务"
+          description={`患者: ${patientInfo?.name || patientId || '-'} | 已选字段组: ${targetedModalGroups.length} 个`}
+          type="info"
+          style={{ marginBottom: 16 }}
+        />
+        <Form layout="vertical">
+          <Form.Item label="选择字段组">
+            <div style={{ marginBottom: 8 }}>
+              <Space>
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ padding: 0 }}
+                  onClick={() => setTargetedModalGroups(targetFormGroups.map((g) => g.key))}
+                >
+                  全选
+                </Button>
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ padding: 0 }}
+                  onClick={() => setTargetedModalGroups([])}
+                >
+                  清空
+                </Button>
+              </Space>
+            </div>
+            <Checkbox.Group
+              style={{ width: '100%' }}
+              value={targetedModalGroups}
+              onChange={setTargetedModalGroups}
+            >
+              <Row>
+                {targetFormGroups.map((group) => (
+                  <Col span={24} key={group.key} style={{ marginBottom: 8 }}>
+                    <Checkbox value={group.key}>
+                      <Text>{group.name}</Text>
+                      <Text type="secondary" style={{ marginLeft: 8 }}>({group.key})</Text>
+                    </Checkbox>
+                  </Col>
+                ))}
+              </Row>
+            </Checkbox.Group>
+          </Form.Item>
+          <Form.Item label="抽取模式">
+            <Radio.Group value={targetedModalMode} onChange={(e) => setTargetedModalMode(e.target.value)}>
+              <Radio value="incremental">增量抽取 — 仅补抽选中表单内尚未抽取的文档</Radio>
+              <Radio value="full">全量抽取 — 对选中表单强制重新抽取</Radio>
+            </Radio.Group>
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   )

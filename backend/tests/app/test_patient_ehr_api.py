@@ -82,12 +82,25 @@ class FakeEhrService:
             created_at=datetime(2026, 1, 2),
         )
 
-    async def get_patient_ehr(self, patient_id, created_by=None):
+    async def get_patient_ehr(self, patient_id, created_by=None, owner_id=None):
         return {
             "context": self.context,
             "schema": {"groups": [{"key": "basic", "forms": [{"key": "demographics"}]}]},
             "records": [self.record],
             "current_values": {} if self.current is None else {self.current.field_path: self.current},
+        }
+
+    async def get_patient_ehr_schema(self, patient_id, owner_id=None):
+        return {
+            "schema": {
+                "properties": {
+                    "basic": {
+                        "properties": {
+                            "demographics": {"type": "object", "x-display-name": "Demographics"},
+                        },
+                    },
+                },
+            },
         }
 
     async def manual_update_field(self, **kwargs):
@@ -151,6 +164,13 @@ def test_patient_ehr_read_update_events_select_and_evidence_flow():
     ehr = ehr_response.json()
     assert ehr["context"]["id"] == "context-1"
     assert ehr["records"][0]["id"] == "record-1"
+
+    schema_response = client.get("/api/v1/patients/patient-1/ehr/schema")
+    assert schema_response.status_code == 200
+    schema_payload = schema_response.json()
+    assert schema_payload["schema"]["properties"]["basic"]["properties"]["demographics"]
+    assert "records" not in schema_payload
+    assert "current_values" not in schema_payload
 
     update_response = client.patch(
         "/api/v1/patients/patient-1/ehr/fields/basic.demographics.age",

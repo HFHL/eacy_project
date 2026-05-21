@@ -470,6 +470,11 @@ export const getPatientEhr = async (patientId = '') => {
   return emptySuccess(normalizeEhrResponse(payload))
 }
 
+export const getPatientEhrSchemaOnly = async (patientId = '') => {
+  const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ehr/schema`)
+  return emptySuccess({ schema: payload?.schema ?? null })
+}
+
 export const getPatientEhrSchemaData = async (patientId = '') => getPatientEhr(patientId)
 
 export const updatePatientEhrSchemaData = async (patientId = '', data = {}, options = {}) => {
@@ -519,13 +524,26 @@ export const getEhrExtractionStatusBatch = async (patientIds = []) => {
   return emptySuccess({ items: payload.items || [] })
 }
 
-export const updatePatientEhrFolder = async (patientId = '') => {
+export const updatePatientEhrFolder = async (patientId = '', options = {}) => {
   if (!patientId) return emptySuccess({ created_jobs: 0, job_ids: [] })
-  const payload = await request.post(`${PATIENTS_ENDPOINT}/${patientId}/ehr/update-folder`)
+  const {
+    targetFormKeys = null,
+    mode = 'incremental',
+  } = options || {}
+  const body = {
+    ...(Array.isArray(targetFormKeys) && targetFormKeys.length > 0
+      ? { target_form_keys: targetFormKeys.filter(Boolean) }
+      : {}),
+    ...(mode ? { mode } : {}),
+  }
+  const payload = await request.post(`${PATIENTS_ENDPOINT}/${patientId}/ehr/update-folder`, body)
+  const targeted = Array.isArray(targetFormKeys) && targetFormKeys.length > 0
   return emptySuccess({
     ...payload,
     task_id: payload.batch_id || payload.job_ids?.[0] || '',
-    message: `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个电子病历夹抽取任务，后台正在抽取`,
+    message: targeted
+      ? `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个病历靶向抽取任务`
+      : `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个电子病历夹抽取任务，后台正在抽取`,
   })
 }
 export const getTaskBatchProgress = async (batchId = '') => {
@@ -633,8 +651,33 @@ export const selectEhrFieldCandidateV3 = async (patientId = '', fieldPath = '', 
 export const uploadAndExtractField = async () => emptyTask()
 export const getFieldConflicts = async () => emptyList()
 export const resolveFieldConflict = async () => emptySuccess(null)
-export const generateAiSummary = async () => emptySuccess({ summary: '', sources: [] })
-export const getAiSummary = async () => emptySuccess({ summary: '', sources: [] })
+export const getAiSummary = async (patientId = '') => {
+  if (!patientId) return emptySuccess({ content: '', source_documents: [] })
+  const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ai-summary`)
+  return emptySuccess({
+    content: payload?.content || '',
+    generated_at: payload?.generated_at || null,
+    source_documents: Array.isArray(payload?.source_documents) ? payload.source_documents : [],
+  })
+}
+export const generateAiSummary = async (patientId = '') => {
+  if (!patientId) return emptySuccess({ content: '', source_documents: [] })
+  const payload = await request.post(`${PATIENTS_ENDPOINT}/${patientId}/ai-summary/generate`)
+  return emptySuccess({
+    content: payload?.content || '',
+    generated_at: payload?.generated_at || null,
+    source_documents: Array.isArray(payload?.source_documents) ? payload.source_documents : [],
+  })
+}
+export const saveAiSummary = async (patientId = '', content = '') => {
+  if (!patientId) return emptySuccess({ content: '', source_documents: [] })
+  const payload = await request.put(`${PATIENTS_ENDPOINT}/${patientId}/ai-summary`, { content })
+  return emptySuccess({
+    content: payload?.content || content,
+    generated_at: payload?.generated_at || null,
+    source_documents: Array.isArray(payload?.source_documents) ? payload.source_documents : [],
+  })
+}
 
 export default {
   getPatientList,
@@ -648,6 +691,7 @@ export default {
   getDepartmentTree,
   getPatientEhr,
   getPatientEhrSchemaData,
+  getPatientEhrSchemaOnly,
   updatePatientEhrSchemaData,
   updatePatientEhrFolder,
   getTaskBatchProgress,
@@ -673,4 +717,5 @@ export default {
   resolveFieldConflict,
   generateAiSummary,
   getAiSummary,
+  saveAiSummary,
 }

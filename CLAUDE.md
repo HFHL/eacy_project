@@ -27,7 +27,8 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 | `migrate` | eacy-backend:prod | 一次性 `alembic upgrade head`，跑完退出 |
 | `api` | eacy-backend:prod | `gunicorn app.server:app -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --workers ${API_WORKERS:-2} --timeout ${API_TIMEOUT_SECONDS:-180}` |
 | `worker-ocr` | eacy-backend:prod | celery worker，队列 `ocr`，并发 `${OCR_CONCURRENCY:-1}` |
-| `worker-metadata` | eacy-backend:prod | celery worker，队列 `metadata`，并发 `${METADATA_CONCURRENCY:-1}` |
+| `celery-beat` | eacy-backend:prod | Celery Beat，默认每天 03:00（Asia/Shanghai）清理超时 `pending` 抽取任务（标为 `failed`，可重试） |
+| `worker-metadata` | eacy-backend:prod | celery worker，队列 `metadata,maintenance`，并发 `${METADATA_CONCURRENCY:-1}` |
 | `worker-extraction` | eacy-backend:prod | celery worker，队列 `extraction`，并发 `${EXTRACTION_CONCURRENCY:-2}` |
 | `nginx` | eacy-frontend:prod | 唯一对外端口 `${HTTP_PORT:-80}:80`，反代到 `api:8000` |
 
@@ -62,7 +63,7 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f worker-ex
 docker compose -f docker-compose.prod.yml --env-file .env.prod restart api
 
 # 升级（参考 deploy/docker/README.md 中的 Upgrade Order）
-docker compose -f docker-compose.prod.yml --env-file .env.prod stop worker-ocr worker-metadata worker-extraction
+docker compose -f docker-compose.prod.yml --env-file .env.prod stop celery-beat worker-ocr worker-metadata worker-extraction
 docker compose -f docker-compose.prod.yml --env-file .env.prod build
 docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
@@ -102,9 +103,9 @@ PID 写到 `run/*.pid`，端口写到 `run/ports.env`，日志在 `logs/*.log`�
 
 它写的是 systemd + 本机 poetry/uv + 本机 nginx 的部署方式。**当前服务器没有使用这种部署**。当前服务器是 Docker。
 
-### `backend/docker/docker-compose.yml` — 开发依赖 only
+### 数据库 — 仅远程 PostgreSQL
 
-仅给本地开发起 MySQL/Redis 用，**不是生产 compose**。生产用根目录的 `docker-compose.prod.yml`。
+开发与生产均通过根目录 `.env` 的 **`DATABASE_URL`**（`postgresql+asyncpg://...`）连接远程库。**不存在**本地 MySQL / 本地 PostgreSQL compose。复制 `.env.example` 为 `.env` 后填写真实连接串。本地仅需 Redis（Celery broker）。
 
 ## 文档地图
 
@@ -126,13 +127,14 @@ deploy/docker/    生产镜像 Dockerfile + nginx 配置
 deploy/production/ systemd / nginx 裸机部署示例（非当前部署方式）
 scripts/          本机/SSH 开发后台启停脚本（daemon-start.sh / daemon-stop.sh）
 docker-compose.prod.yml   ← 当前生产部署入口
+.env.example              ← 开发环境变量模板（DATABASE_URL 必填）
 ```
 
 ## 核心栈
 
 - 后端：FastAPI（async），驱动 `asyncpg`，迁移 `alembic`
 - 队列：Celery，三条队列 `ocr` / `metadata` / `extraction`，broker 是 Redis
-- 数据库：PostgreSQL 16
+- 数据库：PostgreSQL（开发/测试经 `.env` 的 `DATABASE_URL` 连远程库；生产 compose 内嵌 `postgres` 服务）
 - 前端：React + Vite + Ant Design，生产由 nginx 提供静态文件并反代 `/api/v1/` 到 `api:8000`
 - 对象存储：阿里云 OSS（`DOCUMENT_STORAGE_PROVIDER=oss`）
 - OCR：TextIn

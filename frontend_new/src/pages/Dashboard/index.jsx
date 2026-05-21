@@ -157,12 +157,15 @@ const Dashboard = () => {
   }, [])
 
   const navigateToFileList = useCallback((options = {}) => {
+    if (options.openUpload) {
+      navigate('/document/upload')
+      return
+    }
     const params = new URLSearchParams()
     params.set('tab', options.tab || 'all')
     if (options.taskStatus?.length) params.set('taskStatus', options.taskStatus.join(','))
     if (options.statusInfo?.length) params.set('statusInfo', options.statusInfo.join(','))
     if (options.q) params.set('q', options.q)
-    if (options.openUpload) params.set('openUpload', '1')
     navigate(`/document/file-list?${params.toString()}`)
   }, [navigate])
 
@@ -425,9 +428,9 @@ const Dashboard = () => {
     {
       key: 'upload',
       title: '文件上传',
-      description: '进入文件列表并直接打开上传',
+      description: '进入文档上传中心',
       icon: <UploadOutlined />,
-      onClick: () => navigateToFileList({ tab: 'all', openUpload: true }),
+      onClick: () => navigate('/document/upload'),
     },
     {
       key: 'patient',

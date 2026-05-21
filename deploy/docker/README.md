@@ -6,7 +6,7 @@ This directory contains Docker production assets. The compose entrypoint is at t
 docker compose -f docker-compose.prod.yml --env-file .env.prod build
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d postgres redis
 docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d api worker-ocr worker-metadata worker-extraction nginx
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d api celery-beat worker-ocr worker-metadata worker-extraction nginx
 ```
 
 Create `.env.prod` from `.env.prod.example` before running the stack. Do not commit real secrets.
@@ -44,7 +44,8 @@ NPM_REGISTRY=https://registry.npmjs.org
 - `nginx`: serves the built React app and proxies `/api/v1/` to `api:8000`.
 - `api`: FastAPI via Gunicorn + Uvicorn worker.
 - `worker-ocr`: consumes the `ocr` queue.
-- `worker-metadata`: consumes the `metadata` queue.
+- `celery-beat`: schedules periodic maintenance (default: daily 03:00 Asia/Shanghai, abandon stale pending extraction jobs).
+- `worker-metadata`: consumes the `metadata` and `maintenance` queues.
 - `worker-extraction`: consumes the `extraction` queue.
 - `migrate`: one-shot Alembic migration job.
 - `postgres` and `redis`: internal dependency services with named volumes.
@@ -74,11 +75,11 @@ With defaults, this is `(2 + 1 + 1 + 2) * 3 = 18` connections. Keep this below P
 ## Upgrade Order
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.prod stop worker-ocr worker-metadata worker-extraction
+docker compose -f docker-compose.prod.yml --env-file .env.prod stop celery-beat worker-ocr worker-metadata worker-extraction
 docker compose -f docker-compose.prod.yml --env-file .env.prod build
 docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d api
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d worker-ocr worker-metadata worker-extraction nginx
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d celery-beat worker-ocr worker-metadata worker-extraction nginx
 ```
 
 Run a database backup before migrations in production.

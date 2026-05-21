@@ -1,12 +1,15 @@
 from app.workers.celery_app import (
+    ABANDON_STALE_PENDING_TASK_NAME,
     EXTRACTION_QUEUE,
     EXTRACTION_TASK_NAME,
+    MAINTENANCE_QUEUE,
     METADATA_QUEUE,
     METADATA_TASK_NAME,
     OCR_QUEUE,
     OCR_TASK_NAME,
     celery_app,
 )
+from core.config import config
 
 
 def test_celery_app_registers_worker_tasks():
@@ -15,6 +18,7 @@ def test_celery_app_registers_worker_tasks():
     assert OCR_TASK_NAME in celery_app.tasks
     assert METADATA_TASK_NAME in celery_app.tasks
     assert EXTRACTION_TASK_NAME in celery_app.tasks
+    assert ABANDON_STALE_PENDING_TASK_NAME in celery_app.tasks
 
 
 def test_celery_task_routes_are_declared():
@@ -23,6 +27,17 @@ def test_celery_task_routes_are_declared():
     assert routes[OCR_TASK_NAME]["queue"] == OCR_QUEUE
     assert routes[METADATA_TASK_NAME]["queue"] == METADATA_QUEUE
     assert routes[EXTRACTION_TASK_NAME]["queue"] == EXTRACTION_QUEUE
+    assert routes[ABANDON_STALE_PENDING_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
+
+
+def test_celery_beat_schedule_abandon_stale_pending_when_enabled():
+    if not config.STALE_PENDING_ABANDON_ENABLED:
+        return
+    schedule = celery_app.conf.beat_schedule
+    assert "abandon-stale-pending-extraction-jobs" in schedule
+    entry = schedule["abandon-stale-pending-extraction-jobs"]
+    assert entry["task"] == ABANDON_STALE_PENDING_TASK_NAME
+    assert entry["kwargs"]["older_than_hours"] == config.STALE_PENDING_ABANDON_HOURS
 
 
 def test_extraction_worker_processes_existing_job(monkeypatch):

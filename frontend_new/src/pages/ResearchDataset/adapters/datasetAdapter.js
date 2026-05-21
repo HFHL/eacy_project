@@ -84,6 +84,12 @@ const hasFieldValue = (value) => {
 const calcGroupStats = (groups, groupId) => {
   const group = groups?.[groupId]
   if (!group || !group.fields || typeof group.fields !== 'object') {
+    if (group && typeof group.filled_count === 'number' && typeof group.total_count === 'number') {
+      const totalCount = group.total_count
+      const filledCount = group.filled_count
+      const percent = totalCount > 0 ? Math.round((filledCount / totalCount) * 100) : (group.completeness ?? 0)
+      return { percent, filled: filledCount, total: totalCount }
+    }
     return { percent: 0, filled: 0, total: 0 }
   }
   const fields = Object.values(group.fields)
@@ -91,6 +97,24 @@ const calcGroupStats = (groups, groupId) => {
   const totalCount = fields.length
   const percent = totalCount > 0 ? Math.round((filledCount / totalCount) * 100) : 0
   return { percent, filled: filledCount, total: totalCount }
+}
+
+const buildCrfGroupsFromSummaryForAdapter = (groupStats = {}) => {
+  const groups = {}
+  Object.entries(groupStats || {}).forEach(([groupId, stats]) => {
+    if (!stats || typeof stats !== 'object') return
+    groups[groupId] = {
+      group_id: groupId,
+      group_name: stats.group_name || groupId,
+      completeness: Number(stats.percent) || 0,
+      filled_count: Number(stats.filled) || 0,
+      total_count: Number(stats.total) || 0,
+      fields: {},
+      records: [],
+      is_repeatable: false,
+    }
+  })
+  return groups
 }
 
 /**
@@ -101,7 +125,11 @@ const calcGroupStats = (groups, groupId) => {
  */
 export const adaptProjectPatient = (patient) => {
   const crfData = patient?.crf_data || {}
-  const groups = crfData?.groups || {}
+  let groups = crfData?.groups || {}
+
+  if ((!groups || Object.keys(groups).length === 0) && patient?.crf_group_stats) {
+    groups = buildCrfGroupsFromSummaryForAdapter(patient.crf_group_stats)
+  }
 
   const crfGroups = {}
   Object.keys(groups).forEach((groupId) => {

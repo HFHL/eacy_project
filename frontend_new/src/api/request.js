@@ -49,7 +49,16 @@ const readResponseBody = async (response) => {
 const getErrorMessage = (body, fallback) => {
   if (!body) return fallback
   if (typeof body === 'string') return body
-  return body.message || body.detail || body.error || fallback
+  if (Array.isArray(body.detail)) {
+    return body.detail.map((item) => {
+      if (typeof item === 'string') return item
+      const loc = Array.isArray(item.loc) ? item.loc.filter((part) => part !== 'body').join('.') : ''
+      const msg = item.msg || item.message || JSON.stringify(item)
+      return loc ? `${loc}: ${msg}` : msg
+    }).join('; ')
+  }
+  if (typeof body.detail === 'string') return body.detail
+  return body.message || body.error || fallback
 }
 
 export class ApiRequestError extends Error {

@@ -57,6 +57,38 @@ export function parseSchemaDefsToEnums(schema) {
  * @param {Object} [overrides={}] - 页面级覆盖配置。
  * @returns {{siderWidth:number, sourcePanelWidth:undefined|number, collapsible:boolean, showSourcePanel:boolean, contentAdaptive:boolean, collapsedTitle:string}} 标准化后的配置。
  */
+/**
+ * 从患者/项目 JSON Schema 解析可靶向抽取的表单列表（与后端 ExtractionPlanner 的 form_key 一致）。
+ * @param {Object} schema
+ * @returns {Array<{key:string, name:string, group_key:string, form_key:string}>}
+ */
+export function buildTargetFormGroupsFromSchema(schema) {
+  const groups = []
+  const properties = schema?.properties || {}
+  for (const [groupKey, groupSchema] of Object.entries(properties)) {
+    const groupProperties = groupSchema?.properties || {}
+    for (const [formKey, formSchema] of Object.entries(groupProperties)) {
+      if (!formSchema || typeof formSchema !== 'object') continue
+      const targetSchema =
+        formSchema.type === 'array' && formSchema.items && typeof formSchema.items === 'object'
+          ? formSchema.items
+          : formSchema
+      const fullKey = `${groupKey}.${formKey}`
+      const name =
+        targetSchema?.['x-display-name'] ||
+        formSchema?.['x-display-name'] ||
+        formKey
+      groups.push({
+        key: fullKey,
+        name,
+        group_key: groupKey,
+        form_key: formKey,
+      })
+    }
+  }
+  return groups
+}
+
 export function createSchemaFormLayoutProps(defaults, overrides = {}) {
   const normalizedOverrides = Object.fromEntries(
     Object.entries(overrides).filter(([, value]) => value !== undefined)

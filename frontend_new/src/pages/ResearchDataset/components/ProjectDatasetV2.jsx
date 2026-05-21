@@ -22,7 +22,8 @@ import {
  *  selectedPatientIds: string[];
  *  onToggleSelectPatient: (patientId: string, checked: boolean) => void;
  *  onNavigatePatient: (patientId: string) => void;
- *  onExtractPatient: (patientId: string) => void;
+ *  onExtractPatient: (patient: Record<string, any>) => void;
+ *  patientExtractionById?: Record<string, { status?: string; progress?: number; label?: string; modeLabel?: string }>;
  *  pagination: Record<string, any>;
  *  onPageChange: (page: number, pageSize: number) => void;
  *  leftScrollY: number;
@@ -32,6 +33,7 @@ import {
  */
 const ProjectDatasetV2 = ({
   loading,
+  groupFieldsLoading = false,
   patients,
   fieldGroups,
   folders,
@@ -42,6 +44,7 @@ const ProjectDatasetV2 = ({
   onToggleSelectPatient,
   onNavigatePatient,
   onExtractPatient,
+  patientExtractionById = {},
   pagination,
   onPageChange,
   leftScrollY,
@@ -989,6 +992,7 @@ const ProjectDatasetV2 = ({
           onToggleSelectPatient={onToggleSelectPatient}
           onNavigatePatient={onNavigatePatient}
           onExtractPatient={onExtractPatient}
+          patientExtractionById={patientExtractionById}
           pagination={pagination}
           onPageChange={onPageChange}
           loading={loading}
@@ -997,7 +1001,7 @@ const ProjectDatasetV2 = ({
       </div>
       <div ref={rightPanelRef} className="project-dataset-v2-panel project-dataset-v2-right-panel">
         <FieldGroupTabs
-          loading={loading}
+          loading={loading || groupFieldsLoading}
           fieldGroups={fieldGroups}
           folders={folders}
           groupsByFolder={groupsByFolder}

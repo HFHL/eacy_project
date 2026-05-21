@@ -93,6 +93,7 @@ export function toFieldFormValues(field = {}) {
     isEditable: field.editable !== false,
     isRequired: !!field.required,
     isNullable: field.nullable !== false,
+    skipExtraction: !!field.skipExtraction,
     reuseMode: field.formTemplate?.reuse_mode || 'none',
     sourceForm: field.formTemplate?.source_form || '',
   }
@@ -139,6 +140,7 @@ export function fromFieldFormValues(values = {}) {
     editable: values.isEditable !== false,
     required: !!values.isRequired,
     nullable: values.isNullable !== false,
+    skipExtraction: !!values.skipExtraction,
     multiRow: tableRows === 'multiRow',
     isTable: normalizedDisplayType === 'table',
     config: Object.keys(config).length > 0 ? config : undefined,

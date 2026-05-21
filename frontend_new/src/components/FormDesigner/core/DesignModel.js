@@ -220,6 +220,7 @@ export class DesignModel {
       editable: DEFAULT_CONFIG.field.editable,
       description: fieldData.description || '',
       extractionPrompt: fieldData.extractionPrompt || '',
+      skipExtraction: !!fieldData.skipExtraction,
       required: false,
       format: fieldData.format || null,
       defaultValue: null,

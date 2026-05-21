@@ -57,6 +57,13 @@ import {
   RobotOutlined
 } from '@ant-design/icons'
 import { modalBodyPreset, modalWidthPreset } from '../../styles/themeTokens'
+import {
+  MAX_UPLOAD_FILE_SIZE_MB,
+  MAX_UPLOAD_FILES_PER_BATCH,
+  UPLOAD_FILE_ACCEPT,
+  validateUploadBatch,
+  validateUploadFile,
+} from '../../constants/uploadLimits'
 
 const { Title, Text } = Typography
 const { Dragger } = Upload
@@ -413,6 +420,12 @@ const DocumentUpload = () => {
     if (folderInputRef.current) {
       folderInputRef.current.value = ''
     }
+
+    const batchCheck = validateUploadBatch(fileList)
+    if (!batchCheck.ok) {
+      message.error(batchCheck.message)
+      return
+    }
     
     const newFiles = fileList.map(file => {
       // 去掉文件名中的路径前缀（如"文档/"），只保留文件名
@@ -421,19 +434,20 @@ const DocumentUpload = () => {
       // 创建新的 File 对象，使用处理后的文件名
       // File 对象的 name 属性是只读的，所以需要创建新对象
       const renamedFile = new File([file], fileName, { type: file.type })
+      const validation = validateUploadFile(file)
       
       return {
         id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         name: fileName,  // 使用处理后的文件名
         size: file.size,
         type: file.type,
-        status: validateFileFormat(file) ? 'valid' : 'invalid',
+        status: validation.ok ? 'valid' : 'invalid',
         category: detectFileCategory(file),
         uploadProgress: 0,
         uploadStatus: 'pending',
         file: renamedFile,  // 使用重命名后的 File 对象
         originFileObj: renamedFile,  // 使用重命名后的 File 对象
-        error: validateFileFormat(file) ? null : '不支持的文件格式'
+        error: validation.ok ? null : validation.message
       }
     })
     
@@ -515,19 +529,8 @@ const DocumentUpload = () => {
     }
   }, [fetchUnparsedDocuments])
 
-  // 文件格式验证
-  const validateFileFormat = (file) => {
-    const supportedTypes = [
-      'application/pdf',
-      'image/jpg',
-      'image/jpeg',
-      'image/png',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'text/csv'
-    ]
-    return supportedTypes.includes(file.type) && file.size <= 50 * 1024 * 1024
-  }
+  // 文件格式验证（单文件）
+  const validateFileFormat = (file) => validateUploadFile(file).ok
 
   // 检测文件类别
   const detectFileCategory = (file) => {
@@ -1013,6 +1016,7 @@ const DocumentUpload = () => {
     name: 'file',
     multiple: true,
     showUploadList: false,
+    accept: UPLOAD_FILE_ACCEPT,
     fileList: [], // 保持为空，避免内部状态累积
     beforeUpload: (file) => {
       // 使用文件名+大小+修改时间生成唯一标识
@@ -1054,30 +1058,30 @@ const DocumentUpload = () => {
       })
       
       // 再过滤出支持的文件格式
-      const supportedTypes = [
-        'application/pdf',
-        'image/jpg',
-        'image/jpeg',
-        'image/png',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'text/csv'
-      ]
-      
-      const validFiles = newFiles.filter(file => 
-        supportedTypes.includes(file.type) && file.size <= 50 * 1024 * 1024
-      )
+      const validFiles = []
+      const invalidMessages = []
+      newFiles.forEach((file) => {
+        const result = validateUploadFile(file)
+        if (result.ok) validFiles.push(file)
+        else invalidMessages.push(result.message)
+      })
       
       if (validFiles.length === 0) {
-        message.warning('没有找到支持的文件格式')
+        message.warning(invalidMessages[0] || '没有找到支持的文件格式')
         return
       }
       
-      if (validFiles.length < newFiles.length) {
-        message.info(`共 ${newFiles.length} 个文件，筛选出 ${validFiles.length} 个支持的文件`)
+      if (invalidMessages.length > 0) {
+        message.info(`部分文件已跳过：${invalidMessages.length} 个不符合要求`)
+      }
+
+      const batchCheck = validateUploadBatch(validFiles)
+      if (!batchCheck.ok) {
+        message.error(batchCheck.message)
+        return
       }
       
-      handleFileUpload(validFiles)
+      handleFileUpload(batchCheck.validFiles)
     }
   }
 
@@ -1190,7 +1194,7 @@ const DocumentUpload = () => {
               ),
               children: (
                 <div style={{ paddingLeft: 24 }}>
-                  <p>• 支持格式: PDF, JPG, PNG, DOCX, XLSX, CSV | 单文件≤50MB | 批量≤100个</p>
+                  <p>• 支持格式: PDF, JPG, PNG, DOCX, XLSX, CSV | 单文件≤{MAX_UPLOAD_FILE_SIZE_MB}MB | 单次最多 {MAX_UPLOAD_FILES_PER_BATCH} 个</p>
                   <p>• 请确保文档清晰可读，模糊或损坏的文档会影响AI识别准确率</p>
                   <p>• 系统会自动检测患者信息并进行智能分类，请确保文档包含患者姓名等关键信息</p>
                 </div>
@@ -1271,18 +1275,17 @@ const DocumentUpload = () => {
           onChange={(e) => {
             if (e.target.files.length > 0) {
               const files = Array.from(e.target.files)
+              const batchCheck = validateUploadBatch(files)
+              if (!batchCheck.ok) {
+                message.error(batchCheck.message)
+                e.target.value = ''
+                return
+              }
               // 过滤出支持的文件格式
-              const validFiles = files.filter(file => {
-                const supportedTypes = [
-                  'application/pdf',
-                  'image/jpg',
-                  'image/jpeg',
-                  'image/png',
-                  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                  'text/csv'
-                ]
-                return supportedTypes.includes(file.type) && file.size <= 50 * 1024 * 1024
+              const validFiles = []
+              batchCheck.validFiles.forEach((file) => {
+                const result = validateUploadFile(file)
+                if (result.ok) validFiles.push(file)
               })
               
               if (validFiles.length === 0) {

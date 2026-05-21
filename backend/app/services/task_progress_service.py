@@ -20,6 +20,14 @@ class TaskProgressService:
         self.item_repository = item_repository or AsyncTaskItemRepository()
         self.event_repository = event_repository or AsyncTaskEventRepository()
 
+    async def persist_plan_snapshot(self, batch_id: str, plan_json: dict[str, Any]) -> AsyncTaskBatch | None:
+        batch = await self.batch_repository.get_by_id(batch_id)
+        if batch is None:
+            return None
+        batch.plan_json = plan_json
+        await self.batch_repository.save(batch)
+        return batch
+
     async def create_batch(
         self,
         *,
@@ -112,9 +120,13 @@ class TaskProgressService:
         error_message: str | None = None,
         current_step: int | None = None,
         event_type: str = "progress",
+        payload_json: dict[str, Any] | None = None,
         commit: bool = False,
     ) -> None:
-        job_id = job_or_id.id if isinstance(job_or_id, ExtractionJob) else job_or_id
+        if isinstance(job_or_id, str):
+            job_id = job_or_id
+        else:
+            job_id = job_or_id.id
         item = await self.item_repository.get_by_extraction_job(job_id)
         if item is None:
             return
@@ -144,11 +156,16 @@ class TaskProgressService:
             item.current_step = current_step
         item.heartbeat_at = now
         await self.item_repository.save(item)
+        event_payload = self._merge_event_payload(
+            item=item,
+            payload_json=payload_json,
+            error_message=error_message,
+        )
         await self._create_event(
             item=item,
             event_type=event_type,
             message=message,
-            payload_json={"error_message": error_message} if error_message else None,
+            payload_json=event_payload,
         )
         await self.aggregate_batch(item.batch_id)
         if commit:
@@ -256,6 +273,28 @@ class TaskProgressService:
     async def list_batch_events(self, batch_id: str, *, after_id: str | None = None, limit: int = 200) -> list[AsyncTaskEvent]:
         return await self.event_repository.list_by_batch(batch_id, after_id=after_id, limit=limit)
 
+    def _merge_event_payload(
+        self,
+        *,
+        item: AsyncTaskItem,
+        payload_json: dict[str, Any] | None,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        merged: dict[str, Any] = {
+            "extraction_job_id": item.extraction_job_id,
+            "item_id": item.id,
+            "document_id": item.document_id,
+            "target_form_key": item.target_form_key,
+            "stage": item.stage,
+            "current_step": item.current_step,
+            "total_steps": item.total_steps,
+        }
+        if payload_json:
+            merged.update(payload_json)
+        if error_message:
+            merged["error_message"] = error_message
+        return merged
+
     async def _create_event(
         self,
         *,
@@ -273,7 +312,7 @@ class TaskProgressService:
                 "progress": item.progress,
                 "stage": item.stage,
                 "message": message if message is not None else item.message,
-                "payload_json": payload_json,
+                "payload_json": self._merge_event_payload(item=item, payload_json=payload_json),
                 "created_at": datetime.utcnow(),
             }
         )

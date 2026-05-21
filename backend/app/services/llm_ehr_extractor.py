@@ -9,7 +9,10 @@ from typing import Any, NotRequired, TypedDict
 import httpx
 
 from app.models import Document
-from app.services.evidence_location_resolver import build_ocr_evidence_units
+from app.services.evidence_location_resolver import (
+    build_ocr_reading_units,
+    flatten_reading_unit_corpus,
+)
 from app.services.llm_call_logger import ERROR_PARSE, LLMCallRecorder
 from app.services.schema_field_planner import SchemaField
 from core.config import config
@@ -25,6 +28,7 @@ class EhrExtractionState(TypedDict):
     document_id: str | None
     document_meta: dict[str, Any]
     ocr_evidence_units: NotRequired[list[dict[str, Any]]]
+    reading_units: NotRequired[list[dict[str, Any]]]
     field_specs: NotRequired[list[dict[str, Any]]]
     system_prompt: NotRequired[str]
     user_prompt: NotRequired[str]
@@ -68,13 +72,87 @@ class LlmEhrExtractor:
     ) -> dict[str, Any]:
         if not config.OPENAI_API_KEY:
             raise LlmExtractionError("Missing OPENAI_API_KEY for EHR extraction")
+        batch_size = max(int(getattr(config, "EXTRACTION_FIELD_BATCH_SIZE", 35) or 35), 1)
+        if len(fields) <= batch_size:
+            return self._extract_batch(
+                text=text,
+                fields=fields,
+                document_id=document_id,
+                document=document,
+                llm_call_buffer=llm_call_buffer,
+                llm_call_context=llm_call_context,
+            )
+
+        merged_fields: list[dict[str, Any]] = []
+        validation_logs: list[dict[str, Any]] = []
+        validation_warnings: list[str] = []
+        total_attempts = 0
+        last_raw_output: dict[str, Any] | None = None
+        last_status = "valid"
+        for offset in range(0, len(fields), batch_size):
+            batch = fields[offset : offset + batch_size]
+            batch_result = self._extract_batch(
+                text=text,
+                fields=batch,
+                document_id=document_id,
+                document=document,
+                llm_call_buffer=llm_call_buffer,
+                llm_call_context={
+                    **dict(llm_call_context or {}),
+                    "batch_index": offset // batch_size,
+                    "batch_count": (len(fields) + batch_size - 1) // batch_size,
+                },
+            )
+            merged_fields.extend(batch_result.get("fields") or [])
+            validation_logs.extend(batch_result.get("validation_log") or [])
+            validation_warnings.extend(batch_result.get("validation_warnings") or [])
+            total_attempts = max(total_attempts, int(batch_result.get("attempt_count") or 0))
+            last_raw_output = batch_result.get("raw_output") if isinstance(batch_result.get("raw_output"), dict) else last_raw_output
+            last_status = batch_result.get("validation_status") or last_status
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in merged_fields:
+            field_path = str(item.get("field_path") or "")
+            if not field_path or field_path in seen:
+                continue
+            seen.add(field_path)
+            deduped.append(item)
+
+        return {
+            "extractor": "LlmEhrExtractor",
+            "document_id": document_id,
+            "raw_output": last_raw_output,
+            "fields": deduped,
+            "errors": [],
+            "validation_status": last_status,
+            "validation_log": validation_logs,
+            "validation_warnings": validation_warnings,
+            "attempt_count": total_attempts,
+        }
+
+    def _extract_batch(
+        self,
+        *,
+        text: str,
+        fields: list[SchemaField],
+        document_id: str | None = None,
+        document: Document | None = None,
+        llm_call_buffer: list[dict[str, Any]] | None = None,
+        llm_call_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        field_hints = [field.field_title for field in fields if getattr(field, "field_title", None)]
+        field_hints.extend(field.field_path for field in fields)
+        reading_units = build_ocr_reading_units(document, field_hints=field_hints)
+        text_corpus = flatten_reading_unit_corpus(reading_units) or (text or "").strip()
         graph = self._build_graph()
         state: EhrExtractionState = {
-            "text": text,
+            "text": text_corpus,
             "fields": fields,
             "document_id": document_id,
             "document_meta": self._document_meta(document),
-            "ocr_evidence_units": build_ocr_evidence_units(document),
+            "reading_units": reading_units,
+            "ocr_evidence_units": reading_units,
             "attempt": 0,
             "max_attempts": 3,
             "validation_log": [],
@@ -198,11 +276,14 @@ class LlmEhrExtractor:
             return {"attempt": attempt, "raw_content": content, "raw_output": None, "parse_error": str(exc)}
 
     def _node_validate(self, state: EhrExtractionState) -> dict[str, Any]:
+        reading_units = state.get("reading_units") or state.get("ocr_evidence_units") or []
         errors, warnings, status_hint = self._validate_raw_output(
             state.get("raw_output"),
             state.get("field_specs") or [],
             text=state.get("text") or "",
+            reading_units=reading_units,
             parse_error=state.get("parse_error"),
+            require_source_id=bool(reading_units),
         )
         status = "invalid" if errors else (status_hint or "valid")
         attempt = int(state.get("attempt") or 0)
@@ -224,6 +305,10 @@ class LlmEhrExtractor:
         }
         if errors and attempt < int(state.get("max_attempts") or 1):
             update["repair_prompt"] = self._build_repair_prompt(state=state, errors=errors)
+        elif warnings and attempt < int(state.get("max_attempts") or 1):
+            update["repair_prompt"] = self._build_repair_prompt(state=state, errors=warnings)
+            update["validation_status"] = "invalid"
+            update["validation_errors"] = warnings
         return update
 
     def _route_after_validate(self, state: EhrExtractionState) -> str:
@@ -287,28 +372,37 @@ class LlmEhrExtractor:
             "1. 不要输出 null、空字符串、未知、未见、无法判断。\n"
             "2. 日期统一 YYYY-MM-DD；datetime 统一 ISO 格式。\n"
             "3. 枚举字段必须从 options 中选择最接近项。\n"
-            "4. evidence.quote_text 必须来自原文，不要改写；如 OCR 证据单元中有对应内容，必须填写 source_type/source_id。\n"
-            "5. 不要自行决定数据库是否覆盖 current；只输出候选抽取结果。\n"
-            "6. 对可重复记录/表格，records.record 中可以输出数组，但不要输出 _1/_2 展示名。\n"
-            "7. field_path 如需使用数组下标，必须是 0 开始的数字路径。\n\n"
-            f"可抽取字段清单：\n{json.dumps(field_specs[:180], ensure_ascii=False, indent=2)}"
+            "4. evidence.quote_text 必须来自对应 reading unit 的 text，不要改写；每个输出字段必须有自己的 evidences，且必须填写 source_type/source_id。\n"
+            "5. source_id 必须从输入 reading_units 中原样引用，不要编造。\n"
+            "6. 不要自行决定数据库是否覆盖 current；只输出候选抽取结果。\n"
+            "7. 对可重复记录/表格，records.record 中可以输出数组，但不要输出 _1/_2 展示名。\n"
+            "8. field_path 如需使用数组下标，必须是 0 开始的数字路径。\n"
+            "9. 优先使用 fields 格式：每个 field 独立携带 evidences；records 格式仅用于整行/整块字段共享依据。\n"
+            "10. 枚举/是/否类推断字段：值可推理，但 quote_text 必须引用原文依据片段，不能填选项字面量。\n\n"
+            f"可抽取字段清单：\n{json.dumps(field_specs, ensure_ascii=False, indent=2)}"
         )
 
     def _build_user_prompt(self, *, state: EhrExtractionState) -> str:
-        text = self._trim_text(state["text"])
-        evidence_units = state.get("ocr_evidence_units") or []
-        evidence_section = ""
-        if evidence_units:
-            evidence_section = (
-                "\n\nOCR 证据单元（用于 evidence.source_id 引用；不要改写 source_id）：\n"
-                f"{json.dumps(evidence_units, ensure_ascii=False)}"
+        field_specs = state.get("field_specs") or []
+        reading_units = self._trim_reading_units(
+            state.get("reading_units") or state.get("ocr_evidence_units") or [],
+            field_specs=field_specs,
+        )
+        if reading_units:
+            return (
+                "请从下面 OCR 结构化单元（reading_units）中抽取字段。\n"
+                "每个单元都有 source_type/source_id/text；输出 evidence 时必须原样引用 source_type/source_id。\n\n"
+                f"document_id: {state.get('document_id')}\n"
+                f"document_meta: {json.dumps(state.get('document_meta') or {}, ensure_ascii=False)}\n\n"
+                f"reading_units:\n{json.dumps(reading_units, ensure_ascii=False)}"
             )
+
+        text = self._trim_text(state.get("text") or "", field_specs=field_specs)
         return (
             "请从下面单份医疗文档 OCR 文本中抽取字段。\n\n"
             f"document_id: {state.get('document_id')}\n"
             f"document_meta: {json.dumps(state.get('document_meta') or {}, ensure_ascii=False)}\n\n"
             f"OCR 文本：\n{text}"
-            f"{evidence_section}"
         )
 
     def _field_spec(self, field: SchemaField) -> dict[str, Any]:
@@ -560,7 +654,9 @@ class LlmEhrExtractor:
         field_specs: list[dict[str, Any]],
         *,
         text: str = "",
+        reading_units: list[dict[str, Any]] | None = None,
         parse_error: str | None = None,
+        require_source_id: bool = False,
     ) -> tuple[list[str], list[str], str | None]:
         errors: list[str] = []
         warnings: list[str] = []
@@ -592,7 +688,15 @@ class LlmEhrExtractor:
                     errors.append(f"fields[{index}].field_path is not in schema: {field_path or '<missing>'}")
                     continue
                 errors.extend(self._validate_value_payload(raw_field, spec, f"fields[{index}]"))
-                warnings.extend(self._validate_evidence(raw_field, text, f"fields[{index}]"))
+                evidence_errors, evidence_warnings = self._validate_evidence(
+                    raw_field,
+                    text,
+                    f"fields[{index}]",
+                    reading_units=reading_units,
+                    require_source_id=require_source_id,
+                )
+                errors.extend(evidence_errors)
+                warnings.extend(evidence_warnings)
 
         if isinstance(raw_records, list):
             for index, raw_record in enumerate(raw_records):
@@ -604,7 +708,15 @@ class LlmEhrExtractor:
                     errors.append(f"records[{index}].form_path is not a schema form: {form_path or '<missing>'}")
                 if self._is_empty(raw_record.get("record")):
                     errors.append(f"records[{index}].record is required")
-                warnings.extend(self._validate_evidence(raw_record, text, f"records[{index}]"))
+                evidence_errors, evidence_warnings = self._validate_evidence(
+                    raw_record,
+                    text,
+                    f"records[{index}]",
+                    reading_units=reading_units,
+                    require_source_id=require_source_id,
+                )
+                errors.extend(evidence_errors)
+                warnings.extend(evidence_warnings)
                 if form_path and not self._is_empty(raw_record.get("record")):
                     for path, value in self._iter_record_leaf_values(form_path, raw_record.get("record")):
                         spec = by_path.get(path) or self._spec_for_indexed_path(path, by_path)
@@ -647,14 +759,61 @@ class LlmEhrExtractor:
                 errors.append(f"{label} datetime must be ISO format: {value}")
         return errors
 
-    def _validate_evidence(self, item: dict[str, Any], text: str, label: str) -> list[str]:
+    def _validate_evidence(
+        self,
+        item: dict[str, Any],
+        text: str,
+        label: str,
+        *,
+        reading_units: list[dict[str, Any]] | None = None,
+        require_source_id: bool = False,
+    ) -> tuple[list[str], list[str]]:
+        errors: list[str] = []
+        warnings: list[str] = []
         quotes = []
         if item.get("quote_text"):
             quotes.append(str(item["quote_text"]))
         evidences = item.get("evidences")
         if isinstance(evidences, list):
             quotes.extend(str(evidence.get("quote_text")) for evidence in evidences if isinstance(evidence, dict) and evidence.get("quote_text"))
-        return [f"{label} quote_text must be an OCR substring: {quote}" for quote in quotes if quote and quote not in text]
+            if require_source_id:
+                for index, evidence in enumerate(evidences):
+                    if not isinstance(evidence, dict) or not evidence.get("quote_text"):
+                        continue
+                    source_id = evidence.get("source_id") or evidence.get("line_id") or evidence.get("block_id") or evidence.get("cell_key")
+                    if not source_id:
+                        errors.append(f"{label} evidences[{index}] missing source_id")
+        warnings.extend(
+            self._quote_validation_warnings(quotes, text=text, reading_units=reading_units, label=label)
+        )
+        return errors, warnings
+
+    def _quote_validation_warnings(
+        self,
+        quotes: list[str],
+        *,
+        text: str,
+        reading_units: list[dict[str, Any]] | None,
+        label: str,
+    ) -> list[str]:
+        warnings: list[str] = []
+        unit_texts = [
+            str(unit.get("text") or "")
+            for unit in (reading_units or [])
+            if isinstance(unit, dict) and str(unit.get("text") or "").strip()
+        ]
+        for quote in quotes:
+            if not quote:
+                continue
+            if unit_texts:
+                if any(quote in unit_text for unit_text in unit_texts):
+                    continue
+                if quote in text:
+                    continue
+            elif quote in text:
+                continue
+            warnings.append(f"{label} quote_text must be an OCR substring: {quote}")
+        return warnings
 
     def _iter_record_leaf_values(self, prefix: str, node: Any):
         if isinstance(node, dict):
@@ -669,25 +828,66 @@ class LlmEhrExtractor:
             yield prefix, node
 
     def _build_repair_prompt(self, *, state: EhrExtractionState, errors: list[str]) -> str:
-        evidence_units = state.get("ocr_evidence_units") or []
-        evidence_section = ""
-        if evidence_units:
-            evidence_section = f"\nOCR 证据单元：{json.dumps(evidence_units, ensure_ascii=False)}\n"
+        field_specs = state.get("field_specs") or []
+        reading_units = self._trim_reading_units(
+            state.get("reading_units") or state.get("ocr_evidence_units") or [],
+            field_specs=field_specs,
+        )
+        if reading_units:
+            ocr_section = f"\nreading_units:\n{json.dumps(reading_units, ensure_ascii=False)}\n"
+        else:
+            ocr_section = f"\nOCR 文本：\n{self._trim_text(state.get('text') or '', field_specs=field_specs)}\n"
         return (
             "上一次抽取输出未通过校验。请只修复 JSON 输出，不要重新发挥或添加原文没有的信息。\n"
             "必须输出严格 JSON object，禁止 Markdown fence，保留原抽取含义。\n"
             f"校验错误：{json.dumps(errors, ensure_ascii=False)}\n"
             f"上一次原始输出：{state.get('raw_content') or json.dumps(state.get('raw_output'), ensure_ascii=False)}\n"
-            f"可抽取字段清单：{json.dumps((state.get('field_specs') or [])[:180], ensure_ascii=False)}\n"
-            f"{evidence_section}"
-            f"OCR 文本：\n{self._trim_text(state.get('text') or '')}"
+            f"可抽取字段清单：{json.dumps(field_specs, ensure_ascii=False)}\n"
+            f"{ocr_section}"
         )
 
-    def _trim_text(self, text: str) -> str:
+    def _trim_reading_units(
+        self,
+        units: list[dict[str, Any]],
+        *,
+        field_specs: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not units:
+            return []
+        serialized = json.dumps(units, ensure_ascii=False)
+        if len(serialized) <= 18000:
+            return units
+
+        keywords = ("姓名", "性别", "诊断", "入院", "出院", "病理", "检查", "治疗", "用药", "报告")
+        for spec in field_specs or []:
+            for key in ("field_title", "field_key", "prompt"):
+                value = spec.get(key)
+                if isinstance(value, str) and value.strip():
+                    keywords = (*keywords, value.strip())
+
+        def score(unit: dict[str, Any]) -> int:
+            text = str(unit.get("text") or "")
+            return sum(1 for keyword in keywords if keyword in text)
+
+        ranked = sorted(units, key=score, reverse=True)
+        trimmed: list[dict[str, Any]] = []
+        for unit in ranked:
+            candidate = [*trimmed, unit]
+            if len(json.dumps(candidate, ensure_ascii=False)) > 18000:
+                continue
+            trimmed.append(unit)
+        return trimmed or units[: min(len(units), 50)]
+
+    def _trim_text(self, text: str, *, field_specs: list[dict[str, Any]] | None = None) -> str:
         if len(text) <= 18000:
             return text
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         keywords = ("姓名", "性别", "诊断", "入院", "出院", "病理", "检查", "治疗", "用药", "报告")
+        for spec in field_specs or []:
+            for key in ("field_title", "field_key", "prompt"):
+                value = spec.get(key)
+                if isinstance(value, str) and value.strip():
+                    keywords = (*keywords, value.strip())
         picked = [line for line in lines if any(keyword in line for keyword in keywords)]
         return "\n".join([text[:9000], *picked[:300], text[-4000:]])[:24000]
 

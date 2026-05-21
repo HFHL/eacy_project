@@ -3,7 +3,7 @@ import { getAdminExtractionTaskEvents } from '../api/admin'
 
 const TERMINAL_STATUSES = new Set(['completed', 'completed_with_errors', 'failed', 'cancelled', 'succeeded'])
 
-export default function useExtractionProgressSSE(taskId, { enabled = true, intervalMs = 2000 } = {}) {
+export default function useExtractionProgressSSE(taskId, { enabled = true, intervalMs = 2000, itemId = null } = {}) {
   const [events, setEvents] = useState([])
   const [status, setStatus] = useState('idle')
   const [error] = useState(null)
@@ -29,7 +29,8 @@ export default function useExtractionProgressSSE(taskId, { enabled = true, inter
     const fetchEvents = async () => {
       setStatus((current) => (current === 'idle' ? 'connecting' : current))
       try {
-        const params = lastEventIdRef.current ? { after_id: lastEventIdRef.current } : {}
+        const params = { ...(lastEventIdRef.current ? { after_id: lastEventIdRef.current } : {}) }
+        if (itemId) params.item_id = itemId
         const res = await getAdminExtractionTaskEvents(taskId, params)
         if (cancelled) return
         const nextEvents = Array.isArray(res?.data) ? res.data : []
@@ -57,7 +58,7 @@ export default function useExtractionProgressSSE(taskId, { enabled = true, inter
       cancelled = true
       clearInterval(timer)
     }
-  }, [enabled, intervalMs, reset, taskId, terminal])
+  }, [enabled, intervalMs, itemId, reset, taskId, terminal])
 
   return {
     events,

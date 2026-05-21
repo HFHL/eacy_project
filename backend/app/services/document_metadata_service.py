@@ -25,9 +25,9 @@ class DocumentMetadataService:
         self.agent = agent or MetadataExtractionAgent(prompt_builder=self.prompt_builder)
         self.normalizer = normalizer or MetadataNormalizer()
 
-    async def queue_document_metadata(self, document_id: str) -> Document:
+    async def queue_document_metadata(self, document_id: str, *, uploaded_by: str | None = None) -> Document:
         try:
-            document = await self.document_repository.get_visible_by_id(document_id)
+            document = await self.document_repository.get_visible_by_id(document_id, uploaded_by=uploaded_by)
             if document is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
             if document.meta_status == "running":
@@ -45,8 +45,8 @@ class DocumentMetadataService:
         self._enqueue_metadata_task(document.id)
         return document
 
-    async def process_document_metadata(self, document_id: str) -> Document:
-        document = await self.document_repository.get_visible_by_id(document_id)
+    async def process_document_metadata(self, document_id: str, *, uploaded_by: str | None = None) -> Document:
+        document = await self.document_repository.get_visible_by_id(document_id, uploaded_by=uploaded_by)
         if document is None:
             raise ValueError("Document not found")
 
@@ -76,7 +76,7 @@ class DocumentMetadataService:
             return document
         except Exception as exc:
             await session.rollback()
-            return await self._mark_failed(document_id, exc)
+            return await self._mark_failed(document_id, exc, uploaded_by=uploaded_by)
 
     def _enqueue_metadata_task(self, document_id: str) -> None:
         from app.workers.celery_app import METADATA_QUEUE, METADATA_TASK_NAME, celery_app
@@ -100,8 +100,8 @@ class DocumentMetadataService:
         await DocumentService().invalidate_archive_tree_cache(getattr(document, "uploaded_by", None))
         return document
 
-    async def _mark_failed(self, document_id: str, exc: Exception) -> Document:
-        document = await self.document_repository.get_visible_by_id(document_id)
+    async def _mark_failed(self, document_id: str, exc: Exception, *, uploaded_by: str | None = None) -> Document:
+        document = await self.document_repository.get_visible_by_id(document_id, uploaded_by=uploaded_by)
         if document is None:
             raise exc
         previous_result = self._previous_result(document.metadata_json)

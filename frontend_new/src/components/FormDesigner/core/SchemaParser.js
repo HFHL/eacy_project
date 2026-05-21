@@ -257,6 +257,7 @@ export class SchemaParser {
       fileType: schema['x-file-type'] || null,
       description: schema.description || '',
       extractionPrompt: schema['x-extraction-prompt'] || '',
+      skipExtraction: !!schema['x-skip-extraction'],
       conflictPolicy: schema['x-conflict-policy'] || null, // legacy only
       required: isRequired,
       format: schema.format || null,

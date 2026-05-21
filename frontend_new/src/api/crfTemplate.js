@@ -1,5 +1,7 @@
 import { emptyList, emptySuccess } from './_empty'
 import request from './request'
+import { buildDesignerPayloadFromCsvFile } from '../utils/crfTemplateCsvImport'
+import { resolveTemplateAssets } from '../utils/templateAssetResolver'
 
 const TEMPLATE_TYPE_CRF = 'crf'
 
@@ -58,7 +60,9 @@ const normalizeTemplate = (template = {}) => {
 }
 
 const wrapTemplateList = (payload = {}) => {
-  const items = (Array.isArray(payload.items) ? payload.items : []).map(normalizeTemplate)
+  const items = (Array.isArray(payload.items) ? payload.items : [])
+    .filter((item) => item?.status !== 'archived')
+    .map(normalizeTemplate)
   const page = payload.page || 1
   const pageSize = payload.page_size || items.length || 20
   const total = payload.total ?? items.length
@@ -251,20 +255,62 @@ export const publishCrfTemplate = async (templateId = '') => {
   return emptySuccess(normalizeVersion(published))
 }
 
+export const getCrfTemplateProjectUsage = async (templateId = '') => {
+  if (!templateId) {
+    return emptySuccess({ items: [], total: 0 })
+  }
+  const payload = await request.get(`/schema-templates/${templateId}/project-usage`)
+  const items = Array.isArray(payload?.items) ? payload.items : []
+  return emptySuccess({
+    items,
+    total: payload?.total ?? items.length,
+  })
+}
+
 export const deleteCrfTemplate = async (templateId = '') => {
   if (!templateId) return emptySuccess(null)
   const template = await request.delete(`/schema-templates/${templateId}`)
   return emptySuccess(normalizeTemplate(template))
 }
 
+const pickTemplateCategory = (source = {}, schema = {}, designer = {}) => {
+  const layoutConfig = schema?.layout_config && typeof schema.layout_config === 'object'
+    ? schema.layout_config
+    : {}
+  return (
+    source.category
+    || layoutConfig.category
+    || designer?.meta?.category
+    || ''
+  )
+}
+
 export const cloneCrfTemplate = async (templateId, payload = {}) => {
-  const source = normalizeTemplate(await request.get(`/schema-templates/${templateId}`))
+  const raw = await request.get(`/schema-templates/${templateId}`)
+  const source = normalizeTemplate(raw)
+  const { designer, schema } = resolveTemplateAssets(source)
+  const fieldGroups = (
+    Array.isArray(source.field_groups) && source.field_groups.length
+      ? source.field_groups
+      : (Array.isArray(designer?.fieldGroups) ? designer.fieldGroups : (schema?.fieldGroups || []))
+  )
+  const mergedDesigner = {
+    ...(designer && typeof designer === 'object' ? designer : {}),
+    ...(source.designer && typeof source.designer === 'object' ? source.designer : {}),
+  }
+  if (fieldGroups.length) {
+    mergedDesigner.fieldGroups = fieldGroups
+  }
+  const schemaJson = schema && Object.keys(schema).length ? schema : (source.schema_json || {})
+  const baseName = source.template_name || source.name || '模板'
   return createCrfTemplateDesigner({
-    template_name: payload.template_name || `${source.template_name || source.name || '模板'} 副本`,
-    description: payload.description || source.description || '',
-    designer: source.designer || source.schema_json?.designer || {},
-    schema_json: source.schema_json || {},
-    publish: false,
+    template_name: payload.template_name || `${baseName} 副本`,
+    description: payload.description ?? source.description ?? '',
+    category: payload.category ?? pickTemplateCategory(source, schemaJson, mergedDesigner),
+    designer: mergedDesigner,
+    schema_json: schemaJson,
+    field_groups: fieldGroups,
+    publish: Boolean(payload.publish),
   })
 }
 
@@ -287,7 +333,37 @@ export const activateCrfTemplateVersion = async (_templateId = '', versionId = '
 }
 
 export const convertTemplate = async () => emptySuccess(null)
-export const importCrfTemplateFromCsv = async () => emptySuccess(null)
+
+/**
+ * 从 CSV 导入并创建 CRF 模板（解析规则与 CRF 设计器「导入 CSV」一致）。
+ * @param {Object} payload
+ * @param {File} payload.file CSV 文件
+ * @param {string} payload.template_name 模板名称
+ * @param {string} [payload.category]
+ * @param {string} [payload.description]
+ * @param {boolean} [payload.publish]
+ */
+export const importCrfTemplateFromCsv = async (payload = {}) => {
+  try {
+    const importPayload = await buildDesignerPayloadFromCsvFile(payload.file, payload)
+    const result = await createCrfTemplateDesigner(importPayload)
+    if (!result?.success) {
+      return result
+    }
+    const stats = importPayload.import_stats || {}
+    return {
+      ...result,
+      message: `导入成功：${stats.folders || 0} 个访视、${stats.groups || 0} 个表单、${stats.fields || 0} 个字段`,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      code: -1,
+      message: error?.message || 'CSV 导入失败',
+      data: null,
+    }
+  }
+}
 
 export default {
   getCRFTemplates,
@@ -303,6 +379,7 @@ export default {
   saveCrfTemplateDesigner,
   createCrfTemplateDesigner,
   cloneCrfTemplate,
+  getCrfTemplateProjectUsage,
   deleteCrfTemplate,
   listCrfTemplateVersions,
   getCrfTemplateVersion,

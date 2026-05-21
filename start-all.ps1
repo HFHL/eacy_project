@@ -1,5 +1,4 @@
 param(
-    [switch]$WithDocker,
     [switch]$SkipDocker,
     [switch]$SkipMigrate,
     [switch]$NoCelery
@@ -160,27 +159,12 @@ Write-Host "Cleaning app ports before startup..."
 Stop-PortOwner -Port $BackendPort
 Stop-PortOwner -Port $FrontendPort
 
-if ($WithDocker -and -not $SkipDocker) {
-    $ComposeFile = Join-Path $Backend "docker\docker-compose.yml"
-
-    if (Test-Command "docker") {
-        Write-Host "Starting MySQL and Redis..."
-        docker compose -f $ComposeFile up -d
-    }
-    elseif (Test-Command "docker-compose") {
-        Write-Host "Starting MySQL and Redis..."
-        docker-compose -f $ComposeFile up -d
-    }
-    else {
-        throw "Docker Compose command not found. Install/start Docker Desktop, or run with -SkipDocker if MySQL and Redis are already running."
-    }
-
-    Write-Host "Waiting for MySQL and Redis..."
-    Wait-Port -HostName "127.0.0.1" -Port 3306
+if (-not $SkipDocker) {
+    Write-Host "Checking local Redis (6379)..."
     Wait-Port -HostName "127.0.0.1" -Port 6379
 }
 else {
-    Write-Host "Skipping Docker startup. Expecting MySQL and Redis to be available already."
+    Write-Host "Skipping Redis port check (-SkipDocker). Ensure Redis and DATABASE_URL in .env are reachable."
 }
 
 if (-not $SkipMigrate) {
@@ -210,4 +194,4 @@ Start-ServiceWindow `
 
 Write-Host ""
 Write-Host "Started. Frontend is usually http://localhost:5173 and backend is usually http://localhost:8000"
-Write-Host "Use Ctrl+C in each service window to stop it. Use 'docker compose -f backend/docker/docker-compose.yml down' to stop MySQL/Redis."
+Write-Host "Use Ctrl+C in each service window to stop it. Database is remote PostgreSQL (DATABASE_URL in .env)."

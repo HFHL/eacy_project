@@ -74,7 +74,7 @@ class DashboardService:
                 "recently_added_today": sum(1 for patient in patients if patient.created_at and patient.created_at >= today),
                 "project_distribution": self._patient_project_distribution(patients, project_patients),
                 "completeness_distribution": self._patient_completeness_distribution(patients),
-                "conflict_distribution": await self._patient_conflict_distribution(user_id=user_id),
+                "conflict_distribution": await self._patient_conflict_distribution(user_id=user_id, patients=patients),
             },
             "projects": {
                 "total": len(projects),
@@ -164,11 +164,26 @@ class DashboardService:
         result = await session.execute(query)
         return int(result.scalar_one() or 0)
 
-    async def _patient_conflict_distribution(self, *, user_id: str | None) -> list[dict[str, Any]]:
-        conflicts = await self._count_pending_field_conflicts(user_id=user_id)
+    async def _count_patients_with_field_conflicts(self, *, user_id: str | None) -> int:
+        from app.models import DataContext
+
+        query = (
+            select(func.count(func.distinct(DataContext.patient_id)))
+            .select_from(FieldValueEvent)
+            .join(DataContext, FieldValueEvent.context_id == DataContext.id)
+            .where(FieldValueEvent.review_status == "conflict")
+        )
+        if user_id is not None:
+            query = query.join(Patient, DataContext.patient_id == Patient.id).where(Patient.owner_id == user_id)
+        result = await session.execute(query)
+        return int(result.scalar_one() or 0)
+
+    async def _patient_conflict_distribution(self, *, user_id: str | None, patients: list[Patient]) -> list[dict[str, Any]]:
+        with_conflict = await self._count_patients_with_field_conflicts(user_id=user_id)
+        without_conflict = max(len(patients) - with_conflict, 0)
         return [
-            {"key": "conflict", "label": "有冲突", "value": conflicts, "color": "#faad14"},
-            {"key": "normal", "label": "无冲突", "value": 0, "color": "#52c41a"},
+            {"key": "conflict", "label": "有冲突", "value": with_conflict, "color": "#faad14"},
+            {"key": "normal", "label": "无冲突", "value": without_conflict, "color": "#52c41a"},
         ]
 
     def _patient_project_distribution(self, patients: list[Patient], project_patients: list[ProjectPatient]) -> list[dict[str, Any]]:

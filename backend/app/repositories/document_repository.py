@@ -2,6 +2,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import load_only
 
 from app.models import Document, FieldValueEvidence
+from app.services.document_list_query import (
+    DocumentListQuery,
+    build_document_list_filters,
+    resolve_order_column,
+)
 from core.db import session
 from core.repository.base import BaseRepo
 
@@ -68,6 +73,42 @@ class DocumentRepository(BaseRepo[Document]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
+    _LIST_LOAD_ONLY = load_only(
+        Document.id,
+        Document.file_name,
+        Document.file_type,
+        Document.patient_id,
+        Document.original_filename,
+        Document.file_ext,
+        Document.mime_type,
+        Document.file_size,
+        Document.storage_provider,
+        Document.storage_path,
+        Document.file_url,
+        Document.status,
+        Document.ocr_status,
+        Document.meta_status,
+        Document.metadata_json,
+        Document.doc_type,
+        Document.doc_subtype,
+        Document.doc_title,
+        Document.effective_at,
+        Document.uploaded_by,
+        Document.archived_at,
+        Document.created_at,
+        Document.updated_at,
+    )
+
+    def _apply_list_query(self, query, list_query: DocumentListQuery):
+        for condition in build_document_list_filters(list_query):
+            query = query.where(condition)
+        order_column = resolve_order_column(list_query.order_by)
+        if list_query.order_direction == "asc":
+            query = query.order_by(order_column.asc())
+        else:
+            query = query.order_by(order_column.desc())
+        return query
+
     async def list_documents(
         self,
         *,
@@ -76,48 +117,17 @@ class DocumentRepository(BaseRepo[Document]):
         patient_id: str | None = None,
         status: str | None = None,
         uploaded_by: str | None = None,
+        list_query: DocumentListQuery | None = None,
     ) -> list[Document]:
-        query = select(Document)
-        if uploaded_by is not None:
-            query = query.where(Document.uploaded_by == uploaded_by)
-        if patient_id is not None:
-            query = query.where(Document.patient_id == patient_id)
-        if status is not None:
-            statuses = [item.strip() for item in str(status).split(",") if item.strip()]
-            if len(statuses) > 1:
-                query = query.where(Document.status.in_(statuses))
-            elif statuses:
-                query = query.where(Document.status == statuses[0])
-        else:
-            query = query.where(Document.status != "deleted")
-
-        query = query.options(
-            load_only(
-                Document.id,
-                Document.file_name,
-                Document.file_type,
-                Document.patient_id,
-                Document.original_filename,
-                Document.file_ext,
-                Document.mime_type,
-                Document.file_size,
-                Document.storage_provider,
-                Document.storage_path,
-                Document.file_url,
-                Document.status,
-                Document.ocr_status,
-                Document.meta_status,
-                Document.metadata_json,
-                Document.doc_type,
-                Document.doc_subtype,
-                Document.doc_title,
-                Document.effective_at,
-                Document.uploaded_by,
-                Document.archived_at,
-                Document.created_at,
-                Document.updated_at,
+        if list_query is None:
+            list_query = DocumentListQuery(
+                patient_id=patient_id,
+                status=status,
+                uploaded_by=uploaded_by,
             )
-        ).order_by(Document.created_at.desc()).offset(offset).limit(limit)
+        query = select(Document)
+        query = self._apply_list_query(query, list_query)
+        query = query.options(self._LIST_LOAD_ONLY).offset(offset).limit(limit)
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -189,21 +199,17 @@ class DocumentRepository(BaseRepo[Document]):
         patient_id: str | None = None,
         status: str | None = None,
         uploaded_by: str | None = None,
+        list_query: DocumentListQuery | None = None,
     ) -> int:
+        if list_query is None:
+            list_query = DocumentListQuery(
+                patient_id=patient_id,
+                status=status,
+                uploaded_by=uploaded_by,
+            )
         query = select(func.count()).select_from(Document)
-        if uploaded_by is not None:
-            query = query.where(Document.uploaded_by == uploaded_by)
-        if patient_id is not None:
-            query = query.where(Document.patient_id == patient_id)
-        if status is not None:
-            statuses = [item.strip() for item in str(status).split(",") if item.strip()]
-            if len(statuses) > 1:
-                query = query.where(Document.status.in_(statuses))
-            elif statuses:
-                query = query.where(Document.status == statuses[0])
-        else:
-            query = query.where(Document.status != "deleted")
-
+        for condition in build_document_list_filters(list_query):
+            query = query.where(condition)
         result = await session.execute(query)
         return int(result.scalar_one())
 

@@ -153,6 +153,25 @@ class FakeDocumentService:
             create_extraction_job=create_extraction_job,
         )
 
+    async def get_document_match_info(self, document_id, *, uploaded_by=None):
+        documents = [document for document in self.documents.values() if document.status != "deleted" and document.status != "archived"]
+        return {
+            "document_id": document_id,
+            "group_id": "group_fake" if documents else None,
+            "document_metadata": {},
+            "extracted_info": {"name": "张三", "patient_name": "张三"},
+            "matched_patient_id": None,
+            "match_score": 0,
+            "confidence": 0,
+            "match_result": "new",
+            "candidates": [],
+            "ai_recommendation": None,
+            "ai_reason": "未匹配到现有患者，建议新建档",
+        }
+
+    async def refresh_document_match_info(self, document_id, *, uploaded_by=None):
+        return await self.get_document_match_info(document_id, uploaded_by=uploaded_by)
+
     async def unarchive_document(self, document_id):
         document = self.documents[document_id]
         document.patient_id = None
@@ -323,5 +342,30 @@ def test_document_archive_group_flow():
         assert archive_response.status_code == 200
         assert archive_response.json()["archived_count"] == 2
         assert all(document.status == "archived" for document in fake_service.documents.values())
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_document_match_info_flow():
+    fake_service = FakeDocumentService()
+    app.dependency_overrides[get_document_service] = lambda: fake_service
+
+    try:
+        upload_response = client.post(
+            "/api/v1/documents",
+            files={"file": ("report.pdf", b"fake pdf", "application/pdf")},
+        )
+        document_id = upload_response.json()["id"]
+
+        match_response = client.get(f"/api/v1/documents/{document_id}/match-info")
+        assert match_response.status_code == 200
+        payload = match_response.json()
+        assert payload["document_id"] == document_id
+        assert payload["match_result"] == "new"
+        assert payload["extracted_info"]["name"] == "张三"
+
+        refresh_response = client.post(f"/api/v1/documents/{document_id}/match-info/refresh")
+        assert refresh_response.status_code == 200
+        assert refresh_response.json()["document_id"] == document_id
     finally:
         app.dependency_overrides.clear()

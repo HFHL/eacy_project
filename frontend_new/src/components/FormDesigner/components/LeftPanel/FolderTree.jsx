@@ -1,32 +1,27 @@
 /**
  * FolderTree - 文件夹树形组件
- * 左侧面板：显示Schema的文件夹（访视）层级结构
+ * 左侧面板：显示 Schema 的文件夹（访视）层级结构
  */
 
-import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { Tree, Empty, Tag, Button, Dropdown, Tooltip, Input, message } from 'antd';
-import { 
-  FolderOutlined, 
-  FolderOpenOutlined, 
-  FormOutlined, 
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { Empty, Tag, Button, Dropdown, Tooltip, Input, message } from 'antd';
+import {
   PlusOutlined,
   MoreOutlined,
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
-  AppstoreAddOutlined
+  AppstoreAddOutlined,
 } from '@ant-design/icons';
+import { Folder, FolderOpen, FileText } from 'lucide-react';
+import { TreeView } from '@/components/ui/tree-view';
 import { appThemeToken } from '../../../../styles/themeTokens';
 
-/**
- * 文件夹树组件
- */
 const FolderTree = ({
   folders = [],
   selectedFolderId = null,
   selectedGroupId = null,
   onSelect = null,
-  onDrop = null,
   onAddFolder = null,
   onAddGroup = null,
   onEditFolder = null,
@@ -42,44 +37,24 @@ const FolderTree = ({
   collapseAllSignal = 0,
   onExpandStateChange = null,
   readonly = false,
-  version = 0 // 接收版本号
+  version = 0,
 }) => {
-  // 悬停的文件夹ID
   const [hoveredFolderId, setHoveredFolderId] = useState(null);
-  // 悬停的表单ID
   const [hoveredGroupKey, setHoveredGroupKey] = useState(null);
-  // 正在编辑的表单ID
   const [editingGroupKey, setEditingGroupKey] = useState(null);
-  // 正在编辑的文件夹ID
   const [editingFolderId, setEditingFolderId] = useState(null);
-  // 编辑中的名称
   const [editingName, setEditingName] = useState('');
-  
-  // 激活的下拉菜单（文件夹ID或表单KEY）
   const [activeDropdownFolderId, setActiveDropdownFolderId] = useState(null);
   const [activeDropdownGroupKey, setActiveDropdownGroupKey] = useState(null);
-  
-  // 输入框引用
+
   const inputRef = useRef(null);
   const folderInputRef = useRef(null);
-  // 中文输入法组合状态
   const isComposingRef = useRef(false);
 
-  /**
-   * 构建文件夹节点 key。
-   * @param {string|number} folderId 文件夹 ID
-   * @returns {string} 树节点 key
-   */
   const getFolderKey = (folderId) => `folder-${folderId}`;
+  const getAllFolderKeys = (folderList = folders) =>
+    folderList.map((folder) => getFolderKey(folder.id));
 
-  /**
-   * 获取全部文件夹节点 key。
-   * @param {Array<{id: string|number}>} folderList 文件夹列表
-   * @returns {string[]} 所有文件夹节点 key
-   */
-  const getAllFolderKeys = (folderList = folders) => folderList.map(folder => getFolderKey(folder.id));
-
-  // 当开始编辑表单时，聚焦输入框
   useEffect(() => {
     if (editingGroupKey && inputRef.current) {
       inputRef.current.focus();
@@ -87,7 +62,6 @@ const FolderTree = ({
     }
   }, [editingGroupKey]);
 
-  // 当开始编辑文件夹时，聚焦输入框
   useEffect(() => {
     if (editingFolderId && folderInputRef.current) {
       folderInputRef.current.focus();
@@ -95,9 +69,8 @@ const FolderTree = ({
     }
   }, [editingFolderId]);
 
-  // 检查文件夹是否需要自动进入编辑模式（新建的文件夹）
   useEffect(() => {
-    folders.forEach(folder => {
+    folders.forEach((folder) => {
       if (folder.isNew && selectedFolderId === folder.id) {
         setEditingFolderId(folder.id);
         setEditingName(folder.name);
@@ -105,10 +78,9 @@ const FolderTree = ({
     });
   }, [folders, selectedFolderId]);
 
-  // 检查表单是否需要自动进入编辑模式（新建的表单）
   useEffect(() => {
-    folders.forEach(folder => {
-      (folder.groups || []).forEach(group => {
+    folders.forEach((folder) => {
+      (folder.groups || []).forEach((group) => {
         if (group.isNew && selectedGroupId === group.id) {
           const key = `group-${folder.id}-${group.id}`;
           setEditingGroupKey(key);
@@ -118,57 +90,44 @@ const FolderTree = ({
     });
   }, [folders, selectedGroupId]);
 
-  // 处理添加表单
-  const handleAddGroup = (e, folderId) => {
+  const handleAddGroupClick = (e, folderId) => {
     e.stopPropagation();
-    if (onAddGroup) {
-      onAddGroup(folderId);
-    }
+    onAddGroup?.(folderId);
   };
 
-  // 开始编辑文件夹名称
   const startEditingFolder = (folderId, currentName) => {
     setEditingFolderId(folderId);
     setEditingName(currentName);
   };
 
-  // 完成编辑文件夹名称
   const finishEditingFolder = (folderId) => {
-    if (editingName && editingName.trim()) {
-      if (onEditFolder) {
-        onEditFolder(folderId, editingName.trim());
-      }
+    if (editingName?.trim()) {
+      onEditFolder?.(folderId, editingName.trim());
     }
     setEditingFolderId(null);
     setEditingName('');
   };
 
-  // 开始编辑表单名称
   const startEditingGroup = (folderId, groupId, currentName) => {
     const key = `group-${folderId}-${groupId}`;
     setEditingGroupKey(key);
     setEditingName(currentName);
   };
 
-  // 完成编辑表单名称
   const finishEditingGroup = (folderId, groupId) => {
-    if (editingName && editingName.trim()) {
-      if (onEditGroupName) {
-        onEditGroupName(folderId, groupId, editingName.trim());
-      }
+    if (editingName?.trim()) {
+      onEditGroupName?.(folderId, groupId, editingName.trim());
     }
     setEditingGroupKey(null);
     setEditingName('');
   };
 
-  // 取消编辑
   const cancelEditing = () => {
     setEditingGroupKey(null);
     setEditingFolderId(null);
     setEditingName('');
   };
 
-  // 处理文件夹操作菜单
   const getFolderMenuItems = (folderId, folderName) => [
     {
       key: 'batchAdd',
@@ -180,169 +139,152 @@ const FolderTree = ({
         } else {
           message.info('批量新建表单功能开发中');
         }
-      }
+      },
     },
     {
       key: 'edit',
       icon: <EditOutlined />,
       label: '修改名称',
-      onClick: () => {
-        startEditingFolder(folderId, folderName);
-      }
+      onClick: () => startEditingFolder(folderId, folderName),
     },
     {
       key: 'copy',
       icon: <CopyOutlined />,
       label: '复制',
-      onClick: () => {
-        if (onCopyFolder) {
-          onCopyFolder(folderId);
-        }
-      }
+      onClick: () => onCopyFolder?.(folderId),
     },
-    {
-      type: 'divider'
-    },
+    { type: 'divider' },
     {
       key: 'delete',
       icon: <DeleteOutlined />,
       label: '删除',
       danger: true,
-      onClick: () => {
-        if (onDeleteFolder) {
-          onDeleteFolder(folderId);
-        }
-      }
-    }
+      onClick: () => onDeleteFolder?.(folderId),
+    },
   ];
 
-  // 处理表单操作菜单
   const getGroupMenuItems = (folderId, groupId, groupName) => [
     {
       key: 'edit',
       icon: <EditOutlined />,
       label: '修改名称',
-      onClick: () => {
-        startEditingGroup(folderId, groupId, groupName);
-      }
+      onClick: () => startEditingGroup(folderId, groupId, groupName),
     },
-    {
-      type: 'divider'
-    },
+    { type: 'divider' },
     {
       key: 'delete',
       icon: <DeleteOutlined />,
       label: '删除',
       danger: true,
-      onClick: () => {
-        if (onDeleteGroup) {
-          onDeleteGroup(folderId, groupId);
-        }
-      }
-    }
+      onClick: () => onDeleteGroup?.(folderId, groupId),
+    },
   ];
 
-  // 渲染文件夹标题（带悬停操作和内联编辑）
   const renderFolderTitle = (folder) => {
     const isHovered = hoveredFolderId === folder.id;
     const isEditing = editingFolderId === folder.id;
     const isDropdownOpen = activeDropdownFolderId === folder.id;
 
-    // 编辑模式
     if (isEditing) {
       return (
-        <div 
+        <div
           style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-          onClick={e => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
         >
           <Input
             ref={folderInputRef}
             size="small"
             value={editingName}
-            onChange={e => setEditingName(e.target.value)}
-            onPressEnter={() => { if (!isComposingRef.current) finishEditingFolder(folder.id); }}
-            onBlur={() => finishEditingFolder(folder.id)}
-            onKeyDown={e => {
-              if (isComposingRef.current) return;
-              if (e.key === 'Escape') {
-                cancelEditing();
-              }
+            onChange={(e) => setEditingName(e.target.value)}
+            onPressEnter={() => {
+              if (!isComposingRef.current) finishEditingFolder(folder.id);
             }}
-            onCompositionStart={() => { isComposingRef.current = true; }}
-            onCompositionEnd={() => { isComposingRef.current = false; }}
+            onBlur={() => finishEditingFolder(folder.id)}
+            onKeyDown={(e) => {
+              if (isComposingRef.current) return;
+              if (e.key === 'Escape') cancelEditing();
+            }}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              isComposingRef.current = false;
+            }}
             style={{ width: 140 }}
           />
         </div>
       );
     }
-    
+
     return (
-      <div 
+      <div
         className="folder-title-wrapper"
-        style={{ 
-          display: 'flex', 
-          alignItems: 'center', 
+        style={{
+          display: 'flex',
+          alignItems: 'center',
           justifyContent: 'space-between',
           width: '100%',
-          minWidth: 0, // 允许flex收缩
-          paddingRight: 4
+          minWidth: 0,
+          paddingRight: 4,
         }}
         onMouseEnter={() => setHoveredFolderId(folder.id)}
         onMouseLeave={() => setHoveredFolderId(null)}
       >
-        <span style={{ 
-          flex: 1, 
-          minWidth: 0, // 允许flex收缩
-          overflow: 'hidden', 
-          textOverflow: 'ellipsis', 
-          whiteSpace: 'nowrap' 
-        }}>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
           {folder.name}
         </span>
         {!readonly && (isHovered || isDropdownOpen) && (
-          <div 
-            style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
               gap: 4,
               flexShrink: 0,
-              marginLeft: 8
+              marginLeft: 8,
             }}
-            onClick={e => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
-            {/* 更多操作下拉菜单 */}
             <Dropdown
               menu={{ items: getFolderMenuItems(folder.id, folder.name) }}
               trigger={['click']}
               placement="bottomRight"
-              onOpenChange={(open) => setActiveDropdownFolderId(open ? folder.id : null)}
+              onOpenChange={(open) =>
+                setActiveDropdownFolderId(open ? folder.id : null)
+              }
             >
               <Button
                 type="text"
                 size="small"
                 icon={<MoreOutlined />}
-                style={{ 
-                  padding: '0 4px', 
-                  height: 20, 
+                style={{
+                  padding: '0 4px',
+                  height: 20,
                   minWidth: 20,
-                  color: appThemeToken.colorTextSecondary
+                  color: appThemeToken.colorTextSecondary,
                 }}
-                onClick={e => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
               />
             </Dropdown>
-            {/* 新建表单按钮 */}
             <Tooltip title="新建表单">
               <Button
                 type="text"
                 size="small"
                 icon={<PlusOutlined />}
-                style={{ 
-                  padding: '0 4px', 
+                style={{
+                  padding: '0 4px',
                   height: 20,
                   minWidth: 20,
-                  color: appThemeToken.colorPrimary
+                  color: appThemeToken.colorPrimary,
                 }}
-                onClick={(e) => handleAddGroup(e, folder.id)}
+                onClick={(e) => handleAddGroupClick(e, folder.id)}
               />
             </Tooltip>
           </div>
@@ -351,7 +293,6 @@ const FolderTree = ({
     );
   };
 
-  // 渲染表单标题（支持内联编辑）
   const renderGroupTitle = (folder, group) => {
     const key = `group-${folder.id}-${group.id}`;
     const isHovered = hoveredGroupKey === key;
@@ -360,25 +301,29 @@ const FolderTree = ({
 
     if (isEditing) {
       return (
-        <div 
+        <div
           style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-          onClick={e => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
         >
           <Input
             ref={inputRef}
             size="small"
             value={editingName}
-            onChange={e => setEditingName(e.target.value)}
-            onPressEnter={() => { if (!isComposingRef.current) finishEditingGroup(folder.id, group.id); }}
-            onBlur={() => finishEditingGroup(folder.id, group.id)}
-            onKeyDown={e => {
-              if (isComposingRef.current) return;
-              if (e.key === 'Escape') {
-                cancelEditing();
-              }
+            onChange={(e) => setEditingName(e.target.value)}
+            onPressEnter={() => {
+              if (!isComposingRef.current) finishEditingGroup(folder.id, group.id);
             }}
-            onCompositionStart={() => { isComposingRef.current = true; }}
-            onCompositionEnd={() => { isComposingRef.current = false; }}
+            onBlur={() => finishEditingGroup(folder.id, group.id)}
+            onKeyDown={(e) => {
+              if (isComposingRef.current) return;
+              if (e.key === 'Escape') cancelEditing();
+            }}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              isComposingRef.current = false;
+            }}
             style={{ width: 120 }}
           />
         </div>
@@ -386,65 +331,73 @@ const FolderTree = ({
     }
 
     return (
-      <div 
+      <div
         className="group-title-wrapper"
-        style={{ 
-          display: 'flex', 
-          alignItems: 'center', 
+        style={{
+          display: 'flex',
+          alignItems: 'center',
           justifyContent: 'space-between',
           width: '100%',
-          minWidth: 0 // 允许flex收缩
+          minWidth: 0,
         }}
         onMouseEnter={() => setHoveredGroupKey(key)}
         onMouseLeave={() => setHoveredGroupKey(null)}
       >
-        <span style={{ 
-          flex: 1, 
-          minWidth: 0, // 允许flex收缩
-          overflow: 'hidden', 
-          textOverflow: 'ellipsis', 
-          whiteSpace: 'nowrap',
-          display: 'flex',
-          alignItems: 'center'
-        }}>
-          <span style={{ 
-            overflow: 'hidden', 
-            textOverflow: 'ellipsis', 
-            whiteSpace: 'nowrap' 
-          }}>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            display: 'flex',
+            alignItems: 'center',
+          }}
+        >
+          <span
+            style={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
             {group.name}
           </span>
-          {group.fields && group.fields.length > 0 && (
-            <Tag style={{ marginLeft: 4, flexShrink: 0 }} color="blue">{group.fields.length}</Tag>
+          {group.fields?.length > 0 && (
+            <Tag style={{ marginLeft: 4, flexShrink: 0 }} color="blue">
+              {group.fields.length}
+            </Tag>
           )}
         </span>
         {!readonly && (isHovered || isDropdownOpen) && (
-          <div 
-            style={{ 
-              display: 'flex', 
+          <div
+            style={{
+              display: 'flex',
               alignItems: 'center',
               flexShrink: 0,
-              marginLeft: 8
+              marginLeft: 8,
             }}
-            onClick={e => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             <Dropdown
               menu={{ items: getGroupMenuItems(folder.id, group.id, group.name) }}
               trigger={['click']}
               placement="bottomRight"
-              onOpenChange={(open) => setActiveDropdownGroupKey(open ? key : null)}
+              onOpenChange={(open) =>
+                setActiveDropdownGroupKey(open ? key : null)
+              }
             >
               <Button
                 type="text"
                 size="small"
                 icon={<MoreOutlined />}
-                style={{ 
-                  padding: '0 4px', 
-                  height: 20, 
+                style={{
+                  padding: '0 4px',
+                  height: 20,
                   minWidth: 20,
-                  color: appThemeToken.colorTextSecondary
+                  color: appThemeToken.colorTextSecondary,
                 }}
-                onClick={e => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
               />
             </Dropdown>
           </div>
@@ -453,182 +406,157 @@ const FolderTree = ({
     );
   };
 
-  // 控制展开的节点 - 默认展开所有文件夹，选中的文件夹也要展开
   const [expandedKeys, setExpandedKeys] = useState(() => getAllFolderKeys());
 
-  // 转换为树形数据结构
-  const treeData = useMemo(() => {
-    return folders.map(folder => ({
-      key: getFolderKey(folder.id),
-      title: renderFolderTitle(folder),
-      selectable: true,
-      data: { type: 'folder', id: folder.id },
-      icon: expandedKeys.includes(getFolderKey(folder.id)) ? <FolderOpenOutlined /> : <FolderOutlined />,
-      children: (folder.groups || []).map(group => ({
-        key: `group-${folder.id}-${group.id}`,
-        title: renderGroupTitle(folder, group),
-        selectable: true,
-        data: { type: 'group', folderId: folder.id, id: group.id },
-        icon: <FormOutlined />,
-        isLeaf: true
-      }))
-    }));
-  }, [folders, expandedKeys, selectedGroupId, hoveredFolderId, hoveredGroupKey, editingGroupKey, editingFolderId, editingName, readonly, version]);
+  const treeNodes = useMemo(
+    () =>
+      folders.map((folder) => {
+        const folderKey = getFolderKey(folder.id);
+        const isExpanded = expandedKeys.includes(folderKey);
+        return {
+          id: folderKey,
+          label: renderFolderTitle(folder),
+          icon: isExpanded ? <FolderOpen size={16} /> : <Folder size={16} />,
+          data: { type: 'folder', id: folder.id },
+          children: (folder.groups || []).map((group) => ({
+            id: `group-${folder.id}-${group.id}`,
+            label: renderGroupTitle(folder, group),
+            icon: <FileText size={16} />,
+            data: { type: 'group', folderId: folder.id, id: group.id },
+          })),
+        };
+      }),
+    [
+      folders,
+      expandedKeys,
+      hoveredFolderId,
+      hoveredGroupKey,
+      editingGroupKey,
+      editingFolderId,
+      editingName,
+      readonly,
+      version,
+      activeDropdownFolderId,
+      activeDropdownGroupKey,
+    ],
+  );
 
-  // 计算选中的key
   const selectedKeys = useMemo(() => {
     if (selectedGroupId) {
       return [`group-${selectedFolderId}-${selectedGroupId}`];
     }
     if (selectedFolderId) {
-      return [`folder-${selectedFolderId}`];
+      return [getFolderKey(selectedFolderId)];
     }
     return [];
   }, [selectedFolderId, selectedGroupId]);
 
-  // 当选中新的文件夹（比如新建表单时）确保该文件夹展开
   useEffect(() => {
     if (selectedFolderId) {
       const folderKey = getFolderKey(selectedFolderId);
-      setExpandedKeys(prev => {
-        if (!prev.includes(folderKey)) {
-          return [...prev, folderKey];
-        }
-        return prev;
-      });
+      setExpandedKeys((prev) =>
+        prev.includes(folderKey) ? prev : [...prev, folderKey],
+      );
     }
   }, [selectedFolderId]);
 
-  // 当新建文件夹时，自动展开
   useEffect(() => {
     const allFolderKeys = getAllFolderKeys(folders);
-    setExpandedKeys(prev => {
-      // 找到新增的文件夹key
-      const newKeys = allFolderKeys.filter(k => !prev.includes(k));
-      if (newKeys.length > 0) {
-        return [...prev, ...newKeys];
-      }
-      return prev;
+    setExpandedKeys((prev) => {
+      const newKeys = allFolderKeys.filter((k) => !prev.includes(k));
+      return newKeys.length > 0 ? [...prev, ...newKeys] : prev;
     });
   }, [folders.length]);
 
-  // 处理展开/收起
-  const handleExpand = (keys) => {
-    setExpandedKeys(keys);
-  };
-
-  /**
-   * 处理来自父组件的“全部展开”指令。
-   */
   useEffect(() => {
     if (expandAllSignal <= 0) return;
     setExpandedKeys(getAllFolderKeys(folders));
   }, [expandAllSignal, folders]);
 
-  /**
-   * 处理来自父组件的“全部收起”指令。
-   */
   useEffect(() => {
     if (collapseAllSignal <= 0) return;
     setExpandedKeys([]);
   }, [collapseAllSignal]);
 
-  /**
-   * 向父组件回传目录树是否全部展开，用于标题栏图标状态同步。
-   */
   useEffect(() => {
     if (!onExpandStateChange) return;
     const allFolderKeys = getAllFolderKeys(folders);
-    const isAllExpanded = allFolderKeys.length > 0 && allFolderKeys.every(key => expandedKeys.includes(key));
+    const isAllExpanded =
+      allFolderKeys.length > 0 &&
+      allFolderKeys.every((key) => expandedKeys.includes(key));
     onExpandStateChange(isAllExpanded, allFolderKeys.length);
   }, [expandedKeys, folders, onExpandStateChange]);
 
-  // 处理选择事件
-  const handleSelect = (selectedKeys, { node }) => {
-    if (!onSelect) return;
-
-    const { type, id, folderId } = node.data;
-
-    if (type === 'folder') {
-      const folderKey = getFolderKey(id);
-      setExpandedKeys(prev => (
-        prev.includes(folderKey)
-          ? prev.filter(key => key !== folderKey)
-          : [...prev, folderKey]
-      ));
-      onSelect({ folderId: id, groupId: null, fieldId: null });
-    } else if (type === 'group') {
-      onSelect({ folderId, groupId: id, fieldId: null });
+  const findTreeNodeById = useCallback((nodes, nodeId) => {
+    for (const node of nodes) {
+      if (node.id === nodeId) return node;
+      if (node.children?.length) {
+        const found = findTreeNodeById(node.children, nodeId);
+        if (found) return found;
+      }
     }
-  };
+    return null;
+  }, []);
 
-  // 处理拖拽放置
+  const handleSelectionChange = useCallback(
+    (ids) => {
+      if (!onSelect || !ids.length) return;
+      const node = findTreeNodeById(treeNodes, ids[0]);
+      if (!node?.data) return;
+      const { type, id, folderId } = node.data;
+      if (type === 'folder') {
+        onSelect({ folderId: id, groupId: null, fieldId: null });
+      } else if (type === 'group') {
+        onSelect({ folderId, groupId: id, fieldId: null });
+      }
+    },
+    [onSelect, treeNodes, findTreeNodeById],
+  );
+
   const handleDrop = (info) => {
-    const dragNode = info.dragNode;
-    const dropNode = info.node;
-    const dropPosition = info.dropPosition;
-    const dropToGap = info.dropToGap;
+    const dragData = info.dragNode.data;
+    const dropData = info.dropNode.data;
+    const { dropPosition, dropToGap } = info;
 
-    const dragData = dragNode.data;
-    const dropData = dropNode.data;
-
-    // 情况1：拖拽文件夹（分类）
     if (dragData.type === 'folder') {
       if (dropData.type === 'folder') {
-        // 文件夹之间排序
-        const dragIndex = folders.findIndex(f => f.id === dragData.id);
-        let dropIndex = folders.findIndex(f => f.id === dropData.id);
-        
+        const dragIndex = folders.findIndex((f) => f.id === dragData.id);
+        let dropIndex = folders.findIndex((f) => f.id === dropData.id);
         if (dragIndex === -1 || dropIndex === -1) return;
-        
-        // 计算新位置
         if (!dropToGap) {
-          // 放置到节点上，作为第一个
           dropIndex = 0;
         } else if (dropPosition > dropIndex) {
-          dropIndex = dropIndex + 1;
+          dropIndex += 1;
         }
-        
-        // 重新排序
         const newOrder = [...folders];
         const [removed] = newOrder.splice(dragIndex, 1);
-        newOrder.splice(dropIndex > dragIndex ? dropIndex - 1 : dropIndex, 0, removed);
-        
-        if (onReorderFolders) {
-          onReorderFolders(newOrder.map(f => f.id));
-        }
+        newOrder.splice(
+          dropIndex > dragIndex ? dropIndex - 1 : dropIndex,
+          0,
+          removed,
+        );
+        onReorderFolders?.(newOrder.map((f) => f.id));
       }
-      // 不允许将文件夹拖到表单上
       return;
     }
 
-    // 情况2：拖拽表单（字段组）
     if (dragData.type === 'group') {
       const sourceFolderId = dragData.folderId;
       const groupId = dragData.id;
 
       if (dropData.type === 'folder') {
-        // 移动到另一个文件夹
         const targetFolderId = dropData.id;
-        
         if (sourceFolderId === targetFolderId) {
-          // 同一个文件夹内，移到开头
-          const folder = folders.find(f => f.id === sourceFolderId);
+          const folder = folders.find((f) => f.id === sourceFolderId);
           if (!folder) return;
-          
-          const newOrder = folder.groups.filter(g => g.id !== groupId);
-          const group = folder.groups.find(g => g.id === groupId);
+          const newOrder = folder.groups.filter((g) => g.id !== groupId);
+          const group = folder.groups.find((g) => g.id === groupId);
           if (group) {
             newOrder.unshift(group);
-            if (onReorderGroups) {
-              onReorderGroups(sourceFolderId, newOrder.map(g => g.id));
-            }
+            onReorderGroups?.(sourceFolderId, newOrder.map((g) => g.id));
           }
         } else {
-          // 移动到不同文件夹
-          if (onMoveGroup) {
-            onMoveGroup(sourceFolderId, groupId, targetFolderId, 0);
-          }
+          onMoveGroup?.(sourceFolderId, groupId, targetFolderId, 0);
         }
         return;
       }
@@ -638,64 +566,53 @@ const FolderTree = ({
         const targetGroupId = dropData.id;
 
         if (sourceFolderId === targetFolderId) {
-          // 同一个文件夹内重新排序
-          const folder = folders.find(f => f.id === sourceFolderId);
+          const folder = folders.find((f) => f.id === sourceFolderId);
           if (!folder) return;
-
-          const dragIndex = folder.groups.findIndex(g => g.id === groupId);
-          let dropIndex = folder.groups.findIndex(g => g.id === targetGroupId);
-          
+          const dragIndex = folder.groups.findIndex((g) => g.id === groupId);
+          let dropIndex = folder.groups.findIndex((g) => g.id === targetGroupId);
           if (dragIndex === -1 || dropIndex === -1) return;
-          
-          // 根据放置位置调整索引
           if (dropPosition > dropIndex && dropToGap) {
-            dropIndex = dropIndex + 1;
+            dropIndex += 1;
           }
-          
           const newOrder = [...folder.groups];
           const [removed] = newOrder.splice(dragIndex, 1);
-          newOrder.splice(dropIndex > dragIndex ? dropIndex - 1 : dropIndex, 0, removed);
-          
-          if (onReorderGroups) {
-            onReorderGroups(sourceFolderId, newOrder.map(g => g.id));
-          }
+          newOrder.splice(
+            dropIndex > dragIndex ? dropIndex - 1 : dropIndex,
+            0,
+            removed,
+          );
+          onReorderGroups?.(sourceFolderId, newOrder.map((g) => g.id));
         } else {
-          // 移动到不同文件夹
-          const targetFolder = folders.find(f => f.id === targetFolderId);
+          const targetFolder = folders.find((f) => f.id === targetFolderId);
           if (!targetFolder) return;
-
-          const dropIndex = targetFolder.groups.findIndex(g => g.id === targetGroupId);
-          const targetIndex = dropToGap && dropPosition > dropIndex ? dropIndex + 1 : dropIndex;
-          
-          if (onMoveGroup) {
-            onMoveGroup(sourceFolderId, groupId, targetFolderId, targetIndex);
-          }
+          const dropIndex = targetFolder.groups.findIndex(
+            (g) => g.id === targetGroupId,
+          );
+          const targetIndex =
+            dropToGap && dropPosition > dropIndex ? dropIndex + 1 : dropIndex;
+          onMoveGroup?.(sourceFolderId, groupId, targetFolderId, targetIndex);
         }
       }
     }
   };
 
-  // 判断是否允许拖拽放置
-  const allowDrop = ({ dragNode, dropNode, dropPosition }) => {
+  const allowDrop = ({ dragNode, dropNode }) => {
     const dragData = dragNode.data;
     const dropData = dropNode.data;
-
-    // 文件夹只能拖到文件夹之间
     if (dragData.type === 'folder') {
       return dropData.type === 'folder';
     }
-
-    // 表单可以拖到文件夹或其他表单
     if (dragData.type === 'group') {
       return true;
     }
-
     return false;
   };
 
   return (
-    <div className="folder-tree" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* 添加访视按钮 - 居中显示 */}
+    <div
+      className="folder-tree"
+      style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+    >
       {!readonly && onAddFolder && (
         <div style={{ marginBottom: 12, flexShrink: 0, textAlign: 'center' }}>
           <Button
@@ -710,36 +627,37 @@ const FolderTree = ({
       )}
 
       {folders.length === 0 ? (
-        <div style={{ 
-          flex: 1, 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'center',
-          background: appThemeToken.colorBgContainer,
-          borderRadius: 4
-        }}>
-          <Empty
-            description="暂无数据"
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-          />
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: appThemeToken.colorBgContainer,
+            borderRadius: 4,
+          }}
+        >
+          <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </div>
       ) : (
-        <div className="hover-scrollbar" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
-          <Tree
-            showIcon
-            blockNode
-            draggable={!readonly && {
-              icon: false,
-              nodeDraggable: () => true
-            }}
-            expandedKeys={expandedKeys}
-            selectedKeys={selectedKeys}
-            treeData={treeData}
-            onSelect={handleSelect}
-            onExpand={handleExpand}
+        <div
+          className="hover-scrollbar"
+          style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}
+        >
+          <TreeView
+            data={treeNodes}
+            className="design-tree"
+            bordered={false}
+            showLines={false}
+            indent={16}
+            animateExpand
+            expandedIds={expandedKeys}
+            onExpandedChange={setExpandedKeys}
+            selectedIds={selectedKeys}
+            onSelectionChange={handleSelectionChange}
+            draggable={!readonly}
             onDrop={!readonly ? handleDrop : undefined}
             allowDrop={!readonly ? allowDrop : undefined}
-            className="design-tree"
           />
         </div>
       )}

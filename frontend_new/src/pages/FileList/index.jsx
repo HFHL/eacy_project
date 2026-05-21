@@ -9,6 +9,8 @@ import {
   getDocumentTaskProgress,
   extractEhrData,
   getDocumentAiMatchInfo,
+  resolveDocumentRecommendedPatientId,
+  pickRecommendedPatientId,
   changeArchivePatient,
   archiveDocument,
   batchArchiveDocuments,
@@ -28,6 +30,8 @@ import { useUploadManager, UploadStatus } from '../../hooks/useUploadManager'
 import UploadPanel from '../../components/UploadPanel'
 import UploadFloatingButton from '../../components/UploadPanel/UploadFloatingButton'
 import { PAGE_LAYOUT_HEIGHTS } from '../../constants/pageLayout'
+import { documentMatchesKeyword } from '../../utils/documentSearch'
+import { MAX_UPLOAD_FILE_SIZE_MB, UPLOAD_FILE_ACCEPT, validateUploadBatch, validateUploadFile } from '../../constants/uploadLimits'
 import {
   App as AntdApp,
   Typography,
@@ -92,12 +96,12 @@ const { RangePicker } = DatePicker
 
 // ─── 常量 ───
 const TASK_STATUS_DISPLAY_CONFIG = {
-  uploaded: { color: 'processing', text: '解析中' },
+  uploaded: { color: 'processing', text: '待解析' },
   parsing: { color: 'processing', text: '解析中' },
-  parsed: { color: 'processing', text: '解析中' },
-  extracted: { color: 'processing', text: '解析中' },
+  parsed: { color: 'processing', text: '等待抽取' },
+  extracted: { color: 'processing', text: '抽取完成' },
   parse_failed: { color: 'error', text: '异常' },
-  ai_matching: { color: 'processing', text: '解析中' },
+  ai_matching: { color: 'processing', text: '匹配中' },
   pending_confirm_new: { color: 'warning', text: '元数据抽取完毕' },
   pending_confirm_review: { color: 'warning', text: '元数据抽取完毕' },
   pending_confirm_uncertain: { color: 'warning', text: '元数据抽取完毕' },
@@ -132,13 +136,6 @@ const PROCESS_STAGE_OPTIONS = [
   { value: 'pending_archive', label: '待归档' },
   { value: 'archived', label: '已归档' },
 ]
-
-const TAB_STATUS_MAP = {
-  all: null,
-  parse: 'uploaded,parsing,parse_failed,parsed,extracted,ai_matching',
-  todo: 'pending_confirm_new,pending_confirm_review,pending_confirm_uncertain,auto_archived',
-  archived: 'archived',
-}
 
 const PARSE_STAGE_TASK_STATUSES = ['uploaded', 'parsing', 'parse_failed', 'parsed', 'extracted', 'ai_matching']
 const TODO_STAGE_TASK_STATUSES = ['pending_confirm_new', 'pending_confirm_review', 'pending_confirm_uncertain', 'auto_archived']
@@ -260,9 +257,6 @@ const getRouteStateSignature = (routeState) => JSON.stringify({
 
 const mapTaskStatusToStage = (status) => TASK_STATUS_TO_STAGE[status] || null
 
-const expandStageFiltersToTaskStatuses = (stages = []) =>
-  Array.from(new Set(stages.flatMap((stage) => STAGE_TO_TASK_STATUSES[stage] || [])))
-
 const normalizeTaskStatusFilters = (values = []) =>
   Array.from(new Set(
     values
@@ -342,8 +336,7 @@ const applyColumnFiltersToItems = (items, columnFilters) => {
     )
   }
   if (columnFilters.fileName) {
-    const kw = columnFilters.fileName.toLowerCase()
-    result = result.filter((it) => it.file_name?.toLowerCase().includes(kw))
+    result = result.filter((it) => documentMatchesKeyword(it, columnFilters.fileName))
   }
   if (columnFilters.dateRange?.length === 2) {
     const from = columnFilters.dateRange[0].startOf('day').valueOf()
@@ -417,6 +410,18 @@ const formatPatientSummary = (summary) => {
   return `${name} · ${gender} · ${age}`
 }
 
+const formatDocumentMetadataTooltip = (record) => {
+  const summary = record?.document_metadata_summary || {}
+  const lines = [
+    formatPatientSummary(summary),
+    summary.document_title ? `标题：${summary.document_title}` : '',
+    summary.effective_date ? `生效：${summary.effective_date}` : '',
+    summary.document_type ? `类型：${summary.document_type}${summary.document_subtype ? ` / ${summary.document_subtype}` : ''}` : '',
+    summary.organization_name ? `机构：${summary.organization_name}` : '',
+  ].filter(Boolean)
+  return lines.join('\n') || '--'
+}
+
 const STATUS_PROGRESS_MAP = {
   uploaded:                    { filled: 1 },
   parsing:                     { filled: 1, processing: true },
@@ -459,7 +464,7 @@ const getCandidatePatientId = (candidate = {}) => (
 
 const getGroupRecommendedPatient = (matchInfo = {}) => {
   const candidates = Array.isArray(matchInfo?.candidates) ? matchInfo.candidates : []
-  const matchedPatientId = matchInfo?.matched_patient_id || matchInfo?.ai_recommendation || ''
+  const matchedPatientId = pickRecommendedPatientId(matchInfo)
   const matchedCandidate = matchedPatientId
     ? candidates.find((item) => getCandidatePatientId(item) === matchedPatientId) || candidates[0]
     : candidates[0]
@@ -1046,12 +1051,8 @@ const FileList = () => {
   const pollingParseIdsRef = useRef(pollingParseIds)
   const matchTaskMapRef = useRef(matchTaskMap)
   const pollingAiMatchIdsRef = useRef(pollingAiMatchIds)
-  const statusPollingTimerRef = useRef(null)
-  const statusPollingInFlightRef = useRef(false)
-  const matchPollingTimerRef = useRef(null)
-  const matchPollingInFlightRef = useRef(false)
-  const aiMatchPollingTimerRef = useRef(null)
-  const aiMatchPollingInFlightRef = useRef(false)
+  const unifiedPollingTimerRef = useRef(null)
+  const unifiedPollingInFlightRef = useRef(false)
   // Monotonic version counter: each setFileList call from fetchFileList increments this.
   // Polling updates compare against it to avoid overwriting fresh data with stale responses.
   const fileListVersionRef = useRef(0)
@@ -1144,18 +1145,14 @@ const FileList = () => {
         page: pagination.current,
         page_size: pagination.pageSize,
         order_by: sorter.field || 'created_at',
-        order_direction: sorter.order || 'desc',
+        order_direction: sorter.order === 'ascend' ? 'asc' : 'desc',
       }
       if (columnFilters.fileName) params.keyword = columnFilters.fileName
-      const tabStatus = TAB_STATUS_MAP[activeTab]
-      const selectedTaskStatuses = expandStageFiltersToTaskStatuses(columnFilters.taskStatus)
-      if (selectedTaskStatuses.length > 0) {
-        params.task_status = selectedTaskStatuses.join(',')
-      } else if (tabStatus) {
-        params.task_status = tabStatus
+      if (activeTab && activeTab !== 'all') params.tab = activeTab
+      if (columnFilters.taskStatus.length > 0) {
+        params.task_stage = columnFilters.taskStatus.join(',')
       }
-      if (columnFilters.fileType && columnFilters.fileType.length > 0) {
-        // 与后端 Document.document_sub_type / document_type 文本一致，逗号分隔传递
+      if (columnFilters.fileType.length > 0) {
         params.document_types = columnFilters.fileType.join(',')
       }
       if (columnFilters.dateRange && columnFilters.dateRange.length === 2) {
@@ -1168,16 +1165,7 @@ const FileList = () => {
       if (response.success && response.data) {
         let items = response.data.items || []
 
-        // 前端列筛选（文件类型、处理阶段、状态信息）
-        if (columnFilters.fileType.length) {
-          items = items.filter((it) => {
-            const t = it.document_sub_type || it.document_type || '未分类'
-            return columnFilters.fileType.includes(t)
-          })
-        }
-        if (columnFilters.taskStatus.length) {
-          items = items.filter((it) => columnFilters.taskStatus.includes(mapTaskStatusToStage(it.task_status)))
-        }
+        // 状态信息列筛选仍在前端完成（后端暂未支持语义化 status_info）
         if (columnFilters.statusInfo.length) {
           const si = columnFilters.statusInfo
           items = items.filter((it) => {
@@ -1222,7 +1210,10 @@ const FileList = () => {
             return next
           })
         }
-        setPagination((prev) => ({ ...prev, total: response.data.total || 0 }))
+        setPagination((prev) => ({
+          ...prev,
+          total: columnFilters.statusInfo.length ? items.length : (response.data.total || 0),
+        }))
       }
     } catch (error) {
       if (requestId !== fetchRequestIdRef.current) return
@@ -1352,7 +1343,9 @@ const FileList = () => {
    */
   useEffect(() => {
     let timer = null
-    const scheduleRefresh = () => {
+    const scheduleRefresh = (event) => {
+      const reason = event?.detail?.reason || 'all'
+      if (reason === 'ehr') return
       if (timer) return
       timer = window.setTimeout(() => {
         timer = null
@@ -1368,105 +1361,122 @@ const FileList = () => {
     }
   }, [refreshAll])
 
-  // ─── 轮询：解析状态 ───
+  // ─── 统一轮询：解析状态 + AI 匹配任务 + 后台 AI 匹配 ───
   useEffect(() => {
-    const POLL_INTERVAL = 2000
-    const startPolling = () => {
-      if (statusPollingTimerRef.current) return
-      const tick = async () => {
-        const ids = Array.from(pollingParseIdsRef.current || [])
-        if (!ids.length || statusPollingInFlightRef.current) return
-        statusPollingInFlightRef.current = true
-        const versionBefore = fileListVersionRef.current
-        try {
-          const res = await getFileStatusesByIds(ids)
-          if (fileListVersionRef.current !== versionBefore) return
-          const items = res?.data?.items || []
-          if (res?.success && items.length) {
-            const byId = new Map(items.map((it) => [it.id, it]))
-            setFileList((prev) => prev.map((item) => {
-              const updated = byId.get(item.id)
-              return updated ? { ...item, ...updated } : item
-            }))
-            const IN_PROGRESS = new Set(['uploaded', 'parsing', 'ai_matching'])
-            const completed = items.filter((it) => it.task_status && !IN_PROGRESS.has(it.task_status))
-            if (completed.length) {
+    const POLL_INTERVAL = 2500
+    const IN_PROGRESS = new Set(['uploaded', 'parsing', 'ai_matching'])
+    const AI_MATCH_DONE = new Set([
+      'pending_confirm_new',
+      'pending_confirm_review',
+      'pending_confirm_uncertain',
+      'auto_archived',
+    ])
+
+    const patchFileListById = (items) => {
+      if (!items?.length) return
+      const byId = new Map(items.map((it) => [it.id, it]))
+      setFileList((prev) => prev.map((item) => {
+        const updated = byId.get(item.id)
+        return updated ? { ...item, ...updated } : item
+      }))
+    }
+
+    const tick = async () => {
+      if (unifiedPollingInFlightRef.current) return
+      const parseIds = Array.from(pollingParseIdsRef.current || [])
+      const aiMatchIds = Array.from(pollingAiMatchIdsRef.current || [])
+      const matchEntries = Array.from(matchTaskMapRef.current?.entries() || [])
+      if (!parseIds.length && !aiMatchIds.length && !matchEntries.length) return
+
+      unifiedPollingInFlightRef.current = true
+      const versionBefore = fileListVersionRef.current
+      try {
+        const statusIdSet = new Set([...parseIds, ...aiMatchIds])
+        const [statusRes, ...matchResults] = await Promise.all([
+          statusIdSet.size
+            ? getFileStatusesByIds([...statusIdSet])
+            : Promise.resolve(null),
+          ...matchEntries.map(([documentId, taskId]) => (
+            getDocumentTaskProgress(taskId, { silent: true })
+              .then((res) => ({ documentId, taskId, res }))
+              .catch(() => ({ documentId, taskId, res: null }))
+          )),
+        ])
+
+        if (fileListVersionRef.current !== versionBefore) return
+
+        if (statusRes?.success && statusRes?.data?.items?.length) {
+          patchFileListById(statusRes.data.items)
+          const items = statusRes.data.items
+
+          if (parseIds.length) {
+            const completedParse = items.filter((it) => it.task_status && !IN_PROGRESS.has(it.task_status))
+            if (completedParse.length) {
               setPollingParseIds((prev) => {
                 const next = new Set(prev)
-                completed.forEach((it) => next.delete(it.id))
+                completedParse.forEach((it) => next.delete(it.id))
                 return next
               })
-              if (completed.some((it) => !['uploaded', 'parse_failed'].includes(it.task_status)))
+              if (completedParse.some((it) => !['uploaded', 'parse_failed'].includes(it.task_status))) {
                 refreshAll({ forceTree: true })
+              }
             }
           }
-        } catch (e) {
-          console.error('轮询解析状态失败:', e)
-        } finally {
-          statusPollingInFlightRef.current = false
-        }
-      }
-      setTimeout(tick, 0)
-      statusPollingTimerRef.current = setInterval(tick, POLL_INTERVAL)
-    }
-    const stop = () => {
-      if (statusPollingTimerRef.current) {
-        clearInterval(statusPollingTimerRef.current)
-        statusPollingTimerRef.current = null
-      }
-    }
-    if (pollingParseIds.size > 0) startPolling()
-    else stop()
-    return stop
-  }, [pollingParseIds.size, refreshAll])
 
-  // ─── 轮询：AI匹配任务 ───
-  useEffect(() => {
-    const POLL_INTERVAL = 3000
-    const start = () => {
-      if (matchPollingTimerRef.current) return
-      const tick = async () => {
-        const entries = Array.from(matchTaskMapRef.current || [])
-        if (!entries.length || matchPollingInFlightRef.current) return
-        matchPollingInFlightRef.current = true
-        try {
+          if (aiMatchIds.length) {
+            const completedAi = items.filter((it) => it.task_status && it.task_status !== 'ai_matching')
+            if (completedAi.length) {
+              setPollingAiMatchIds((prev) => {
+                const next = new Set(prev)
+                completedAi.forEach((it) => next.delete(it.id))
+                return next
+              })
+              setMatchingDocIds((prev) => {
+                const next = new Set(prev)
+                completedAi.forEach((it) => next.delete(it.id))
+                return next
+              })
+              const matched = completedAi.filter((it) => AI_MATCH_DONE.has(it.task_status)).length
+              if (matched) {
+                message.success(`${matched} 个文档 AI 匹配完成`)
+                refreshAll({ forceTree: true })
+              }
+            }
+          }
+        }
+
+        if (matchEntries.length) {
           const completedDocIds = []
           const failedDocIds = []
-          for (const [documentId, taskId] of entries) {
-            try {
-              const res = await getDocumentTaskProgress(taskId, { silent: true })
-              if (res?.success && res?.data) {
-                if (res.data.status === 'completed') completedDocIds.push(documentId)
-                else if (res.data.status === 'failed') failedDocIds.push({ documentId })
-              }
-            } catch {}
-          }
+          matchResults.forEach(({ documentId, res }) => {
+            if (res?.success && res?.data) {
+              if (res.data.status === 'completed') completedDocIds.push(documentId)
+              else if (res.data.status === 'failed') failedDocIds.push(documentId)
+            }
+          })
           if (completedDocIds.length || failedDocIds.length) {
             setMatchingDocIds((prev) => {
               const next = new Set(prev)
               completedDocIds.forEach((id) => next.delete(id))
-              failedDocIds.forEach(({ documentId }) => next.delete(documentId))
+              failedDocIds.forEach((id) => next.delete(id))
               return next
             })
             setMatchTaskMap((prev) => {
               const next = new Map(prev)
               completedDocIds.forEach((id) => next.delete(id))
-              failedDocIds.forEach(({ documentId }) => next.delete(documentId))
+              failedDocIds.forEach((id) => next.delete(id))
               return next
             })
-            const allDone = [...completedDocIds, ...failedDocIds.map((f) => f.documentId)]
-            if (allDone.length) {
+            const allDone = [...completedDocIds, ...failedDocIds]
+            if (allDone.length && fileListVersionRef.current === versionBefore) {
               try {
-                const vBefore = fileListVersionRef.current
                 const r = await getFileStatusesByIds(allDone)
-                if (r?.success && r?.data?.items && fileListVersionRef.current === vBefore) {
-                  const byId = new Map(r.data.items.map((it) => [it.id, it]))
-                  setFileList((prev) => prev.map((item) => {
-                    const updated = byId.get(item.id)
-                    return updated ? { ...item, ...updated } : item
-                  }))
+                if (r?.success && r?.data?.items && fileListVersionRef.current === versionBefore) {
+                  patchFileListById(r.data.items)
                 }
-              } catch {}
+              } catch {
+                // ignore
+              }
             }
             if (completedDocIds.length) {
               message.success(`${completedDocIds.length} 个文档 AI 匹配完成`)
@@ -1474,88 +1484,41 @@ const FileList = () => {
             }
             if (failedDocIds.length) message.error(`${failedDocIds.length} 个文档 AI 匹配失败`)
           }
-        } catch {} finally {
-          matchPollingInFlightRef.current = false
         }
-      }
-      setTimeout(tick, 0)
-      matchPollingTimerRef.current = setInterval(tick, POLL_INTERVAL)
-    }
-    const stop = () => {
-      if (matchPollingTimerRef.current) {
-        clearInterval(matchPollingTimerRef.current)
-        matchPollingTimerRef.current = null
+      } catch (error) {
+        console.error('文件列表轮询失败:', error)
+      } finally {
+        unifiedPollingInFlightRef.current = false
       }
     }
-    if (matchTaskMap.size > 0) start()
-    else stop()
-    return stop
-  }, [matchTaskMap.size, refreshAll])
 
-  // ─── 轮询：后台AI匹配 ───
-  useEffect(() => {
-    const POLL_INTERVAL = 3000
+    const hasWork = () => (
+      (pollingParseIdsRef.current?.size || 0) > 0
+      || (pollingAiMatchIdsRef.current?.size || 0) > 0
+      || (matchTaskMapRef.current?.size || 0) > 0
+    )
+
     const start = () => {
-      if (aiMatchPollingTimerRef.current) return
-      const tick = async () => {
-        const ids = Array.from(pollingAiMatchIdsRef.current || [])
-        if (!ids.length || aiMatchPollingInFlightRef.current) return
-        aiMatchPollingInFlightRef.current = true
-        const vBefore = fileListVersionRef.current
-        try {
-          const res = await getFileStatusesByIds(ids)
-          if (fileListVersionRef.current !== vBefore) return
-          const items = res?.data?.items || []
-          if (res?.success && items.length) {
-            setFileList((prev) => prev.map((item) => {
-              const updated = items.find((it) => it.id === item.id)
-              return updated ? { ...item, ...updated } : item
-            }))
-            const completed = items.filter((it) => it.task_status && it.task_status !== 'ai_matching')
-            if (completed.length) {
-              setPollingAiMatchIds((prev) => {
-                const next = new Set(prev)
-                completed.forEach((it) => next.delete(it.id))
-                return next
-              })
-              setMatchingDocIds((prev) => {
-                const next = new Set(prev)
-                completed.forEach((it) => next.delete(it.id))
-                return next
-              })
-              const matched = completed.filter((it) =>
-                ['pending_confirm_new', 'pending_confirm_review', 'pending_confirm_uncertain', 'auto_archived'].includes(it.task_status)
-              ).length
-              if (matched) {
-                message.success(`${matched} 个文档 AI 匹配完成`)
-                refreshAll({ forceTree: true })
-              }
-            }
-          }
-        } catch {} finally {
-          aiMatchPollingInFlightRef.current = false
-        }
-      }
+      if (unifiedPollingTimerRef.current) return
       setTimeout(tick, 0)
-      aiMatchPollingTimerRef.current = setInterval(tick, POLL_INTERVAL)
+      unifiedPollingTimerRef.current = setInterval(tick, POLL_INTERVAL)
     }
     const stop = () => {
-      if (aiMatchPollingTimerRef.current) {
-        clearInterval(aiMatchPollingTimerRef.current)
-        aiMatchPollingTimerRef.current = null
+      if (unifiedPollingTimerRef.current) {
+        clearInterval(unifiedPollingTimerRef.current)
+        unifiedPollingTimerRef.current = null
       }
     }
-    if (pollingAiMatchIds.size > 0) start()
+
+    if (hasWork()) start()
     else stop()
     return stop
-  }, [pollingAiMatchIds.size, refreshAll])
+  }, [pollingParseIds.size, pollingAiMatchIds.size, matchTaskMap.size, refreshAll])
 
   useEffect(() => {
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
-      if (statusPollingTimerRef.current) clearInterval(statusPollingTimerRef.current)
-      if (matchPollingTimerRef.current) clearInterval(matchPollingTimerRef.current)
-      if (aiMatchPollingTimerRef.current) clearInterval(aiMatchPollingTimerRef.current)
+      if (unifiedPollingTimerRef.current) clearInterval(unifiedPollingTimerRef.current)
     }
   }, [])
 
@@ -1647,10 +1610,11 @@ const FileList = () => {
     }
   }, [expandedGroups, treeData, treeLoading])
 
-  // 当文件类型 / 状态信息 / 上传时间 / 文件名 筛选激活时，树形分组视图无法正确过滤，切换为扁平列表模式
+  // 列筛选激活时，树形/患者视图无法按分组精确过滤，切换为扁平列表模式
   const isFilterActive = useMemo(
     () =>
       columnFilters.fileType.length > 0 ||
+      columnFilters.taskStatus.length > 0 ||
       columnFilters.statusInfo.length > 0 ||
       !!columnFilters.dateRange ||
       !!columnFilters.fileName,
@@ -1899,7 +1863,8 @@ const FileList = () => {
           _statusSet: statusSet,
         })
         if (isExpanded && cached?.items) {
-          for (const item of cached.items) {
+          const visibleItems = applyColumnFiltersToItems(cached.items, columnFilters)
+          for (const item of visibleItems) {
             rows.push({ ...item, _isFile: true, _groupId: g.group_id, key: item.id, _indent: 1 })
           }
         }
@@ -1931,7 +1896,8 @@ const FileList = () => {
           _loading: cached?.loading,
         })
         if (isExpanded && cached?.items) {
-          for (const item of cached.items) {
+          const visibleItems = applyColumnFiltersToItems(cached.items, columnFilters)
+          for (const item of visibleItems) {
             rows.push({ ...item, _isFile: true, _patientId: p.patient_id, key: item.id, _indent: 1 })
           }
         }
@@ -1964,25 +1930,6 @@ const FileList = () => {
 
     return rows
   }, [fileList, normalizedTreeFileList, treeData, activeTab, groupDocsMap, expandedGroups, columnFilters, isFilterActive])
-
-  /**
-   * 按文件 ID 聚合当前页面已加载文件记录，统一供批量与弹窗逻辑复用。
-   *
-   * @type {Map<string|number, Record<string, any>>}
-   */
-  const fileRecordMap = useMemo(() => {
-    const map = new Map()
-    fileList.forEach((item) => {
-      if (item?.id != null) map.set(item.id, item)
-    })
-    treeTableData.forEach((item) => {
-      if (item?._isFile && item?.id != null && !map.has(item.id)) {
-        map.set(item.id, item)
-      }
-    })
-    return map
-  }, [fileList, treeTableData])
-
 
   const pendingParseFiles = useMemo(
     () => normalizedTreeFileList
@@ -2063,7 +2010,8 @@ const FileList = () => {
       }
       const cachedItems = groupDocsMap[groupId]?.items
       if (!Array.isArray(cachedItems)) return []
-      return cachedItems.map((item) => ({ ...item, _isFile: true, _groupId: groupId, key: item.id }))
+      return applyColumnFiltersToItems(cachedItems, columnFilters)
+        .map((item) => ({ ...item, _isFile: true, _groupId: groupId, key: item.id }))
     }
     if (activeGroupKey.startsWith('patient:')) {
       const patientId = activeGroupKey.slice('patient:'.length)
@@ -2075,15 +2023,43 @@ const FileList = () => {
       }
       const cachedItems = groupDocsMap[`patient:${patientId}`]?.items
       if (!Array.isArray(cachedItems)) return []
-      return cachedItems.map((item) => ({ ...item, _isFile: true, _patientId: patientId, key: item.id }))
+      return applyColumnFiltersToItems(cachedItems, columnFilters)
+        .map((item) => ({ ...item, _isFile: true, _patientId: patientId, key: item.id }))
     }
     return []
-  }, [activeGroupKey, fileList, normalizedTreeFileList, groupDocsMap, isFilterActive, pendingParseFiles, treeData])
+  }, [activeGroupKey, fileList, normalizedTreeFileList, groupDocsMap, isFilterActive, pendingParseFiles, treeData, columnFilters])
 
   const displayDataSource = useMemo(() => {
     if (viewMode === 'patient') return patientRightPaneDataSource
     return fileList.map((item) => ({ ...item, _isFile: true, key: item.id }))
   }, [fileList, patientRightPaneDataSource, viewMode])
+
+  /**
+   * 按文件 ID 聚合记录；优先保留表格当前行上的 _groupId / _patientId。
+   */
+  const fileRecordMap = useMemo(() => {
+    const map = new Map()
+    const mergeRecord = (item) => {
+      if (item?.id == null) return
+      const existing = map.get(item.id)
+      if (!existing) {
+        map.set(item.id, item)
+        return
+      }
+      map.set(item.id, {
+        ...existing,
+        ...item,
+        _groupId: item._groupId || existing._groupId,
+        _patientId: item._patientId || existing._patientId,
+      })
+    }
+    displayDataSource.forEach(mergeRecord)
+    treeTableData.forEach((item) => {
+      if (item?._isFile) mergeRecord(item)
+    })
+    fileList.forEach(mergeRecord)
+    return map
+  }, [displayDataSource, fileList, treeTableData])
 
   const tablePagination = useMemo(() => {
     if (viewMode === 'table') {
@@ -2178,25 +2154,20 @@ const FileList = () => {
     setMatchingDocIds((prev) => new Set([...prev, documentId]))
     try {
       const response = await aiMatchPatientAsync(documentId)
-      if (response.success && response.data?.task_id) {
-        message.info('AI 匹配任务已启动')
-        setFileList((prev) => prev.map((f) => (f.id === documentId ? { ...f, task_status: 'ai_matching' } : f)))
-        setMatchTaskMap((prev) => {
-          const n = new Map(prev); n.set(documentId, response.data.task_id); return n
-        })
+      if (response.success) {
+        message.success('AI 匹配完成')
+        refreshAll({ forceTree: true })
       } else {
-        message.error(response.message || 'AI 匹配启动失败')
-        setMatchingDocIds((prev) => {
-          const n = new Set(prev); n.delete(documentId); return n
-        })
+        message.error(response.message || 'AI 匹配失败')
       }
     } catch {
       message.error('AI匹配患者失败')
+    } finally {
       setMatchingDocIds((prev) => {
         const n = new Set(prev); n.delete(documentId); return n
       })
     }
-  }, [])
+  }, [refreshAll])
 
   const handleDeleteDocument = useCallback(async (documentId, fileName) => {
     // 弹确认前先查证据影响（失败也不阻塞，按"未引用"展示）
@@ -2433,21 +2404,18 @@ const FileList = () => {
   const handleConfirmRecommendedArchive = useCallback(async (record) => {
     const hideLoading = message.loading('正在获取推荐信息...', 0)
     try {
-      const groupRecommendation = record?._groupId
-        ? getGroupRecommendedPatient(groupDocsMap[record._groupId]?.matchInfo)
-        : { patientId: '', candidate: null }
-      let matchInfo = null
-      let recommendedPatientId = groupRecommendation.patientId
-      if (!recommendedPatientId) {
-        matchInfo = await getDocumentAiMatchInfo(record.id)
-        recommendedPatientId = matchInfo?.data?.ai_recommendation
-      }
+      const resolved = await resolveDocumentRecommendedPatientId(record.id, {
+        groupId: record?._groupId,
+        groupMatchInfo: record?._groupId ? groupDocsMap[record._groupId]?.matchInfo : null,
+        treeGroups: treeData?.todo_groups || [],
+        fetchGroupMatchInfo: matchGroup,
+      })
+      const { patientId: recommendedPatientId, matchInfo } = resolved
       hideLoading()
       if (recommendedPatientId) {
-        const candidates = matchInfo?.data?.candidates || []
-        const candidate = groupRecommendation.candidate || candidates.find((c) => c.id === recommendedPatientId) || candidates[0]
+        const { candidate } = getGroupRecommendedPatient(matchInfo || {})
         const patientName = candidate?.name || candidate?.patient_name || '未知'
-        const matchScore = matchInfo?.data?.match_score ?? candidate?.similarity
+        const matchScore = matchInfo?.match_score ?? candidate?.similarity
         const confirmLabel = getRecommendedArchiveLabel(patientName, matchScore)
         const matchScoreText = formatMatchScorePercent(matchScore)
         modal.confirm({
@@ -2487,7 +2455,7 @@ const FileList = () => {
       hideLoading()
       message.error('获取推荐信息失败')
     }
-  }, [groupDocsMap, refreshAll, handleArchivePatient])
+  }, [groupDocsMap, refreshAll, handleArchivePatient, treeData])
 
   // ─── 分组操作 ───
   const handleAutoArchiveGroup = useCallback(async (groupId) => {
@@ -2698,6 +2666,14 @@ const FileList = () => {
       .map((r) => r.id)
     if (!eligible.length)
       return message.warning('当前选中文档中没有可「新建患者」并归档的文档')
+    const groupIds = new Set(
+      selected
+        .filter((r) => eligible.includes(r.id) && r._groupId)
+        .map((r) => r._groupId)
+    )
+    if (groupIds.size > 1) {
+      return message.warning('所选文档来自多个分组，无法合并创建为同一新患者，请按分组分别操作')
+    }
     setCreatePatientMode('docs')
     setCreatePatientGroupId(null)
     setCreatePatientDocIds(eligible)
@@ -2784,7 +2760,29 @@ const FileList = () => {
   const handleBatchConfirmRecommendedArchive = useCallback(async () => {
     if (!selectedRowKeys.length) return message.warning('请先选择文档')
 
-    const selectedRecords = selectedRowKeys.map((id) => fileRecordMap.get(id)).filter(Boolean)
+    const enrichBatchRecord = (record) => {
+      if (!record?.id) return record
+      const merged = fileRecordMap.get(record.id) || record
+      if (merged._groupId) return merged
+      const treeGroup = (treeData?.todo_groups || []).find(
+        (group) => Array.isArray(group.document_ids) && group.document_ids.includes(record.id)
+      )
+      if (treeGroup?.group_id) {
+        return { ...merged, _groupId: treeGroup.group_id }
+      }
+      if (viewMode === 'patient' && activeGroupKey?.startsWith('group:')) {
+        const groupId = activeGroupKey.slice('group:'.length)
+        const cachedItems = groupDocsMap[groupId]?.items
+        if (Array.isArray(cachedItems) && cachedItems.some((item) => item.id === record.id)) {
+          return { ...merged, _groupId: groupId }
+        }
+      }
+      return merged
+    }
+
+    const selectedRecords = selectedRowKeys
+      .map((id) => enrichBatchRecord(fileRecordMap.get(id)))
+      .filter(Boolean)
     if (!selectedRecords.length) return message.warning('没有找到可处理的文档')
 
     const eligible = selectedRecords.filter((r) => r?.id && r.task_status !== 'archived')
@@ -2806,19 +2804,36 @@ const FileList = () => {
       return getDocName(row) || String(docId).slice(0, 8)
     }
 
-    // 按 _groupId 分组：同一分组只调用一次 confirmGroupArchive
     const processedGroupIds = new Set()
-    const groupArchives = []   // { groupId, matchedPatientId }
-    const soloArchives  = []   // 无组 / 组内无缓存 matchInfo 的单个文档
+    const groupArchives = []
+    const soloArchives = []
 
     for (const doc of eligible) {
       const gid = doc._groupId
       if (gid) {
-        if (processedGroupIds.has(gid)) continue  // 同组其他文件已加入队列
-        const matchedPatientId = getGroupRecommendedPatient(groupDocsMap[gid]?.matchInfo).patientId
+        if (processedGroupIds.has(gid)) continue
+        let matchedPatientId = getGroupRecommendedPatient(groupDocsMap[gid]?.matchInfo).patientId
+        if (!matchedPatientId) {
+          try {
+            const mr = await matchGroup(gid)
+            matchedPatientId = getGroupRecommendedPatient(mr?.data?.match_info || mr?.data).patientId
+          } catch {
+            matchedPatientId = ''
+          }
+        }
         if (matchedPatientId) {
           processedGroupIds.add(gid)
-          groupArchives.push({ groupId: gid, matchedPatientId })
+          const selectedInGroup = eligible.filter((item) => item._groupId === gid)
+          const cachedGroupItems = groupDocsMap[gid]?.items
+          const totalInGroup = Array.isArray(cachedGroupItems) && cachedGroupItems.length
+            ? cachedGroupItems.length
+            : (treeData?.todo_groups || []).find((g) => g.group_id === gid)?.count
+          groupArchives.push({
+            groupId: gid,
+            matchedPatientId,
+            selectedDocs: selectedInGroup,
+            archiveWholeGroup: !totalInGroup || selectedInGroup.length >= totalInGroup,
+          })
         } else {
           soloArchives.push(doc)
         }
@@ -2827,39 +2842,55 @@ const FileList = () => {
       }
     }
 
-    // 按分组归档
-    for (const { groupId, matchedPatientId } of groupArchives) {
+    for (const { groupId, matchedPatientId, selectedDocs, archiveWholeGroup } of groupArchives) {
       try {
-        const res = await confirmGroupArchive(groupId, matchedPatientId, true)
-        if (res?.success) {
-          successCount += res.data?.archived_count || 0
-          const failedCount = res.data?.failed_count || 0
-          failedArchiveCount += failedCount
-
-          const errors = Array.isArray(res.data?.errors) ? res.data.errors : []
-          errors.forEach((err) => {
-            const docId = err?.document_id
-            if (!docId) return
-            failedArchiveDocNames.add(getDocNameById(docId))
-          })
+        if (archiveWholeGroup) {
+          const res = await confirmGroupArchive(groupId, matchedPatientId, true)
+          if (res?.success) {
+            successCount += res.data?.archived_count || 0
+            failedArchiveCount += res.data?.failed_count || 0
+            const errors = Array.isArray(res.data?.errors) ? res.data.errors : []
+            errors.forEach((err) => {
+              const docId = err?.document_id
+              if (docId) failedArchiveDocNames.add(getDocNameById(docId))
+            })
+            if ((res.data?.archived_count || 0) === 0) {
+              selectedDocs.forEach((doc) => failedArchiveDocNames.add(getDocName(doc)))
+              failedArchiveCount += selectedDocs.length
+            }
+          } else {
+            failedArchiveCount += selectedDocs.length
+            selectedDocs.forEach((doc) => failedArchiveDocNames.add(getDocName(doc)))
+          }
         } else {
-          failedArchiveCount += res?.data?.failed_count || 1
+          const res = await batchArchiveDocuments(
+            selectedDocs.map((doc) => doc.id),
+            matchedPatientId,
+            true
+          )
+          const ok = Number(res?.data?.total ?? res?.data?.items?.length ?? 0)
+          if (res?.success && ok > 0) {
+            successCount += ok
+          } else {
+            failedArchiveCount += selectedDocs.length
+            selectedDocs.forEach((doc) => failedArchiveDocNames.add(getDocName(doc)))
+          }
         }
-      } catch (e) {
-        failedArchiveCount += 1
+      } catch {
+        failedArchiveCount += selectedDocs.length
+        selectedDocs.forEach((doc) => failedArchiveDocNames.add(getDocName(doc)))
       }
     }
 
-    // 无组 / 缺缓存的逐个归档
     for (const doc of soloArchives) {
       try {
-        let matchedPatientId = doc?._groupId
-          ? getGroupRecommendedPatient(groupDocsMap[doc._groupId]?.matchInfo).patientId
-          : ''
-        if (!matchedPatientId) {
-          const matchRes = await getDocumentAiMatchInfo(doc.id)
-          matchedPatientId = matchRes?.data?.ai_recommendation
-        }
+        const resolved = await resolveDocumentRecommendedPatientId(doc.id, {
+          groupId: doc._groupId,
+          groupMatchInfo: doc._groupId ? groupDocsMap[doc._groupId]?.matchInfo : null,
+          treeGroups: treeData?.todo_groups || [],
+          fetchGroupMatchInfo: matchGroup,
+        })
+        const matchedPatientId = resolved.patientId
         if (!matchedPatientId) {
           skippedNoMatchCount += 1
           skippedNoMatchDocNames.add(getDocName(doc))
@@ -2871,7 +2902,7 @@ const FileList = () => {
           failedArchiveCount += 1
           failedArchiveDocNames.add(getDocName(doc))
         }
-      } catch (e) {
+      } catch {
         failedArchiveCount += 1
         failedArchiveDocNames.add(getDocName(doc))
       }
@@ -2891,7 +2922,7 @@ const FileList = () => {
     const tip = `归档成功 ${successCount} 个，缺少匹配患者跳过：${skippedNamesText}，归档失败：${failedNamesText}`
     if (failedArchiveCount === 0 && skippedNoMatchCount === 0) message.success(tip)
     else message.warning(tip)
-  }, [fileRecordMap, groupDocsMap, refreshAll, selectedRowKeys])
+  }, [activeGroupKey, fileRecordMap, groupDocsMap, refreshAll, selectedRowKeys, treeData, viewMode])
 
   // ─── 患者搜索（匹配弹窗内） ───
   const handlePatientSearch = (value) => {
@@ -3014,10 +3045,15 @@ const FileList = () => {
 
   const handleFolderInputChange = (e) => {
     if (e.target.files?.length > 0) {
-      const supportedTypes = ['application/pdf', 'image/jpg', 'image/jpeg', 'image/png']
-      const valid = Array.from(e.target.files).filter(
-        (f) => supportedTypes.includes(f.type) && f.size <= 50 * 1024 * 1024
-      )
+      const files = Array.from(e.target.files)
+      const batchCheck = validateUploadBatch(files)
+      if (!batchCheck.ok) {
+        message.error(batchCheck.message)
+        e.target.value = ''
+        setUploadModalVisible(false)
+        return
+      }
+      const valid = batchCheck.validFiles.filter((f) => validateUploadFile(f).ok)
       if (!valid.length) {
         message.warning('文件夹中没有支持的文件')
         e.target.value = ''
@@ -3032,15 +3068,16 @@ const FileList = () => {
   }
 
   const handleFileUpload = useCallback(async (files) => {
-    const supportedTypes = ['application/pdf', 'image/jpg', 'image/jpeg', 'image/png']
+    const batchCheck = validateUploadBatch(files)
+    if (!batchCheck.ok) {
+      message.error(batchCheck.message)
+      return
+    }
     const validFiles = []
-    files.forEach((file) => {
-      if (!supportedTypes.includes(file.type)) {
-        message.error(`${file.name}: 不支持的文件格式`)
-        return
-      }
-      if (file.size > 50 * 1024 * 1024) {
-        message.error(`${file.name}: 文件超过50MB`)
+    batchCheck.validFiles.forEach((file) => {
+      const result = validateUploadFile(file)
+      if (!result.ok) {
+        message.error(result.message)
         return
       }
       validFiles.push(file)
@@ -3593,8 +3630,9 @@ const FileList = () => {
               render: (_, record) => {
                 if (record._isGroup) return null
                 const summaryText = formatPatientSummary(record.document_metadata_summary)
+                const tooltipText = formatDocumentMetadataTooltip(record)
                 return (
-                  <Tooltip title={summaryText}>
+                  <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{tooltipText}</span>}>
                     <Text ellipsis style={{ display: 'block', fontSize: 12 }}>
                       {summaryText}
                     </Text>
@@ -3798,6 +3836,7 @@ const FileList = () => {
   const fileListTableScrollY = displayDataSource.length > FILE_LIST_MIN_ROWS_FOR_VERTICAL_SCROLL
     ? FILE_LIST_TABLE_SCROLL_Y
     : undefined
+  const fileListTableVirtual = Boolean(fileListTableScrollY)
   const tableScrollX = useMemo(() => {
     const widthSum = columns.reduce((acc, item) => acc + (Number(item?.width) || 0), 0)
     const selectionColumnBuffer = 72
@@ -3967,7 +4006,7 @@ const FileList = () => {
           </Space>
           <Space size={12}>
             <Input
-              placeholder="搜索文件名..."
+              placeholder="搜索文件名、患者、标题、类型、日期..."
               prefix={<SearchOutlined style={{ color: token.colorTextSecondary }} />}
               allowClear
               value={columnFilters.fileName}
@@ -4121,7 +4160,8 @@ const FileList = () => {
                 rowSelection={tableRowSelection}
                 onRow={getTableRowProps}
                 scroll={{ x: tableScrollX, y: fileListTableScrollY }}
-                virtual={displayDataSource.length > 80}
+                virtual={fileListTableVirtual}
+                listItemHeight={54}
                 sticky
                 className="table-scrollbar-unified"
                 style={{ background: 'transparent' }}
@@ -4147,7 +4187,8 @@ const FileList = () => {
               rowSelection={tableRowSelection}
               onRow={getTableRowProps}
               scroll={{ x: tableScrollX, y: fileListTableScrollY }}
-              virtual={displayDataSource.length > 80}
+              virtual={fileListTableVirtual}
+              listItemHeight={54}
               sticky
               className="table-scrollbar-unified"
               style={{ background: 'transparent' }}
@@ -4176,10 +4217,10 @@ const FileList = () => {
             选择文件夹
           </Button>
           <Text type="secondary" style={{ textAlign: 'center', fontSize: 12 }}>
-            支持 PDF、JPG、JPEG、PNG，单个文件最大 50MB
+            支持 PDF、JPG、JPEG、PNG、DOCX、XLSX、CSV，单个文件最大 {MAX_UPLOAD_FILE_SIZE_MB}MB
           </Text>
         </div>
-        <input ref={fileInputRef} type="file" style={{ display: 'none' }} accept=".pdf,.jpg,.jpeg,.png" multiple onChange={handleFileInputChange} />
+        <input ref={fileInputRef} type="file" style={{ display: 'none' }} accept={UPLOAD_FILE_ACCEPT} multiple onChange={handleFileInputChange} />
         <input ref={folderInputRef} type="file" style={{ display: 'none' }} onChange={handleFolderInputChange} {...{ webkitdirectory: '', directory: '' }} />
       </Modal>
 

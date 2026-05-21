@@ -49,7 +49,7 @@ import {
 import { SchemaFormProvider, useSchemaForm } from './SchemaFormContext'
 import CategoryTree from './CategoryTree'
 import FormPanel from './FormPanel'
-import { getDocumentDetail, getDocumentTempUrl, getDocumentPdfStreamUrl, getFreshDocumentPdfStreamUrl, extractEhrDataTargeted, uploadAndArchiveAsync } from '../../api/document'
+import { getDocumentDetail, getDocumentTempUrl, getDocumentPdfStreamUrl, getFreshDocumentPdfStreamUrl, extractEhrDataTargeted, uploadAndArchiveAsync, resolveTraceDocumentPreviewUrl } from '../../api/document'
 import { getEhrFieldHistoryV3, getEhrFieldCandidatesV3, selectEhrFieldCandidateV3 } from '../../api/patient'
 import PdfPageWithHighlight from '../PdfPageWithHighlight'
 import { getProjectCrfFieldHistory, getProjectCrfFieldCandidates, selectProjectCrfFieldCandidate, startCrfExtraction } from '../../api/project'
@@ -68,6 +68,7 @@ import {
 import DocumentDetailModal from '../../pages/PatientDetail/tabs/DocumentsTab/components/DocumentDetailModal'
 import SplitterHandle from '../Common/SplitterHandle'
 import { appThemeToken } from '../../styles/themeTokens'
+import { MAX_UPLOAD_FILE_SIZE, MAX_UPLOAD_FILE_SIZE_MB } from '../../constants/uploadLimits'
 
 const { Sider, Content } = Layout
 const { Text, Paragraph } = Typography
@@ -108,12 +109,29 @@ function _buildSourceLocationFromAudit(audit) {
 function useAutoSave(enabled, interval, onSave) {
   const timerRef = useRef(null)
   const { isDirty, draftData } = useSchemaForm()
+  const onSaveRef = useRef(onSave)
+  onSaveRef.current = onSave
+
   useEffect(() => {
-    if (!enabled || !isDirty) return
+    if (!enabled || !isDirty) {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      return undefined
+    }
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => { if (onSave) onSave(draftData, 'auto') }, interval)
-    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [enabled, isDirty, draftData, interval, onSave])
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null
+      onSaveRef.current?.(draftData, 'auto')
+    }, interval)
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  }, [enabled, isDirty, draftData, interval])
 }
 
 const Toolbar = ({ onSave, onReset, saving, autoSaveEnabled, onToggleAutoSave }) => {
@@ -447,9 +465,11 @@ const ModificationHistory = ({
         const queryPath = toHistoryQueryPath(fieldPath)
         setLoading(true)
         try {
-          const res = await getProjectCrfFieldHistory(projectId, patientId, queryPath, rowUid)
+          const [res, candidateRes] = await Promise.all([
+            getProjectCrfFieldHistory(projectId, patientId, queryPath, rowUid),
+            getProjectCrfFieldCandidates(projectId, patientId, queryPath, rowUid),
+          ])
           const payload = res?.data || {}
-          const candidateRes = await getProjectCrfFieldCandidates(projectId, patientId, queryPath, rowUid)
           const candidatePayload = candidateRes?.data || {}
           const list = !cancelled && payload?.history ? payload.history : []
           if (!cancelled) {
@@ -482,9 +502,11 @@ const ModificationHistory = ({
         const queryPath = toHistoryQueryPath(fieldPath)
         setLoading(true)
         try {
-          const res = await getEhrFieldHistoryV3(patientId, queryPath, rowUid)
+          const [res, candidateRes] = await Promise.all([
+            getEhrFieldHistoryV3(patientId, queryPath, rowUid),
+            getEhrFieldCandidatesV3(patientId, queryPath, rowUid),
+          ])
           const payload = res?.data || {}
-          const candidateRes = await getEhrFieldCandidatesV3(patientId, queryPath, rowUid)
           const candidatePayload = candidateRes?.data || {}
           const list = !cancelled && payload?.history ? payload.history : []
           if (!cancelled) {
@@ -945,10 +967,13 @@ const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 4
       <div
         ref={containerRef}
         style={{
+          width: '100%',
+          minWidth: 0,
+          alignSelf: 'stretch',
           overflow: 'hidden',
           display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'flex-start',
+          flexDirection: 'column',
+          alignItems: 'stretch',
           background: '#f5f5f5',
           padding: 8,
           cursor: scale > 100 ? (isDragging ? 'grabbing' : 'grab') : 'default',
@@ -976,7 +1001,7 @@ const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 4
           </div>
         ) : documentInfo?.fileUrl ? (
         isPdf ? (
-          <div style={{ width: '100%', maxWidth: effectiveMaxW }}>
+          <div style={{ width: '100%', minWidth: 0, flex: '1 1 auto' }}>
             <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: '#666' }}>
               <Space size={4}>
                 <Button
@@ -1006,9 +1031,12 @@ const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 4
             <div
               style={{
                 position: 'relative',
-                display: 'inline-block',
-                transform: `translate(${imgOffset.x}px, ${imgOffset.y}px) scale(${scale / 100}) rotate(${rotation}deg)`,
-                transformOrigin: 'center center',
+                width: '100%',
+                minWidth: 0,
+                transform: scale === 100 && rotation === 0
+                  ? undefined
+                  : `translate(${imgOffset.x}px, ${imgOffset.y}px) scale(${scale / 100}) rotate(${rotation}deg)`,
+                transformOrigin: 'top center',
                 transition: isDragging ? 'none' : 'transform 0.2s',
               }}
             >
@@ -1016,7 +1044,6 @@ const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 4
                 pdfUrl={documentInfo.fileUrl}
                 pageNumber={pdfPage}
                 locations={locationsForCurrentPage}
-                maxWidth={effectiveMaxW}
                 loading={false}
                 bboxScale={1000}
                 onLoaded={handlePdfLoaded}
@@ -1089,6 +1116,7 @@ const SourcePanel = ({
   const [previewFileType, setPreviewFileType] = useState(null)
   const [previewPdfUrl, setPreviewPdfUrl] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewRequested, setPreviewRequested] = useState(false)
   // OCR 解析时检测到的页面角度（从 documents.ocr_payload_json.pages[i].angle 读取）。
   // 用作图片/PDF 初始旋转值，使 bbox 与图像方向对齐（用户仍可通过工具栏继续旋转）。
   const [ocrPageAngles, setOcrPageAngles] = useState([])
@@ -1185,6 +1213,7 @@ const SourcePanel = ({
   // 切换字段或患者时清空"从修改历史选中的记录"，避免预览错位
   useEffect(() => {
     setSelectedHistoryItem(null)
+    setPreviewRequested(false)
   }, [selectedField?.path, patientId])
 
   // 有 patientId 时：默认展示与字段摘要均由修改历史决定；默认选"第一条"历史记录
@@ -1401,6 +1430,15 @@ const SourcePanel = ({
     ? (effectiveCoordinates[0]?.pageIdx ?? 0)
     : (effectiveCoordinates?.pageIdx ?? 0)
 
+  const prevCollapsedRef = useRef(collapsed)
+  useEffect(() => {
+    const wasCollapsed = prevCollapsedRef.current
+    prevCollapsedRef.current = collapsed
+    if (wasCollapsed && !collapsed && sourceDocId) {
+      setPreviewRequested(true)
+    }
+  }, [collapsed, sourceDocId])
+
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -1408,7 +1446,7 @@ const SourcePanel = ({
       setPreviewFileType(null)
       setPreviewPdfUrl(null)
       setOcrPageAngles([])
-      if (!sourceDocId) return
+      if (!sourceDocId || !previewRequested || collapsed) return
       setPreviewLoading(true)
       try {
         // 先请求文档详情获取 file_type，避免为 PDF 请求 temp-url（会走 OSS）；PDF 仅用 pdf-stream 同源接口
@@ -1436,10 +1474,18 @@ const SourcePanel = ({
           setPreviewUrl(null)
           setPreviewPdfUrl(await getFreshDocumentPdfStreamUrl(sourceDocId))
         } else {
-          const res = await getDocumentTempUrl(sourceDocId, 3600)
+          const preview = await resolveTraceDocumentPreviewUrl(sourceDocId, {
+            pageNo: Math.max(0, sourcePageIdx) + 1,
+          })
           if (cancelled) return
-          const url = res?.data?.url || res?.data?.temp_url || res?.data?.data?.url
-          setPreviewUrl(url || null)
+          if (preview?.mode === 'pdf') {
+            setPreviewUrl(null)
+            setPreviewPdfUrl(preview.url)
+            setPreviewFileType('pdf')
+          } else {
+            setPreviewUrl(preview?.url || null)
+            setPreviewPdfUrl(null)
+          }
         }
       } catch (e) {
         if (!cancelled) {
@@ -1454,7 +1500,7 @@ const SourcePanel = ({
     return () => {
       cancelled = true
     }
-  }, [sourceDocId])
+  }, [sourceDocId, previewRequested, collapsed])
 
   if (collapsed) {
     return (
@@ -1588,14 +1634,27 @@ const SourcePanel = ({
         </Space>
       </div>
       <div className="schema-form-scrollable hover-scrollbar scroll-edge-hint" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-        <SourceDocumentPreview
-          documentInfo={previewDocument}
-          activeCoordinates={effectiveCoordinates}
-          panelWidth={effectivePanelWidth}
-          loading={previewLoading}
-          // OCR 角度按当前选中页索引取（0-based），无 angle 时回退 0
-          initialRotation={ocrPageAngles[sourcePageIdx] || 0}
-        />
+        {sourceDocId && !previewRequested ? (
+          <div style={{ padding: '12px 12px 0' }}>
+            <Button
+              type="default"
+              size="small"
+              icon={<FileSearchOutlined />}
+              block
+              onClick={() => setPreviewRequested(true)}
+            >
+              加载文档预览
+            </Button>
+          </div>
+        ) : (
+          <SourceDocumentPreview
+            documentInfo={previewDocument}
+            activeCoordinates={effectiveCoordinates}
+            panelWidth={effectivePanelWidth}
+            loading={previewLoading}
+            initialRotation={ocrPageAngles[sourcePageIdx] || 0}
+          />
+        )}
         <div style={{ padding: 12 }}>
           {selectedField ? (
             <>
@@ -1608,6 +1667,7 @@ const SourcePanel = ({
                 onCandidateApplied={(appliedPath, appliedValue, appliedRowUid, appliedCandidate) => {
                   if (appliedCandidate?.source_document_id) {
                     setSuppressAutoSourceDoc(false)
+                    setPreviewRequested(true)
                     setSelectedHistoryItem({
                       id: appliedCandidate.id,
                       field_path: appliedPath,
@@ -1634,6 +1694,7 @@ const SourcePanel = ({
                     ? (item) => {
                         setSuppressAutoSourceDoc(false)
                         setSelectedHistoryItem(item)
+                        setPreviewRequested(true)
                       }
                     : undefined
                 }
@@ -1803,7 +1864,6 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
   const [selectedExtractDocId, setSelectedExtractDocId] = useState(null)
   const [extractConfirming, setExtractConfirming] = useState(false)
   const [uploadExtractModalOpen, setUploadExtractModalOpen] = useState(false)
-  const [uploadExtractTab, setUploadExtractTab] = useState('existing') // 'existing' | 'upload'
   const uploadFileInputRef = useRef(null)
   const [isLeftPanelResizing, setIsLeftPanelResizing] = useState(false)
   const [isRightPanelResizing, setIsRightPanelResizing] = useState(false)
@@ -1855,7 +1915,7 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
   }, [rightPanelWidth])
-  const { documents: projectDocuments = [], selectedDocument = null, onDocumentSelect, onUploadDocument, onAddRepeatableInstance, repeatableNamingPattern = '{formName}_{index}', sourcePatientId = null } = projectConfig || {}
+  const { documents: projectDocuments = [], selectedDocument = null, onDocumentSelect, onAddRepeatableInstance, repeatableNamingPattern = '{formName}_{index}', sourcePatientId = null } = projectConfig || {}
   const targetFormKey = useMemo(() => {
     if (!state?.selectedPath) return null
     const parts = state.selectedPath.split('.').filter(Boolean)
@@ -1876,24 +1936,44 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     () => extractCandidateDocuments.find((doc) => String(doc?.id) === String(selectedExtractDocId)) || null,
     [extractCandidateDocuments, selectedExtractDocId]
   )
-  const handleOpenUploadExtractModal = useCallback((tab = 'existing') => {
-    setUploadExtractTab(tab)
+  const handleOpenUploadExtractModal = useCallback(() => {
+    if (!targetFormKey) {
+      message.warning('请先在左侧选择目标表单')
+      return
+    }
     setUploadExtractModalOpen(true)
-  }, [])
+  }, [targetFormKey])
+
   const handleCloseUploadExtractModal = useCallback(() => {
     setUploadExtractModalOpen(false)
   }, [])
-  const handleConfirmExtract = useCallback(async () => {
+
+  /** 点击「上传文档」：直接选文件，随后自动上传 → OCR → 归档 → 靶向抽取 */
+  const handleUploadDocumentClick = useCallback(() => {
+    if (!patientId) {
+      message.warning('缺少患者信息，暂无法上传文档')
+      return
+    }
+    if (!targetFormKey) {
+      message.warning('请先在左侧选择目标表单')
+      return
+    }
+    uploadFileInputRef.current?.click()
+  }, [patientId, targetFormKey])
+
+  const submitTargetedExtract = useCallback(async (document) => {
     if (!patientId) {
       message.warning('缺少患者信息，暂无法执行文档抽取')
       return
     }
-    if (!targetSection) {
-      message.warning('请先在左侧选择目标字段组')
+    if (!targetFormKey) {
+      message.warning('请先在左侧选择目标表单')
       return
     }
-    if (!selectedExtractDocument) {
-      message.warning('请先选择一个现有文档')
+    const doc = document || selectedExtractDocument
+    const documentId = doc?.id != null ? String(doc.id) : ''
+    if (!documentId) {
+      message.warning('请先选择文档')
       return
     }
     setExtractConfirming(true)
@@ -1902,17 +1982,17 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
         ? await startCrfExtraction({
             projectId,
             projectPatientId: patientId,
-            patientId: sourcePatientId || selectedExtractDocument.patient_id || selectedExtractDocument.patientId || '',
-            documentId: String(selectedExtractDocument.id),
+            patientId: sourcePatientId || doc.patient_id || doc.patientId || '',
+            documentId,
             targetFormKey,
           })
-        : await extractEhrDataTargeted(
-            String(selectedExtractDocument.id),
+        : await extractEhrDataTargeted({
+            documentId,
             patientId,
-            targetFormKey
-          )
+            targetFormKey,
+          })
       if (response.success) {
-        message.success('文档抽取任务已提交，请稍候...')
+        message.success(projectId ? '科研 CRF 靶向抽取已提交' : '病历靶向抽取已提交')
         const taskId = response.data?.task_id || response.data?.id
         if (taskId) {
           upsertTask({
@@ -1937,7 +2017,14 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     } finally {
       setExtractConfirming(false)
     }
-  }, [patientId, projectId, sourcePatientId, targetFormKey, targetSection, selectedExtractDocument])
+  }, [patientId, projectId, sourcePatientId, targetFormKey, selectedExtractDocument, draftData, onDataChange])
+
+  const handleSelectExistingDocumentForExtract = useCallback((doc) => {
+    const docId = doc?.id != null ? String(doc.id) : ''
+    if (!docId) return
+    setSelectedExtractDocId(docId)
+    submitTargetedExtract(doc)
+  }, [submitTargetedExtract])
   const handleUploadExtractFile = useCallback(async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -1948,8 +2035,8 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
       message.error('不支持的文件格式，请上传 PDF、JPG、JPEG 或 PNG 文件')
       return
     }
-    if (file.size > 50 * 1024 * 1024) {
-      message.error('文件超过 50MB 限制')
+    if (file.size > MAX_UPLOAD_FILE_SIZE) {
+      message.error(`文件超过 ${MAX_UPLOAD_FILE_SIZE_MB}MB 限制`)
       return
     }
     if (!patientId) {
@@ -2250,8 +2337,15 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
       >
         <p>当前修改尚未保存。请选择：保存、不保存离开，或取消。</p>
       </Modal>
+      <input
+        ref={uploadFileInputRef}
+        type="file"
+        style={{ display: 'none' }}
+        accept=".pdf,.jpg,.jpeg,.png"
+        onChange={handleUploadExtractFile}
+      />
       <Modal
-        title="文档抽取"
+        title="从已有文档抽取"
         open={uploadExtractModalOpen}
         onCancel={handleCloseUploadExtractModal}
         footer={null}
@@ -2263,106 +2357,49 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
           <Text type="secondary">患者ID：{patientId || '-'}</Text>
           {projectId && <Text type="secondary">项目ID：{projectId}</Text>}
         </div>
-        <Tabs
-          activeKey={uploadExtractTab}
-          onChange={(key) => {
-            setUploadExtractTab(key)
-            if (key === 'upload') {
-              // Trigger file input click for upload tab
-              uploadFileInputRef.current?.click()
-            }
-          }}
-          items={[
-            {
-              key: 'existing',
-              label: '从现有文档抽取',
-              children: (
-                <>
-                  {!targetSection && (
-                    <div style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 6, background: '#fffbe6', border: '1px solid #ffe58f', color: '#ad6800' }}>
-                      请先在左侧目录中选择目标表单，再进行文档抽取。
-                    </div>
-                  )}
-                  {extractCandidateDocuments.length === 0 ? (
-                    <Empty
-                      image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description="该患者暂无关联文档"
-                      style={{ margin: '28px 0' }}
-                    />
-                  ) : (
-                    <div className="schema-form-scrollable hover-scrollbar" style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 8 }}>
-                      {extractCandidateDocuments.map((doc) => {
-                        const docId = String(doc?.id ?? '')
-                        const active = String(selectedExtractDocId) === docId
-                        return (
-                          <button
-                            key={docId || `${getDocumentDisplayName(doc)}_${formatDocumentUploadedAt(doc)}`}
-                            type="button"
-                            onClick={() => setSelectedExtractDocId(docId)}
-                            style={{
-                              width: '100%',
-                              textAlign: 'left',
-                              border: 'none',
-                              borderBottom: '1px solid #f5f5f5',
-                              background: active ? '#e6f7ff' : '#fff',
-                              padding: '10px 12px',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-                              <Text strong style={{ color: active ? '#1677ff' : '#1f1f1f' }}>{getDocumentDisplayName(doc)}</Text>
-                              <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>{formatDocumentUploadedAt(doc)}</Text>
-                            </div>
-                            <Text type="secondary" style={{ fontSize: 12 }}>{getDocumentTypeLabel(doc)}</Text>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  )}
-                  <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-                    <Button
-                      type="primary"
-                      disabled={extractConfirming || !patientId || !targetSection || !selectedExtractDocument}
-                      loading={extractConfirming}
-                      onClick={handleConfirmExtract}
-                    >
-                      确认抽取
-                    </Button>
-                  </div>
-                </>
-              )
-            },
-            {
-              key: 'upload',
-              label: '上传新文档并抽取',
-              children: (
-                <div style={{ padding: '16px 0', textAlign: 'center' }}>
-                  <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
-                    点击下方按钮选择文件上传，上传完成后将自动进行文档抽取
-                  </Text>
-                  <Button
-                    type="primary"
-                    icon={<UploadOutlined />}
-                    onClick={() => uploadFileInputRef.current?.click()}
-                    style={{ marginBottom: 8 }}
+        <>
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            选择一份已有文档后将立即按当前表单（{targetSection || targetFormKey}）提交靶向抽取。
+          </Text>
+          {extractCandidateDocuments.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="该患者暂无关联文档，请使用工具栏「上传文档」"
+              style={{ margin: '28px 0' }}
+            />
+          ) : (
+            <div className="schema-form-scrollable hover-scrollbar" style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 8 }}>
+              {extractCandidateDocuments.map((doc) => {
+                const docId = String(doc?.id ?? '')
+                const active = String(selectedExtractDocId) === docId
+                return (
+                  <button
+                    key={docId || `${getDocumentDisplayName(doc)}_${formatDocumentUploadedAt(doc)}`}
+                    type="button"
+                    disabled={extractConfirming}
+                    onClick={() => handleSelectExistingDocumentForExtract(doc)}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      border: 'none',
+                      borderBottom: '1px solid #f5f5f5',
+                      background: active ? '#e6f7ff' : '#fff',
+                      padding: '10px 12px',
+                      cursor: extractConfirming ? 'wait' : 'pointer',
+                      opacity: extractConfirming ? 0.7 : 1,
+                    }}
                   >
-                    选择文件
-                  </Button>
-                  <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
-                    支持 PDF、JPG、JPEG、PNG，单个文件最大 50MB
-                  </Text>
-                  <input
-                    ref={uploadFileInputRef}
-                    type="file"
-                    style={{ display: 'none' }}
-                    accept=".pdf,.jpg,.jpeg,.png"
-                    onChange={handleUploadExtractFile}
-                  />
-                </div>
-              )
-            }
-          ]}
-        />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                      <Text strong style={{ color: active ? '#1677ff' : '#1f1f1f' }}>{getDocumentDisplayName(doc)}</Text>
+                      <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>{formatDocumentUploadedAt(doc)}</Text>
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{getDocumentTypeLabel(doc)}</Text>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </>
       </Modal>
       <div style={{ flex: contentAdaptive ? 'none' : 1, minHeight: contentAdaptive ? 500 : 0, display: 'flex', overflow: contentAdaptive ? 'visible' : 'hidden', background: '#fff', position: 'relative', alignItems: contentAdaptive ? 'flex-start' : 'stretch' }}>
         <div style={{ ...DIVIDER_LINE_STYLE, left: leftDividerOffset }} />
@@ -2397,7 +2434,8 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
                 projectDocuments={projectDocuments}
                 selectedDocument={selectedDocument}
                 onDocumentSelect={onDocumentSelect}
-                onUploadDocument={onUploadDocument}
+                onUploadDocument={targetFormKey ? handleUploadDocumentClick : undefined}
+                onPickExistingDocument={targetFormKey ? handleOpenUploadExtractModal : undefined}
                 onAddRepeatableInstance={onAddRepeatableInstance}
                 repeatableNamingPattern={repeatableNamingPattern}
                 patientId={patientId}
@@ -2438,8 +2476,19 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
               onToggleAutoSave: () => setAutoSaveEnabled(!autoSaveEnabled),
               isDirty
             }}
-            onUploadDocument={() => handleOpenUploadExtractModal('existing')}
-            beforeUploadActions={beforeUploadActions}
+            onUploadDocument={targetFormKey ? handleUploadDocumentClick : undefined}
+            beforeUploadActions={
+              beforeUploadActions || (targetFormKey ? (
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ padding: 0, height: 'auto' }}
+                  onClick={handleOpenUploadExtractModal}
+                >
+                  已有文档
+                </Button>
+              ) : null)
+            }
           />
         </div>
         {showSourcePanel && (
@@ -2477,7 +2526,7 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
   )
 }
 
-const SchemaForm = ({ schema, enums = {}, patientData, patientId, projectId, onSave, onReset, onDataChange, onFieldCandidateSolidified, externalHistoryRefreshKey = 0, loading = false, autoSaveInterval = 30000, siderWidth = 220, sourcePanelWidth, collapsible = true, showSourcePanel = true, projectMode = false, projectConfig = null, contentAdaptive = false, leftHeader = null, collapsedTitle = '目录', style, onUploadDocument = null, beforeUploadActions = null }) => {
+const SchemaForm = ({ schema, enums = {}, patientData, patientId, projectId, onSave, onReset, onDataChange, onFieldCandidateSolidified, externalHistoryRefreshKey = 0, loading = false, autoSaveInterval = 30000, siderWidth = 220, sourcePanelWidth, collapsible = true, showSourcePanel = true, projectMode = false, projectConfig = null, contentAdaptive = false, leftHeader = null, collapsedTitle = '目录', style, beforeUploadActions = null }) => {
   const resolvedPatientId = patientId || patientData?.id || patientData?.patient_id || null
   
   if (loading) return <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', ...style }}><Spin tip="加载中..." size="large" /></div>

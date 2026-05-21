@@ -136,6 +136,7 @@ def test_llm_ehr_extractor_builds_current_design_prompt():
         "fields": fields,
         "document_id": "doc-1",
         "document_meta": {},
+        "reading_units": [{"source_type": "line", "source_id": "p1-l1", "page_no": 1, "text": "性别：男"}],
         "ocr_evidence_units": [{"source_type": "line", "source_id": "p1-l1", "page_no": 1, "text": "性别：男"}],
     }
     prepared = extractor._node_prepare(state)
@@ -143,6 +144,7 @@ def test_llm_ehr_extractor_builds_current_design_prompt():
     assert "records" in prepared["system_prompt"]
     assert "不要自行决定数据库是否覆盖 current" in prepared["system_prompt"]
     assert "基本信息.人口学情况.身份信息.性别" in prepared["system_prompt"]
+    assert "reading_units" in prepared["user_prompt"]
     assert "性别：男" in prepared["user_prompt"]
     assert "p1-l1" in prepared["user_prompt"]
 
@@ -261,6 +263,52 @@ def test_llm_ehr_extractor_allows_empty_output_as_valid_empty():
     assert errors == []
     assert warnings == ["No extractable records[] or fields[] returned"]
     assert status_hint == "valid_empty"
+
+
+def test_llm_ehr_extractor_missing_source_id_is_error_when_units_available():
+    extractor = LlmEhrExtractor()
+
+    errors, warnings, _ = extractor._validate_raw_output(
+        {
+            "fields": [
+                {
+                    "field_path": "基本信息.人口学情况.身份信息.性别",
+                    "value_type": "text",
+                    "value_text": "男",
+                    "evidences": [{"quote_text": "性别：男"}],
+                }
+            ]
+        },
+        [
+            {
+                "field_key": "性别",
+                "field_path": "基本信息.人口学情况.身份信息.性别",
+                "field_title": "性别",
+                "value_type": "text",
+                "record_form_key": "基本信息.人口学情况",
+                "options": ["男", "女"],
+            }
+        ],
+        text="性别：男",
+        require_source_id=True,
+    )
+
+    assert any("missing source_id" in error for error in errors)
+    assert warnings == []
+
+
+def test_llm_ehr_extractor_quote_validation_accepts_reading_unit_text():
+    extractor = LlmEhrExtractor()
+    reading_units = [{"source_type": "block", "source_id": "b1", "page_no": 1, "text": "姓名：张三"}]
+
+    warnings = extractor._quote_validation_warnings(
+        ["姓名：张三"],
+        text="",
+        reading_units=reading_units,
+        label="fields[0]",
+    )
+
+    assert warnings == []
 
 
 def test_llm_ehr_extractor_quote_mismatch_is_warning_not_error():

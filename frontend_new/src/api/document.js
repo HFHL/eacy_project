@@ -10,23 +10,125 @@ const trimLeadingSlash = (value = '') => value.replace(/^\/+/, '')
 
 const getApiBaseUrl = () => trimTrailingSlash(import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL)
 
+const OFFICE_FILE_EXTENSIONS = new Set(['doc', 'docx', 'ppt', 'pptx'])
+const IMAGE_FILE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'])
+
+export const isPdfFileLike = ({ fileType, fileName, fileUrl, mimeType } = {}) => {
+  const type = String(fileType || mimeType || '').toLowerCase()
+  const name = String(fileName || '').toLowerCase()
+  const url = String(fileUrl || '').toLowerCase()
+  const cleanUrl = url.split('?')[0].split('#')[0]
+  return (
+    type === 'pdf'
+    || type === '.pdf'
+    || type.includes('application/pdf')
+    || name.endsWith('.pdf')
+    || cleanUrl.endsWith('.pdf')
+  )
+}
+
+export const isImageFileLike = ({ fileType, fileName, fileUrl, mimeType } = {}) => {
+  const type = String(fileType || mimeType || '').toLowerCase()
+  const name = String(fileName || '').toLowerCase()
+  const url = String(fileUrl || '').toLowerCase()
+  const cleanUrl = url.split('?')[0].split('#')[0]
+  if (type.startsWith('image/')) return true
+  const normalizedType = type.replace(/^\./, '')
+  if (IMAGE_FILE_EXTENSIONS.has(normalizedType)) return true
+  return IMAGE_FILE_EXTENSIONS.some((ext) => name.endsWith(`.${ext}`) || cleanUrl.endsWith(`.${ext}`))
+}
+
+export const isOfficeDocumentLike = ({ fileType, fileName, mimeType } = {}) => {
+  const type = String(fileType || mimeType || '').toLowerCase()
+  const name = String(fileName || '').toLowerCase()
+  if (
+    type.includes('wordprocessingml')
+    || type.includes('msword')
+    || type.includes('presentationml')
+    || type.includes('ms-powerpoint')
+  ) {
+    return true
+  }
+  const ext = name.includes('.') ? name.split('.').pop() : String(fileType || '').replace(/^\./, '').toLowerCase()
+  return OFFICE_FILE_EXTENSIONS.has(ext)
+}
+
+export const isOcrPagePreviewResponse = (data = {}) => data?.preview_source === 'ocr_page'
+
+export async function resolveTraceDocumentPreviewUrl(documentId, {
+  pageNo = 1,
+  fileType,
+  fileName,
+  mimeType,
+} = {}) {
+  if (!documentId) return null
+  const urlRes = await getDocumentTempUrl(documentId, 3600, { page: pageNo })
+  if (!urlRes.success || !urlRes.data?.temp_url) return null
+
+  const data = urlRes.data
+  const resolvedFileType = data.file_type || data.mime_type || mimeType || fileType
+  const resolvedFileName = data.file_name || fileName
+
+  if (isPdfFileLike({
+    fileType: resolvedFileType,
+    fileName: resolvedFileName,
+    fileUrl: data.temp_url,
+    mimeType: data.mime_type,
+  })) {
+    return {
+      mode: 'pdf',
+      url: await getFreshDocumentPdfStreamUrl(documentId),
+      previewSource: 'native',
+      ocrPageCount: data.ocr_page_count ?? null,
+      pageNo: null,
+      fileName: resolvedFileName,
+      fileType: resolvedFileType,
+      mimeType: data.mime_type,
+    }
+  }
+
+  if (
+    isOcrPagePreviewResponse(data)
+    || isImageFileLike({
+      fileType: resolvedFileType,
+      fileName: resolvedFileName,
+      fileUrl: data.temp_url,
+      mimeType: data.mime_type,
+    })
+  ) {
+    const resolvedPageNo = data.page_no || pageNo
+    const url = isOcrPagePreviewResponse(data)
+      ? await getFreshDocumentStreamUrl(documentId, { page: resolvedPageNo })
+      : data.temp_url
+    return {
+      mode: 'image',
+      url,
+      previewSource: data.preview_source || 'native',
+      ocrPageCount: data.ocr_page_count ?? null,
+      pageNo: resolvedPageNo,
+      fileName: resolvedFileName,
+      fileType: resolvedFileType,
+      mimeType: data.mime_type || 'image/jpeg',
+    }
+  }
+
+  return {
+    mode: 'unsupported',
+    url: data.temp_url,
+    previewSource: data.preview_source || 'native',
+    ocrPageCount: data.ocr_page_count ?? null,
+    pageNo: data.page_no || pageNo,
+    fileName: resolvedFileName,
+    fileType: resolvedFileType,
+    mimeType: data.mime_type,
+  }
+}
+
 const buildApiUrl = (path = '') => {
   const apiBaseUrl = getApiBaseUrl()
   const url = `${apiBaseUrl}/${trimLeadingSlash(path)}`
   if (/^https?:\/\//i.test(url)) return url
   return url
-}
-
-const TASK_STATUS_ALIAS = {
-  parsing: 'ocr_pending',
-  parsed: 'ocr_completed',
-  parse_failed: 'failed',
-  pending_confirm_new: 'uploaded',
-  pending_confirm_review: 'uploaded',
-  pending_confirm_uncertain: 'uploaded',
-  auto_archived: 'archived',
-  parse: 'uploaded',
-  todo: 'uploaded',
 }
 
 const toArray = (value) => {
@@ -135,11 +237,31 @@ export const normalizeDocument = (document = {}) => {
   const createdAt = document.created_at || document.upload_time || document.uploadTime || ''
   const effectiveAt = document.effective_at || displayMetadata.effectiveDate || ''
   const patientId = document.patient_id || document.patientId || document.patient_info?.patient_id || null
-  const documentMetadataSummary = document.document_metadata_summary || {
-    name: displayMetadata.patientName,
-    gender: displayMetadata.gender,
-    age: displayMetadata.age,
-  }
+  const backendSummary = document.document_metadata_summary && typeof document.document_metadata_summary === 'object'
+    ? document.document_metadata_summary
+    : null
+  const documentMetadataSummary = backendSummary
+    ? {
+        ...backendSummary,
+        name: firstNonEmpty(backendSummary.name, backendSummary.patient_name, displayMetadata.patientName),
+        patient_name: firstNonEmpty(backendSummary.patient_name, backendSummary.name, displayMetadata.patientName),
+        gender: firstNonEmpty(backendSummary.gender, backendSummary.patient_gender, displayMetadata.gender),
+        patient_gender: firstNonEmpty(backendSummary.patient_gender, backendSummary.gender, displayMetadata.gender),
+        age: firstNonEmpty(backendSummary.age, backendSummary.patient_age, displayMetadata.age),
+        patient_age: firstNonEmpty(backendSummary.patient_age, backendSummary.age, displayMetadata.age),
+        document_title: firstNonEmpty(backendSummary.document_title, displayMetadata.documentTitle),
+        effective_date: firstNonEmpty(backendSummary.effective_date, effectiveAt),
+      }
+    : {
+        name: displayMetadata.patientName,
+        patient_name: displayMetadata.patientName,
+        gender: displayMetadata.gender,
+        patient_gender: displayMetadata.gender,
+        age: displayMetadata.age,
+        patient_age: displayMetadata.age,
+        document_title: displayMetadata.documentTitle,
+        effective_date: effectiveAt,
+      }
 
   return {
     ...document,
@@ -215,8 +337,18 @@ export const normalizeDocument = (document = {}) => {
     },
     document_metadata_summary: documentMetadataSummary,
     effective_at: effectiveAt || null,
+    ocr_status: document.ocr_status || document.ocrStatus || null,
+    ocrStatus: document.ocr_status || document.ocrStatus || null,
+    meta_status: document.meta_status || document.metaStatus || null,
+    metaStatus: document.meta_status || document.metaStatus || null,
+    extract_status: document.extract_status || document.extractStatus || null,
+    extractStatus: document.extract_status || document.extractStatus || null,
     is_parsed: ['parsed', 'extracted', 'ai_matching', 'archived'].includes(taskStatus) || !!document.ocr_text,
     isParsed: ['parsed', 'extracted', 'ai_matching', 'archived'].includes(taskStatus) || !!document.ocr_text,
+    preview_source: document.preview_source || null,
+    ocr_page_count: document.ocr_page_count ?? null,
+    requires_review: metadata.requires_review === true,
+    requiresReview: metadata.requires_review === true,
     category: documentSubtype || documentType || '未分类',
   }
 }
@@ -230,54 +362,34 @@ const normalizeListParams = (params = {}) => {
   const patientId = params.patient_id ?? params.patientId
   if (patientId) next.patient_id = patientId
 
-  const statuses = toArray(params.status ?? params.task_status ?? params.taskStatus)
-    .map((status) => TASK_STATUS_ALIAS[status] || status)
-    .filter(Boolean)
-  const uniqueStatuses = Array.from(new Set(statuses))
-  if (uniqueStatuses.length) next.status = uniqueStatuses.join(',')
+  const tab = params.tab
+  if (tab && tab !== 'all') next.tab = tab
 
-  return next
-}
+  const taskStages = toArray(params.task_stage ?? params.taskStage)
+  if (taskStages.length) next.task_stage = taskStages.join(',')
 
-const applyClientFilters = (items = [], params = {}) => {
-  let result = items
-  const keyword = (params.keyword ?? params.search ?? '').toString().trim().toLowerCase()
-  if (keyword) {
-    result = result.filter((item) => (
-      item.file_name?.toLowerCase().includes(keyword) ||
-      item.document_type?.toLowerCase().includes(keyword) ||
-      item.document_sub_type?.toLowerCase().includes(keyword)
-    ))
-  }
-
-  const wantedStatuses = toArray(params.status ?? params.task_status ?? params.taskStatus)
-  if (wantedStatuses.length > 1) {
-    const statusSet = new Set(
-      wantedStatuses.flatMap((status) => [status, TASK_STATUS_ALIAS[status] || status])
-    )
-    result = result.filter((item) => (
-      [item.task_status, item.taskStatus, item.status]
-        .filter(Boolean)
-        .some((status) => statusSet.has(status) || statusSet.has(TASK_STATUS_ALIAS[status] || status))
-    ))
-  }
+  const keyword = (params.keyword ?? params.search ?? '').toString().trim()
+  if (keyword) next.keyword = keyword
 
   const documentTypes = toArray(params.document_types ?? params.document_type)
-  if (documentTypes.length) {
-    const typeSet = new Set(documentTypes)
-    result = result.filter((item) => typeSet.has(item.document_sub_type || item.document_type || '未分类'))
-  }
+  if (documentTypes.length) next.document_types = documentTypes.join(',')
 
-  return result
+  if (params.date_from) next.date_from = params.date_from
+  if (params.date_to) next.date_to = params.date_to
+
+  if (params.order_by) next.order_by = params.order_by
+  if (params.order_direction) next.order_direction = params.order_direction
+
+  const statuses = toArray(params.status)
+  if (statuses.length) next.status = statuses.join(',')
+
+  return next
 }
 
 export const normalizeDocumentListResponse = (payload = {}, params = {}) => {
   const page = Number(payload.page || params.page || 1)
   const pageSize = Number(payload.page_size || params.page_size || params.pageSize || 20)
-  const items = applyClientFilters(
-    (Array.isArray(payload.items) ? payload.items : []).map(normalizeDocument),
-    params
-  )
+  const items = (Array.isArray(payload.items) ? payload.items : []).map(normalizeDocument)
   const total = Number(payload.total ?? items.length)
 
   items.items = items
@@ -294,6 +406,14 @@ export const normalizeDocumentListResponse = (payload = {}, params = {}) => {
     page_size: pageSize,
     pagination: { total, page, page_size: pageSize },
   })
+}
+
+const normalizeEffectiveAt = (value) => {
+  if (value === undefined || value === null || value === '') return null
+  const text = String(value).trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return `${text}T00:00:00`
+  if (/^\d{4}-\d{2}-\d{2}\s/.test(text)) return text.replace(' ', 'T')
+  return text
 }
 
 const normalizeUpdatePayload = (metadata = {}) => {
@@ -315,7 +435,7 @@ const normalizeUpdatePayload = (metadata = {}) => {
   if (docTitle !== undefined) payload.doc_title = docTitle
 
   const effectiveAt = metadata.effective_at ?? metadata.effectiveAt ?? metadata.effectiveDate
-  if (effectiveAt !== undefined) payload.effective_at = effectiveAt || null
+  if (effectiveAt !== undefined) payload.effective_at = normalizeEffectiveAt(effectiveAt)
 
   ;['meta_status', 'ocr_status', 'ocr_text', 'ocr_payload_json'].forEach((key) => {
     if (metadata[key] !== undefined) payload[key] = metadata[key]
@@ -403,11 +523,12 @@ export const deleteDocuments = async (documentIds = []) => {
   return emptySuccess({ deleted, success_count: deleted, failed_count: 0 })
 }
 
-export const getDocumentTempUrl = async (documentId = '', expiresIn = 3600) => {
+export const getDocumentTempUrl = async (documentId = '', expiresIn = 3600, options = {}) => {
   if (!documentId) return emptyFileUrl({ document_id: documentId })
-  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/${documentId}/preview-url`, {
-    expires_in: expiresIn,
-  })
+  const page = options?.page ?? options?.pageNo
+  const query = { expires_in: expiresIn }
+  if (page) query.page = page
+  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/${documentId}/preview-url`, query)
   const tempUrl = payload.temp_url || payload.preview_url || payload.url || ''
   return emptySuccess({
     ...payload,
@@ -415,21 +536,35 @@ export const getDocumentTempUrl = async (documentId = '', expiresIn = 3600) => {
     url: payload.url || tempUrl,
     temp_url: tempUrl,
     preview_url: payload.preview_url || tempUrl,
+    preview_source: payload.preview_source || 'native',
+    page_no: payload.page_no ?? null,
+    ocr_page_count: payload.ocr_page_count ?? null,
+    file_type: payload.file_type || null,
   })
 }
 
-export function getDocumentPdfStreamUrl(documentId = '') {
+export function buildDocumentStreamUrl(documentId = '', { page, token } = {}) {
   if (!documentId) return ''
-  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('access_token') : ''
   const path = buildApiUrl(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/stream`)
-  return token ? `${path}${path.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}` : path
+  const params = new URLSearchParams()
+  if (token) params.set('access_token', token)
+  if (page) params.set('page', String(page))
+  const query = params.toString()
+  return query ? `${path}${path.includes('?') ? '&' : '?'}${query}` : path
+}
+
+export function getDocumentPdfStreamUrl(documentId = '', options = {}) {
+  return buildDocumentStreamUrl(documentId, options)
+}
+
+export async function getFreshDocumentStreamUrl(documentId = '', options = {}) {
+  if (!documentId) return ''
+  const token = typeof localStorage !== 'undefined' ? await ensureFreshAccessToken() : ''
+  return buildDocumentStreamUrl(documentId, { ...options, token })
 }
 
 export async function getFreshDocumentPdfStreamUrl(documentId = '') {
-  if (!documentId) return ''
-  const token = typeof localStorage !== 'undefined' ? await ensureFreshAccessToken() : ''
-  const path = buildApiUrl(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/stream`)
-  return token ? `${path}${path.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}` : path
+  return getFreshDocumentStreamUrl(documentId)
 }
 
 export const archiveDocument = async (documentId = '', patientId = '', createExtractionJob = true) => {
@@ -438,6 +573,61 @@ export const archiveDocument = async (documentId = '', patientId = '', createExt
     create_extraction_job: createExtractionJob,
   })
   return emptySuccess(normalizeDocument(payload))
+}
+
+export const pickRecommendedPatientId = (matchInfo = {}) => {
+  if (!matchInfo || typeof matchInfo !== 'object') return ''
+  const candidates = Array.isArray(matchInfo.candidates) ? matchInfo.candidates : []
+  const top = candidates[0] || {}
+  const topId = top.id || top.patient_id || top.patientId || ''
+  return matchInfo.matched_patient_id || matchInfo.ai_recommendation || topId || ''
+}
+
+export const getDocumentAiMatchInfo = async (documentId = '') => {
+  if (!documentId) return emptySuccess(null)
+  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/match-info`)
+  return emptySuccess(payload)
+}
+
+export const refreshDocumentMatchInfo = async (documentId = '') => {
+  if (!documentId) return emptySuccess(null)
+  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/match-info/refresh`)
+  return emptySuccess(payload)
+}
+
+export const resolveDocumentRecommendedPatientId = async (documentId, options = {}) => {
+  const {
+    groupId = '',
+    groupMatchInfo = null,
+    treeGroups = [],
+    fetchGroupMatchInfo,
+  } = options
+
+  if (groupMatchInfo) {
+    const cachedId = pickRecommendedPatientId(groupMatchInfo)
+    if (cachedId) return { patientId: cachedId, matchInfo: groupMatchInfo, source: 'group_cache' }
+  }
+
+  if (groupId && typeof fetchGroupMatchInfo === 'function') {
+    const groupRes = await fetchGroupMatchInfo(groupId)
+    const fetchedInfo = groupRes?.data?.match_info || groupRes?.data || null
+    const fetchedId = pickRecommendedPatientId(fetchedInfo)
+    if (fetchedId) return { patientId: fetchedId, matchInfo: fetchedInfo, source: 'group_fetch' }
+  }
+
+  if (documentId && Array.isArray(treeGroups) && treeGroups.length) {
+    const treeGroup = treeGroups.find(
+      (group) => Array.isArray(group.document_ids) && group.document_ids.includes(documentId)
+    )
+    if (treeGroup?.matched_patient_id) {
+      return { patientId: treeGroup.matched_patient_id, matchInfo: null, source: 'tree' }
+    }
+  }
+
+  const matchRes = await getDocumentAiMatchInfo(documentId)
+  const matchInfo = matchRes?.data || null
+  const patientId = pickRecommendedPatientId(matchInfo)
+  return { patientId, matchInfo, source: patientId ? 'document' : 'none' }
 }
 
 export const batchArchiveDocuments = async (documentIds = [], patientId = '', createExtractionJob = true) => {
@@ -457,7 +647,15 @@ export const unarchiveDocument = async (documentId = '') => {
   return emptySuccess(normalizeDocument(payload))
 }
 
-export const changeArchivePatient = archiveDocument
+export const changeArchivePatient = async (documentId = '', patientId = '', options = true) => {
+  let createExtractionJob = true
+  if (typeof options === 'boolean') {
+    createExtractionJob = options
+  } else if (options && typeof options === 'object') {
+    createExtractionJob = options.createExtractionJob ?? options.autoMergeEhr ?? true
+  }
+  return archiveDocument(documentId, patientId, createExtractionJob)
+}
 export const parseDocument = async (documentId = '') => {
   if (!documentId) return emptyTask()
   const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${documentId}/ocr`)
@@ -545,11 +743,22 @@ export const extractDocumentMetadata = async (documentId = '') => {
   const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${documentId}/metadata`)
   return emptySuccess(normalizeDocument(payload))
 }
-export const markDocumentReview = async () => emptySuccess(null)
+export const markDocumentReview = async (documentId = '', requiresReview = false) => {
+  if (!documentId) return emptySuccess(null, { message: '缺少文档 ID' })
+  const detail = await getDocumentDetail(documentId)
+  if (!detail?.success) return detail
+  const metadata = {
+    ...(detail.data?.metadata_json && typeof detail.data.metadata_json === 'object'
+      ? detail.data.metadata_json
+      : {}),
+    requires_review: !!requiresReview,
+  }
+  const payload = await request.patch(`${DOCUMENTS_ENDPOINT}/${documentId}`, { metadata_json: metadata })
+  return emptySuccess(normalizeDocument(payload))
+}
 export const getDocumentOperationHistory = async () => emptyList()
-export const aiMatchPatient = async () => emptySuccess(null)
-export const aiExtractAndMatchPatient = aiMatchPatient
-export const getDocumentAiMatchInfo = async () => emptySuccess(null)
+export const aiMatchPatient = refreshDocumentMatchInfo
+export const aiExtractAndMatchPatient = refreshDocumentMatchInfo
 export const confirmCreatePatientAndArchive = async (documentId = '', patientData = {}) => {
   if (!documentId) return emptySuccess(null, { message: '缺少文档 ID' })
   const patientRes = await createPatient(patientData)
@@ -610,6 +819,11 @@ export const getFileListV2Tree = async (params = {}) => {
   return emptySuccess(payload)
 }
 
+export const getFileListV2Counts = async (params = {}) => {
+  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/v2/counts`, params)
+  return emptySuccess(payload)
+}
+
 const getGroupTaskStatus = (matchInfo = {}) => {
   const result = matchInfo.match_result
   if (result === 'pending') return 'parsing'
@@ -642,8 +856,51 @@ export const uploadAndArchiveToPatient = async (file, patientId, _options = {}, 
   return uploadDocument(file, patientId, onProgress)
 }
 export const uploadAndArchiveAsync = uploadAndArchiveToPatient
-export const extractEhrDataAsync = async () => emptyTask()
-export const aiMatchPatientAsync = async () => emptyTask()
+export const extractEhrDataAsync = async (documentId = '', options = {}) => {
+  if (!documentId) return emptyTask()
+  const { patientId: patientIdOption = '', source = 'document_detail_manual' } = options
+  let resolvedPatientId = patientIdOption
+  if (!resolvedPatientId) {
+    const detail = await getDocumentDetail(documentId)
+    resolvedPatientId = detail.data?.patient_id || detail.data?.patientId || ''
+  }
+  if (!resolvedPatientId) {
+    return {
+      success: false,
+      code: 1,
+      message: '文档尚未绑定患者，请先归档或选择患者',
+      data: null,
+    }
+  }
+  const payload = await request.post('/extraction-jobs', {
+    job_type: 'patient_ehr',
+    patient_id: resolvedPatientId,
+    document_id: documentId,
+    input_json: {
+      source,
+      enqueue_async: true,
+    },
+  })
+  return emptySuccess({
+    ...payload,
+    task_id: payload.id,
+  })
+}
+
+export const getExtractionJob = async (jobId = '') => {
+  if (!jobId) return emptyTask()
+  const payload = await request.get(`/extraction-jobs/${jobId}`)
+  return emptySuccess(payload)
+}
+export const aiMatchPatientAsync = async (documentId = '') => {
+  if (!documentId) return emptyTask()
+  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/match-info/refresh`)
+  return emptySuccess({
+    ...payload,
+    task_id: documentId,
+    status: 'completed',
+  })
+}
 export const batchAiMatchAsync = async () => emptyTask()
 export const getDocumentTaskProgress = async () => emptyTask()
 export const pollDocumentTaskProgress = async () => emptyTask()
@@ -658,6 +915,11 @@ export default {
   getDocumentTempUrl,
   getDocumentPdfStreamUrl,
   getFreshDocumentPdfStreamUrl,
+  isOfficeDocumentLike,
+  isPdfFileLike,
+  isImageFileLike,
+  isOcrPagePreviewResponse,
+  resolveTraceDocumentPreviewUrl,
   archiveDocument,
   batchArchiveDocuments,
   unarchiveDocument,
@@ -677,6 +939,9 @@ export default {
   aiMatchPatient,
   aiExtractAndMatchPatient,
   getDocumentAiMatchInfo,
+  refreshDocumentMatchInfo,
+  pickRecommendedPatientId,
+  resolveDocumentRecommendedPatientId,
   confirmCreatePatientAndArchive,
   batchCreatePatientAndArchive,
   confirmAutoArchive,
@@ -685,6 +950,7 @@ export default {
   getFileStatusById,
   getFileStatusesByIds,
   getFileListV2Tree,
+  getFileListV2Counts,
   getFileListV2GroupDocuments,
   rebuildGroups,
   matchGroup,
@@ -694,6 +960,7 @@ export default {
   uploadAndArchiveToPatient,
   uploadAndArchiveAsync,
   extractEhrDataAsync,
+  getExtractionJob,
   aiMatchPatientAsync,
   batchAiMatchAsync,
   getDocumentTaskProgress,

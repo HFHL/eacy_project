@@ -14,6 +14,7 @@ class Document(TimestampMixin, Base):
     __table_args__ = (
         Index("idx_documents_patient_id", "patient_id"),
         Index("idx_documents_status", "status"),
+        Index("idx_documents_uploaded_by_status", "uploaded_by", "status"),
         Index("idx_documents_doc_type", "doc_type"),
         Index("idx_documents_effective_at", "effective_at"),
     )

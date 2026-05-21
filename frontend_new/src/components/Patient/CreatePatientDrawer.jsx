@@ -7,8 +7,6 @@ import { mergePatientPrefills, toPatientFormValues } from './patientPrefill'
 
 const { Text } = Typography
 
-const hasPatientPrefillValue = (values = {}) => Object.values(toPatientFormValues(values)).some(Boolean)
-
 /**
  * 复用的“新建患者并归档”右侧抽屉
  * - 支持单个文档/批量文档
@@ -76,7 +74,8 @@ const CreatePatientDrawer = ({
     ;(async () => {
       setPrefillLoading(true)
       try {
-        const merged = hasPatientPrefillValue(prefillValues) ? toPatientFormValues(prefillValues) : await mergePrefillFromDocs(docIds)
+        const apiMerged = await mergePrefillFromDocs(docIds)
+        const merged = mergePatientPrefills([prefillValues || {}, apiMerged])
         if (cancelled) return
         form.setFieldsValue(toPatientFormValues(merged))
       } finally {

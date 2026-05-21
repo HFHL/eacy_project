@@ -12,7 +12,7 @@ const DocumentUpload = lazy(() => import('../pages/DocumentUpload'))
 const AIProcessing = lazy(() => import('../pages/AIProcessing'))
 const CRFDesigner = lazy(() => import('../pages/CRFDesigner'))
 const PatientPool = lazy(() => import('../pages/PatientPool'))
-const ResearchDataset = lazy(() => import('../pages/ResearchDataset'))
+const ResearchProjectsEntry = lazy(() => import('../pages/ResearchDataset/ResearchProjectsEntry'))
 const ProjectDatasetView = lazy(() => import('../pages/ResearchDataset/ProjectDatasetView'))
 const ProjectPatientDetail = lazy(() => import('../pages/ResearchDataset/ProjectPatientDetail'))
 const ProjectTemplateDesigner = lazy(() => import('../pages/ResearchDataset/ProjectTemplateDesigner'))
@@ -165,7 +165,7 @@ const router = createBrowserRouter([
         children: [
           {
             path: 'projects',
-            element: <ResearchDataset />,
+            element: <ResearchProjectsEntry />,
             handle: {
               crumb: () => '科研项目',
               title: '科研数据集管理'

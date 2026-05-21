@@ -6,6 +6,17 @@
  * 保证两边的坐标渲染走同一条数据归一化路径。
  */
 
+export const hasRenderablePolygon = (location = {}) => {
+  const polygon = Array.isArray(location.polygon)
+    ? location.polygon
+    : Array.isArray(location.textin_position)
+      ? location.textin_position
+      : Array.isArray(location.position)
+        ? location.position
+        : null
+  return Array.isArray(polygon) && polygon.length >= 8 && location.renderable !== false
+}
+
 export const normalizeEvidenceLocation = (evidence = {}) => {
   let rawLocation = evidence.bbox_json
   if (typeof rawLocation === 'string') {
@@ -24,12 +35,16 @@ export const normalizeEvidenceLocation = (evidence = {}) => {
       : Array.isArray(location.position)
         ? location.position
         : null
+  const pageAngle = Number(location.page_angle)
+  const normalizedAngle = Number.isFinite(pageAngle) ? ((pageAngle % 360) + 360) % 360 : 0
 
   return {
     ...location,
     page: pageNo,
     page_no: pageNo,
     polygon,
+    page_angle: normalizedAngle,
+    renderable: location.renderable ?? hasRenderablePolygon({ ...location, polygon }),
     coord_space: location.coord_space || 'pixel',
     page_width: location.page_width,
     page_height: location.page_height,
@@ -37,6 +52,8 @@ export const normalizeEvidenceLocation = (evidence = {}) => {
     evidence_id: evidence.id,
     evidence_type: evidence.evidence_type,
     document_id: evidence.document_id,
+    fallback_strategy: location.fallback_strategy || null,
+    coord_warning: location.coord_warning || null,
   }
 }
 
@@ -44,3 +61,26 @@ export const normalizeFieldEvidence = (evidence = {}) => ({
   ...evidence,
   source_location: normalizeEvidenceLocation(evidence),
 })
+
+export const resolvePreviewRotation = (sourceLocation) => {
+  const locations = Array.isArray(sourceLocation)
+    ? sourceLocation.filter(Boolean)
+    : (sourceLocation ? [sourceLocation] : [])
+  const primary = locations.find((item) => item?.page_angle != null) || locations[0]
+  const angle = Number(primary?.page_angle)
+  return Number.isFinite(angle) ? ((angle % 360) + 360) % 360 : 0
+}
+
+export const getEvidenceQualityFlags = (sourceLocation) => {
+  const locations = Array.isArray(sourceLocation)
+    ? sourceLocation.filter(Boolean)
+    : (sourceLocation ? [sourceLocation] : [])
+  return {
+    siblingFallback: locations.some((item) => (
+      item?.fallback_strategy === 'sibling_field_location'
+      || item?.fallback_strategy === 'sibling_page_hint'
+    )),
+    coordWarning: locations.find((item) => item?.coord_warning)?.coord_warning || null,
+    nonRenderable: locations.length > 0 && locations.every((item) => !hasRenderablePolygon(item)),
+  }
+}

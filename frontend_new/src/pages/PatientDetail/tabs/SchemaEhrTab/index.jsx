@@ -44,7 +44,6 @@ const SchemaEhrTab = ({
   // 事件回调
   onSave,
   onDataChange,
-  onUploadDocument,
 
   // 配置选项
   autoSaveInterval = 30000,
@@ -180,6 +179,8 @@ const SchemaEhrTab = ({
     const handleRefresh = (event) => {
       const targetPatientId = String(event?.detail?.patientId || '')
       if (!targetPatientId || String(patientId) !== targetPatientId) return
+      const reason = event?.detail?.reason || 'all'
+      if (reason !== 'all' && reason !== 'ehr') return
       loadSchema()
     }
     window.addEventListener('patient-detail-refresh', handleRefresh)
@@ -292,7 +293,6 @@ const SchemaEhrTab = ({
           patientData={localPatientData}
           patientId={patientId}
           projectConfig={{ documents: patientDocuments }}
-          onUploadDocument={onUploadDocument}
           onSave={handleSave}
           onReset={handleReset}
           autoSaveInterval={autoSaveInterval}

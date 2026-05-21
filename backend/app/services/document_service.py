@@ -7,12 +7,20 @@ from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
 
-from app.integrations.textin_ocr import TextInOcrClient
+from app.integrations.textin_ocr import TextInOcrClient, build_textin_api_url
 from app.core.auth import CurrentUser, uuid_user_id_or_none
 from app.models import Document
 from app.repositories import DocumentRepository, ExtractionJobRepository, PatientRepository
+from app.services.document_upload_validation import read_upload_bytes, validate_upload_file
+from app.services.document_preview_utils import (
+    document_uses_ocr_page_preview,
+    find_ocr_page_storage_path,
+    first_persisted_ocr_page_path,
+    get_ocr_page_count,
+)
+from app.services.ocr_page_asset_service import OcrPageAssetService
 from app.services.ocr_payload_normalizer import normalize_textin_ocr_payload
-from app.services.archive_grouping_service import ArchiveGroupingService, is_pending_process_document
+from app.services.archive_grouping_service import ArchiveGroupingService, extract_id_card_from_result, get_metadata_result, is_pending_process_document, parse_document_identity
 from app.services.ehr_service import EhrService
 from app.services.schema_service import SchemaService
 from app.storage.document_storage import AliyunOssDocumentStorage, DocumentStorage, build_document_storage
@@ -87,6 +95,12 @@ class DocumentService:
 
             original_filename = Path(file.filename or "upload.bin").name
             file_ext = Path(original_filename).suffix.lower()[:20] or None
+            upload_bytes = await read_upload_bytes(file)
+            validate_upload_file(
+                filename=original_filename,
+                content_type=file.content_type,
+                size=len(upload_bytes),
+            )
             stored_file = await self.storage_backend.save(
                 file,
                 original_filename=original_filename,
@@ -131,10 +145,54 @@ class DocumentService:
     async def get_document(self, document_id: str, *, uploaded_by: str | None = None) -> Document | None:
         return await self.document_repository.get_visible_by_id(document_id, uploaded_by=uploaded_by)
 
-    async def get_preview_url(self, document_id: str, *, expires_in: int = 3600, uploaded_by: str | None = None) -> dict[str, Any]:
+    async def get_preview_url(
+        self,
+        document_id: str,
+        *,
+        expires_in: int = 3600,
+        page_no: int | None = None,
+        prefer_native: bool = False,
+        uploaded_by: str | None = None,
+    ) -> dict[str, Any]:
         document = await self.get_document(document_id, uploaded_by=uploaded_by)
         if document is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+        ocr_payload = document.ocr_payload_json if isinstance(document.ocr_payload_json, dict) else None
+        uses_ocr_pages = document_uses_ocr_page_preview(document)
+        ocr_page_count = get_ocr_page_count(ocr_payload) if uses_ocr_pages else 0
+
+        if uses_ocr_pages and ocr_page_count > 0 and not prefer_native:
+            resolved_page_no = page_no
+            storage_path: str | None = None
+            if resolved_page_no is not None:
+                storage_path = find_ocr_page_storage_path(ocr_payload, resolved_page_no)
+            else:
+                first_page = first_persisted_ocr_page_path(ocr_payload)
+                if first_page is not None:
+                    resolved_page_no, storage_path = first_page
+
+            if storage_path and resolved_page_no is not None:
+                preview_url = self._get_oss_object_preview_url(
+                    storage_path,
+                    filename=f"page-{resolved_page_no}.jpg",
+                    content_type="image/jpeg",
+                    expires_in=expires_in,
+                )
+                return {
+                    "document_id": document.id,
+                    "url": preview_url,
+                    "temp_url": preview_url,
+                    "preview_url": preview_url,
+                    "expires_in": expires_in,
+                    "storage_provider": document.storage_provider,
+                    "mime_type": "image/jpeg",
+                    "file_name": document.original_filename,
+                    "file_type": document.file_ext or document.file_type,
+                    "preview_source": "ocr_page",
+                    "page_no": resolved_page_no,
+                    "ocr_page_count": ocr_page_count,
+                }
 
         provider = (document.storage_provider or "oss").lower()
         if provider == "oss":
@@ -151,6 +209,10 @@ class DocumentService:
             "storage_provider": document.storage_provider,
             "mime_type": document.mime_type,
             "file_name": document.original_filename,
+            "file_type": document.file_ext or document.file_type,
+            "preview_source": "native",
+            "page_no": None,
+            "ocr_page_count": ocr_page_count if uses_ocr_pages else None,
         }
 
     async def get_stream_document(self, document_id: str, *, uploaded_by: str | None = None) -> Document:
@@ -185,6 +247,36 @@ class DocumentService:
             return document.file_url
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document preview URL not available")
 
+    def _get_oss_object_preview_url(
+        self,
+        storage_path: str,
+        *,
+        filename: str,
+        content_type: str,
+        expires_in: int = 3600,
+    ) -> str:
+        content_disposition = f"inline; filename*=UTF-8''{quote(filename, safe='')}"
+        if isinstance(self.storage_backend, AliyunOssDocumentStorage):
+            return self.storage_backend.get_signed_url(
+                storage_path,
+                expires_in=expires_in,
+                response_content_disposition=content_disposition,
+            )
+        if config.OSS_ACCESS_KEY_ID and config.OSS_ACCESS_KEY_SECRET and config.OSS_BUCKET_NAME and config.OSS_ENDPOINT:
+            return AliyunOssDocumentStorage(
+                access_key_id=config.OSS_ACCESS_KEY_ID,
+                access_key_secret=config.OSS_ACCESS_KEY_SECRET,
+                bucket_name=config.OSS_BUCKET_NAME,
+                endpoint=config.OSS_ENDPOINT,
+                base_prefix=config.OSS_BASE_PREFIX,
+                public_base_url=config.OSS_PUBLIC_BASE_URL,
+            ).get_signed_url(
+                storage_path,
+                expires_in=expires_in,
+                response_content_disposition=content_disposition,
+            )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document preview URL not available")
+
     async def list_documents(
         self,
         *,
@@ -193,16 +285,37 @@ class DocumentService:
         patient_id: str | None = None,
         status: str | None = None,
         uploaded_by: str | None = None,
+        tab: str | None = None,
+        task_stage: str | None = None,
+        keyword: str | None = None,
+        document_types: str | None = None,
+        date_from=None,
+        date_to=None,
+        order_by: str = "created_at",
+        order_direction: str = "desc",
     ) -> tuple[list[Document], int]:
+        from app.services.document_list_query import DocumentListQuery, parse_date_boundary
+
+        list_query = DocumentListQuery(
+            patient_id=patient_id,
+            status=status,
+            tab=tab,
+            task_stage=task_stage,
+            keyword=keyword,
+            document_types=document_types,
+            date_from=date_from if isinstance(date_from, datetime) else parse_date_boundary(date_from),
+            date_to=date_to if isinstance(date_to, datetime) else parse_date_boundary(date_to, end_of_day=True),
+            order_by=order_by,
+            order_direction=order_direction,
+            uploaded_by=uploaded_by,
+        )
         offset = (page - 1) * page_size
         documents = await self.document_repository.list_documents(
             offset=offset,
             limit=page_size,
-            patient_id=patient_id,
-            status=status,
-            uploaded_by=uploaded_by,
+            list_query=list_query,
         )
-        total = await self.document_repository.count_documents(patient_id=patient_id, status=status, uploaded_by=uploaded_by)
+        total = await self.document_repository.count_documents(list_query=list_query)
         return documents, total
 
     async def list_documents_by_ids(self, document_ids: list[str], *, uploaded_by: str | None = None) -> list[Document]:
@@ -210,8 +323,8 @@ class DocumentService:
         return await self.document_repository.list_by_ids_light(unique_ids, uploaded_by=uploaded_by)
 
     @Transactional()
-    async def update_document(self, document_id: str, **params: Any) -> Document:
-        document = await self.get_document(document_id)
+    async def update_document(self, document_id: str, *, uploaded_by: str | None = None, **params: Any) -> Document:
+        document = await self.get_document(document_id, uploaded_by=uploaded_by)
         if document is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
@@ -269,9 +382,9 @@ class DocumentService:
         )
 
         try:
-            preview = await self.get_preview_url(document_id, expires_in=3600)
+            preview = await self.get_preview_url(document_id, expires_in=3600, prefer_native=True)
             request_snapshot = {
-                "api_url": config.TEXTIN_API_URL,
+                "api_url": build_textin_api_url(config.TEXTIN_API_URL),
                 "document_id": document_id,
                 "file_name": document.original_filename,
                 "mime_type": document.mime_type,
@@ -284,6 +397,12 @@ class DocumentService:
             )
             payload = normalize_textin_ocr_payload(raw_response, request_snapshot=request_snapshot)
             latest_document = await self.get_document(document_id) or document
+            if document_uses_ocr_page_preview(latest_document):
+                storage = self.storage_backend if isinstance(self.storage_backend, AliyunOssDocumentStorage) else None
+                payload = await OcrPageAssetService(storage_backend=storage).persist_page_assets(
+                    document=latest_document,
+                    payload=payload,
+                )
             completed_status = "archived" if getattr(latest_document, "patient_id", None) or getattr(latest_document, "status", None) == "archived" else "ocr_completed"
             completed_document = await self.update_document(
                 document_id,
@@ -509,27 +628,152 @@ class DocumentService:
                 pass
         return payload
 
-    async def get_archive_group_documents(self, group_id: str, *, uploaded_by: str | None = None) -> dict[str, Any]:
+    async def get_archive_counts(self, *, refresh: bool = False, uploaded_by: str | None = None) -> dict[str, Any]:
+        """仅返回归档树各 Tab 计数，优先读 Redis 缓存，避免 MainLayout 等场景拉整棵树。"""
+        cache_key = self._archive_cache_key(uploaded_by)
+        if not refresh:
+            try:
+                cached = await redis_client.get(cache_key)
+                if cached:
+                    data = json.loads(cached)
+                    return {
+                        "total": int(data.get("total") or 0),
+                        "counts": data.get("counts") or {},
+                    }
+            except Exception:
+                pass
+        tree = await self.get_archive_tree(refresh=refresh, uploaded_by=uploaded_by)
+        return {
+            "total": int(tree.get("total") or 0),
+            "counts": tree.get("counts") or {},
+        }
+
+    @staticmethod
+    def _build_group_match_info(group: dict[str, Any]) -> dict[str, Any]:
+        group_status = group.get("status") or "insufficient_info"
+        candidates = group.get("candidatePatients") or group.get("candidate_patients") or []
+        matched_patient_id = group.get("matched_patient_id")
+        top_candidate_id = None
+        if candidates:
+            top_candidate = candidates[0]
+            top_candidate_id = top_candidate.get("patientId") or top_candidate.get("patient_id") or top_candidate.get("id")
+
+        if group_status == "pending_process":
+            match_result = "pending"
+        elif group_status == "matched_existing":
+            match_result = "matched"
+        elif group_status == "needs_confirmation":
+            match_result = "review"
+        elif group_status == "new_patient_candidate":
+            match_result = "new"
+        else:
+            match_result = "uncertain"
+
+        if group_status == "matched_existing":
+            ai_recommendation = matched_patient_id
+        elif group_status == "needs_confirmation":
+            ai_recommendation = top_candidate_id
+        else:
+            ai_recommendation = matched_patient_id or None
+
+        match_score = candidates[0].get("similarity", 0) if candidates else 0
+        return {
+            "matched_patient_id": matched_patient_id,
+            "match_score": match_score,
+            "confidence": match_score,
+            "match_result": match_result,
+            "candidates": candidates,
+            "ai_recommendation": ai_recommendation,
+            "ai_reason": group.get("matchReason") or group.get("match_reason"),
+        }
+
+    @staticmethod
+    def _build_document_extracted_info(document: Document) -> dict[str, Any]:
+        identity = parse_document_identity(document)
+        result = get_metadata_result(document.metadata_json)
+        id_number = extract_id_card_from_result(result)
+        return {
+            "name": identity.name,
+            "patient_name": identity.name,
+            "gender": identity.gender,
+            "patient_gender": identity.gender,
+            "age": identity.age,
+            "patient_age": identity.age,
+            "birth_date": identity.birth_date,
+            "phone": identity.phone,
+            "address": identity.address,
+            "id_number": id_number,
+            "id_card": id_number,
+        }
+
+    async def _build_archive_groups(
+        self,
+        *,
+        uploaded_by: str | None = None,
+        include_raw_documents: bool = True,
+    ) -> tuple[list[Document], list[dict[str, Any]]]:
         documents = await self.document_repository.list_visible_documents(uploaded_by=uploaded_by)
         patients = await self.patient_repository.list_all_active(owner_id=uploaded_by)
         groups = ArchiveGroupingService().build_groups(
             [document for document in documents if document.status != "archived"],
             patients,
-            include_raw_documents=True,
+            include_raw_documents=include_raw_documents,
         )
+        return documents, groups
+
+    async def get_document_match_info(self, document_id: str, *, uploaded_by: str | None = None) -> dict[str, Any]:
+        document = await self.get_document(document_id, uploaded_by=uploaded_by)
+        if document is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+        metadata = document.metadata_json if isinstance(document.metadata_json, dict) else {}
+        extracted_info = self._build_document_extracted_info(document)
+        _, groups = await self._build_archive_groups(uploaded_by=uploaded_by, include_raw_documents=True)
+
+        group = next(
+            (
+                item
+                for item in groups
+                if any(doc.get("id") == document_id for doc in item.get("documents") or [])
+            ),
+            None,
+        )
+        if group is None:
+            return {
+                "document_id": document_id,
+                "group_id": None,
+                "document_metadata": metadata,
+                "extracted_info": extracted_info,
+                "matched_patient_id": None,
+                "match_score": 0,
+                "confidence": 0,
+                "match_result": "uncertain",
+                "candidates": [],
+                "ai_recommendation": None,
+                "ai_reason": "未找到所属分组或文档尚未完成解析",
+            }
+
+        match_info = self._build_group_match_info(group)
+        return {
+            "document_id": document_id,
+            "group_id": group.get("groupId"),
+            "document_metadata": metadata,
+            "extracted_info": extracted_info,
+            **match_info,
+        }
+
+    async def refresh_document_match_info(self, document_id: str, *, uploaded_by: str | None = None) -> dict[str, Any]:
+        await self.invalidate_archive_tree_cache(uploaded_by)
+        return await self.get_document_match_info(document_id, uploaded_by=uploaded_by)
+
+    async def get_archive_group_documents(self, group_id: str, *, uploaded_by: str | None = None) -> dict[str, Any]:
+        _, groups = await self._build_archive_groups(uploaded_by=uploaded_by, include_raw_documents=True)
         group = next((item for item in groups if item["groupId"] == group_id), None)
         if group is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
 
         active_documents = [item["raw_document"] for item in group["documents"] if item.get("status") != "archived"]
-        match_info = {
-            "matched_patient_id": group.get("matched_patient_id"),
-            "match_score": group.get("candidatePatients", [{}])[0].get("similarity", 0) if group.get("candidatePatients") else 0,
-            "match_result": "pending" if group["status"] == "pending_process" else "matched" if group["status"] == "matched_existing" else "review" if group["status"] == "needs_confirmation" else "new" if group["status"] == "new_patient_candidate" else "uncertain",
-            "candidates": group.get("candidatePatients", []),
-            "ai_recommendation": group.get("matched_patient_id"),
-            "ai_reason": group.get("matchReason"),
-        }
+        match_info = self._build_group_match_info(group)
         response_group = {**group}
         response_group["documents"] = [
             {key: value for key, value in document.items() if key != "raw_document"}
@@ -574,7 +818,7 @@ class DocumentService:
         if document is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-        patient = await self.patient_repository.get_active_by_id(patient_id, owner_id=requested_by)
+        patient = await self.patient_repository.get_active_by_id(patient_id)
         if patient is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
@@ -630,7 +874,7 @@ class DocumentService:
 
         documents: list[Document] = []
         for document_id in document_ids:
-            document = await self.get_document(document_id)
+            document = await self.get_document(document_id, uploaded_by=requested_by)
             if document is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document not found: {document_id}")
             documents.append(document)

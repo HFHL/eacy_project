@@ -14,6 +14,7 @@ exception path.
 from __future__ import annotations
 
 import uuid
+from uuid import UUID
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
@@ -167,11 +168,23 @@ class LLMCallRecorder:
         return self._record["call_id"]
 
 
+def _is_valid_uuid(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 async def flush_llm_call_logs(buffer: list[dict[str, Any]] | None, *, commit: bool = False) -> None:
     """Persist accumulated LLM call records. Safe to call with an empty buffer."""
     if not buffer:
         return
     for record in buffer:
+        if not all(_is_valid_uuid(record.get(key)) for key in ("job_id", "run_id", "document_id", "project_id", "requested_by")):
+            continue
         log = LLMCallLog(**{key: value for key, value in record.items() if value is not None})
         session.add(log)
     # Drain the buffer so the same records aren't flushed twice if the caller retries

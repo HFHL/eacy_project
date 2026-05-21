@@ -12,9 +12,7 @@ import {
   Modal,
   Form,
   Input,
-  Checkbox,
   Alert,
-  Radio,
 } from 'antd'
 import {
   PlayCircleOutlined,
@@ -37,8 +35,6 @@ import { deriveTemplateFieldGroupsFromSchema } from './adapters/datasetAdapter'
 import useProjectPatientData from './hooks/useProjectPatientData'
 import {
   updateProjectPatientCrfFields,
-  updateProjectCrfFolder,
-  getCrfExtractionProgress,
   getProjectPatientCrf,
 } from '@/api/project'
 import { message } from 'antd'
@@ -688,7 +684,6 @@ const ProjectPatientDetail = () => {
     crfData,
     documents,
     fieldGroups: projectTemplateGroups,
-    ehrFieldGroups,
     refresh,
   } = useProjectPatientData(projectId, patientId)
 
@@ -716,10 +711,6 @@ const ProjectPatientDetail = () => {
   }, [])
   
   // 状态管理
-  const [extractionModalVisible, setExtractionModalVisible] = useState(false)
-  const [extractionModalGroups, setExtractionModalGroups] = useState([])
-  const [extractionModalMode, setExtractionModalMode] = useState('incremental')
-  const [isExtracting, setIsExtracting] = useState(false)
   const [aiAssistantVisible, setAiAssistantVisible] = useState(false)
   const [aiChatHistory, setAiChatHistory] = useState([])
   const [aiInput, setAiInput] = useState('')
@@ -1111,60 +1102,6 @@ const ProjectPatientDetail = () => {
   // 是否仍在初次加载患者基础信息（仅作内联指示，不再阻塞整页）
   const initialPatientLoading = (loading || projectLoading) && !patientInfo?.patientId
 
-  const handleOpenExtractionModal = () => {
-    setExtractionModalGroups([])
-    setExtractionModalMode('incremental')
-    setExtractionModalVisible(true)
-  }
-
-  const handleSubmitTargetedExtraction = async () => {
-    if (extractionModalGroups.length === 0) {
-      message.warning('请至少选择一个字段组')
-      return
-    }
-    setExtractionModalVisible(false)
-    setIsExtracting(true)
-    try {
-      const response = await updateProjectCrfFolder(projectId, resolvedProjectPatientId || patientId)
-      if (response.success) {
-        const taskId = response.data?.task_id || response.data?.job_ids?.[0] || ''
-        message.success(response.data?.message || '专项抽取任务已启动')
-        if (!taskId) {
-          setIsExtracting(false)
-          await refresh()
-          return
-        }
-        const poll = async () => {
-          try {
-            const res = await getCrfExtractionProgress(projectId, taskId)
-            const progress = res.data || res
-            if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(progress.status)) {
-              setIsExtracting(false)
-              if (progress.status === 'completed' || progress.status === 'completed_with_errors') {
-                message.success('专项抽取完成')
-              } else {
-                message.warning(`抽取${progress.status === 'failed' ? '失败' : '已取消'}`)
-              }
-              refresh()
-              return
-            }
-            setTimeout(poll, 2000)
-          } catch {
-            setIsExtracting(false)
-          }
-        }
-        poll()
-      } else {
-        message.error(response.message || '启动专项抽取失败')
-        setIsExtracting(false)
-      }
-    } catch (error) {
-      console.error('专项抽取失败:', error)
-      message.error('启动专项抽取失败')
-      setIsExtracting(false)
-    }
-  }
-
   return (
     <div className="page-container fade-in">
       {/* 患者项目统计 */}
@@ -1241,101 +1178,6 @@ const ProjectPatientDetail = () => {
           />
         </div>
       </Card>
-
-      {/* 专项抽取配置弹窗 */}
-      <Modal
-        title="专项抽取配置"
-        open={extractionModalVisible}
-        onCancel={() => setExtractionModalVisible(false)}
-        footer={[
-          <Button key="cancel" onClick={() => setExtractionModalVisible(false)}>
-            取消
-          </Button>,
-          <Button
-            key="start"
-            type="primary"
-            style={{ backgroundColor: appThemeToken.colorPrimary, borderColor: appThemeToken.colorPrimary }}
-            disabled={extractionModalGroups.length === 0 || isExtracting}
-            onClick={handleSubmitTargetedExtraction}
-          >
-            开始抽取
-          </Button>
-        ]}
-        width={600}
-      >
-        <Alert
-          message="专项抽取任务"
-          description={`患者: ${patientInfo.name} (${patientInfo.subjectId || patientInfo.patientCode || patientInfo.patientId}) | 已选字段组: ${extractionModalGroups.length} 个`}
-          type="info"
-          style={{ marginBottom: 16 }}
-        />
-        
-        <Form layout="vertical">
-          <Form.Item label="选择字段组">
-            <div style={{ marginBottom: 8 }}>
-              <Space>
-                <Button
-                  size="small"
-                  type="link"
-                  style={{ padding: 0 }}
-                  onClick={() => setExtractionModalGroups(ehrFieldGroups.map(g => g.key))}
-                >
-                  全选
-                </Button>
-                <Button
-                  size="small"
-                  type="link"
-                  style={{ padding: 0 }}
-                  onClick={() => setExtractionModalGroups(
-                    ehrFieldGroups.filter(g => g.status !== 'completed').map(g => g.key)
-                  )}
-                >
-                  选择未完成
-                </Button>
-                <Button
-                  size="small"
-                  type="link"
-                  style={{ padding: 0 }}
-                  onClick={() => setExtractionModalGroups([])}
-                >
-                  清空
-                </Button>
-              </Space>
-            </div>
-            <Checkbox.Group
-              style={{ width: '100%' }}
-              value={extractionModalGroups}
-              onChange={setExtractionModalGroups}
-            >
-              <Row>
-                {ehrFieldGroups.map(group => (
-                  <Col span={24} key={group.key} style={{ marginBottom: 8 }}>
-                    <Checkbox value={group.key}>
-                      <Space>
-                        <Text>{group.name}</Text>
-                        {group.status === 'completed' && (
-                          <Tag color="green" size="small">已完成</Tag>
-                        )}
-                        {group.status === 'partial' && (
-                          <Tag color="orange" size="small">部分完成</Tag>
-                        )}
-                        <Text type="secondary">({group.completeness}%)</Text>
-                      </Space>
-                    </Checkbox>
-                  </Col>
-                ))}
-              </Row>
-            </Checkbox.Group>
-          </Form.Item>
-          
-          <Form.Item label="抽取模式">
-            <Radio.Group value={extractionModalMode} onChange={e => setExtractionModalMode(e.target.value)}>
-              <Radio value="incremental">增量抽取 - 仅补抽选中组内缺失字段</Radio>
-              <Radio value="full">全量抽取 - 重新抽取选中组内所有字段</Radio>
-            </Radio.Group>
-          </Form.Item>
-        </Form>
-      </Modal>
 
       {/* AI助手可拖动悬浮窗 */}
       <Modal

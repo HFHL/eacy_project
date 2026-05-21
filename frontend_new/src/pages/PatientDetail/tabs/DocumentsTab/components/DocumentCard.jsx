@@ -108,7 +108,7 @@ const DocumentCard = ({
              <Space direction="vertical" size="small" align="end">
                <ConfidenceIndicator confidence={document.confidence} />
                <StatusIndicator
-                 status={document.status}
+                 status={document.task_status || document.taskStatus || document.status}
                  extractedFieldsCount={document.extractedFields?.length || 0}
                />
                <EhrExtractionBadge extractStatus={document.extract_status} />

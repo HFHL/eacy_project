@@ -137,6 +137,37 @@ class ProjectPatientResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class CrfGroupStatsItem(BaseModel):
+    group_name: str = ""
+    filled: int = 0
+    total: int = 0
+    percent: int = 0
+
+
+class ProjectPatientListItemResponse(ProjectPatientResponse):
+    patient_name: str = ""
+    patient_gender: str | None = None
+    patient_age: int | None = None
+    patient_birth_date: str | None = None
+    document_count: int = 0
+    crf_completeness: float = 0
+    crf_group_stats: dict[str, CrfGroupStatsItem] = Field(default_factory=dict)
+
+
+class ProjectPatientCrfGroupFieldsRequest(BaseModel):
+    group_id: str = Field(..., min_length=1)
+    project_patient_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class ProjectPatientCrfGroupFieldsItem(BaseModel):
+    project_patient_id: str
+    fields: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class ProjectPatientCrfGroupFieldsResponse(BaseModel):
+    items: list[ProjectPatientCrfGroupFieldsItem] = Field(default_factory=list)
+
+
 class CrfContextResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -283,8 +314,15 @@ class CrfFolderUpdateResponse(BaseModel):
     skipped: list[dict[str, str]] = Field(default_factory=list)
 
 
+class CrfFolderUpdateRequest(BaseModel):
+    target_form_keys: list[str] | None = None
+    mode: str = Field(default="incremental", max_length=20)
+
+
 class ProjectCrfFolderBatchRequest(BaseModel):
     project_patient_ids: list[str] | None = None
+    target_form_keys: list[str] | None = None
+    mode: str = Field(default="incremental", max_length=20)
 
 
 class ProjectCrfFolderBatchResponse(BaseModel):
@@ -344,6 +382,7 @@ async def list_projects(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     status_filter: str | None = Query(default=None, alias="status"),
+    search: str | None = Query(default=None, max_length=200),
     current_user: CurrentUser = Depends(get_current_user),
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> ResearchProjectListResponse:
@@ -351,6 +390,7 @@ async def list_projects(
         page=page,
         page_size=page_size,
         status=status_filter,
+        search=search,
         owner_id=user_scope_id(current_user),
     )
     items = [_project_response(project, stats_by_id.get(project.id)) for project in projects]
@@ -493,17 +533,41 @@ async def disable_template_binding(
     return TemplateBindingResponse.model_validate(binding)
 
 
-@router.get("/{project_id}/patients", response_model=list[ProjectPatientResponse])
+@router.get("/{project_id}/patients", response_model=list[ProjectPatientListItemResponse])
 async def list_project_patients(
     project_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     service: ResearchProjectService = Depends(get_research_project_service),
-) -> list[ProjectPatientResponse]:
+) -> list[ProjectPatientListItemResponse]:
     try:
-        patients = await service.list_project_patients(project_id, owner_id=user_scope_id(current_user))
+        patients = await service.list_project_patients_with_summary(
+            project_id,
+            owner_id=user_scope_id(current_user),
+        )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
-    return [ProjectPatientResponse.model_validate(patient) for patient in patients]
+    return [ProjectPatientListItemResponse.model_validate(patient) for patient in patients]
+
+
+@router.post("/{project_id}/patients/crf-group-fields", response_model=ProjectPatientCrfGroupFieldsResponse)
+async def batch_project_patients_crf_group_fields(
+    project_id: str,
+    payload: ProjectPatientCrfGroupFieldsRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: ResearchProjectService = Depends(get_research_project_service),
+) -> ProjectPatientCrfGroupFieldsResponse:
+    try:
+        items = await service.batch_crf_group_fields(
+            project_id=project_id,
+            group_id=payload.group_id,
+            project_patient_ids=payload.project_patient_ids,
+            owner_id=user_scope_id(current_user),
+        )
+    except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
+        _raise_research_error(error)
+    return ProjectPatientCrfGroupFieldsResponse(
+        items=[ProjectPatientCrfGroupFieldsItem.model_validate(item) for item in items]
+    )
 
 
 @router.post("/{project_id}/patients", response_model=ProjectPatientResponse, status_code=status.HTTP_201_CREATED)
@@ -550,14 +614,18 @@ async def get_project_patient_crf(
 async def update_project_patient_crf_folder(
     project_id: str,
     project_patient_id: str,
+    payload: CrfFolderUpdateRequest | None = None,
     current_user: CurrentUser = Depends(get_current_user),
     service: ExtractionService = Depends(get_extraction_service),
 ) -> CrfFolderUpdateResponse:
+    body = payload or CrfFolderUpdateRequest()
     try:
         result = await service.update_project_crf_folder(
             project_id=project_id,
             project_patient_id=project_patient_id,
             requested_by=uuid_user_id_or_none(current_user),
+            target_form_keys=body.target_form_keys,
+            mode=body.mode,
         )
     except ExtractionNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
@@ -582,12 +650,14 @@ async def update_project_crf_folder_batch(
     current_user: CurrentUser = Depends(get_current_user),
     service: ExtractionService = Depends(get_extraction_service),
 ) -> ProjectCrfFolderBatchResponse:
-    project_patient_ids = payload.project_patient_ids if payload is not None else None
+    body = payload or ProjectCrfFolderBatchRequest()
     try:
         result = await service.update_project_crf_folder_batch(
             project_id=project_id,
-            project_patient_ids=project_patient_ids,
+            project_patient_ids=body.project_patient_ids,
             requested_by=uuid_user_id_or_none(current_user),
+            target_form_keys=body.target_form_keys,
+            mode=body.mode,
         )
     except ExtractionNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))

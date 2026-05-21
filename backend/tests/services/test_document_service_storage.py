@@ -54,7 +54,7 @@ class MutableFakeDocumentRepository:
         self.document = SimpleNamespace(id="document-1", **params)
         return self.document
 
-    async def get_visible_by_id(self, document_id):
+    async def get_visible_by_id(self, document_id, uploaded_by=None):
         if self.document is None or self.document.id != document_id:
             return None
         return self.document
@@ -65,14 +65,17 @@ class MutableFakeDocumentRepository:
 
 
 class FakePreviewDocumentRepository:
-    async def get_visible_by_id(self, document_id):
+    async def get_visible_by_id(self, document_id, uploaded_by=None):
         return SimpleNamespace(
             id=document_id,
             storage_provider="local",
             storage_path="documents/legacy/report.pdf",
             file_url="https://example.com/legacy/report.pdf",
             mime_type="application/pdf",
+            file_ext=".pdf",
+            file_type=".pdf",
             original_filename="report.pdf",
+            ocr_payload_json=None,
         )
 
 
@@ -144,7 +147,7 @@ async def test_process_document_ocr_backfills_text_and_payload(monkeypatch):
             return None
 
     class PreviewDocumentService(DocumentService):
-        async def get_preview_url(self, document_id, *, expires_in=3600):
+        async def get_preview_url(self, document_id, *, expires_in=3600, page_no=None, prefer_native=False, uploaded_by=None):
             return {
                 "document_id": document_id,
                 "url": "https://example.com/report.pdf",

@@ -19,7 +19,7 @@ import {
   updateAdminUserStatus, updateAdminUserRole
 } from '../../api/admin'
 import { appThemeToken } from '../../styles/themeTokens'
-import { useExtractionProgressSSE } from '../../hooks'
+import ExtractionTaskObservatory from './ExtractionTaskObservatory'
 
 // ─── 抽取流程节点展示（SSE 事件里 node 字段 → 中文 + 图标色） ────────────
 const NODE_META = {
@@ -1149,7 +1149,7 @@ const ExtractionTasksTab = () => {
         size="small"
         pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
       />
-      <ExtractionTaskDetailModal
+      <ExtractionTaskObservatory
         open={!!detailId}
         taskId={detailId}
         onClose={() => setDetailId(null)}

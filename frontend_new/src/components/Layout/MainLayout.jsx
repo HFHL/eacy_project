@@ -28,6 +28,7 @@ import {
   CheckCircleOutlined,
   ClockCircleOutlined,
   CloseOutlined,
+  CopyOutlined,
   DashboardOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -57,7 +58,7 @@ import { toggleSider, setActiveMenuKey, setBreadcrumbs, setSiderCollapsed } from
 import { logout } from '../../store/slices/userSlice'
 import { logout as logoutApi } from '../../api/auth'
 import { batchDeletePatients, getPatientList, getEhrExtractionStatusBatch } from '../../api/patient'
-import { getDocumentList, getFileListV2Tree } from '../../api/document'
+import { getDocumentList, getFileListV2Counts } from '../../api/document'
 import { deleteProject, getProjects } from '../../api/project'
 import { getCRFTemplate, getCRFTemplates, deleteCrfTemplate } from '../../api/crfTemplate'
 import NotificationBell from './NotificationBell'
@@ -80,11 +81,14 @@ import { pickMostRecentlyUpdatedItem } from '../../utils/researchProjectSelectio
 import PatientCreateModal from '../Patient/PatientCreateModal'
 import ProjectCreateWizardModal from '../Research/ProjectCreateWizardModal'
 import TemplateMetaModal from '../Research/TemplateMetaModal'
+import CrfTemplateCsvImportModal from '../Research/CrfTemplateCsvImportModal'
+import CrfTemplateCloneModal from '../Research/CrfTemplateCloneModal'
 import {
   researchHome,
   researchProjectDetail,
   researchProjectTemplateEdit,
   templateCreate,
+  templateEdit,
   templateView,
 } from '../../utils/researchPaths'
 import {
@@ -94,6 +98,8 @@ import {
   REQUEST_TEMPLATE_CREATE_EVENT,
 } from '../../utils/createIntentEvents'
 import { storePendingTemplateCreateFlow } from '../../utils/templateCreateFlow'
+import { getCrfTemplateDeleteId, isCrfTemplateDeletable } from '../../utils/crfTemplateGuards'
+import { confirmDeleteCrfTemplate } from '../../utils/crfTemplateDeleteFlow'
 import {
   PROJECT_STATUS_KEYS,
   getProjectStatusMeta as getProjectStatusDisplayMeta,
@@ -234,19 +240,16 @@ const mapTemplateRailItems = (items = [], keyword = '', sortMode = 'updated_desc
   const normalizedKeyword = keyword.trim().toLowerCase()
   return items
     .map((item) => {
-      const routeIdRaw = item.id || item.template_id || item.template_code
-      const routeId = routeIdRaw != null ? String(routeIdRaw) : ''
-      const backendIdRaw = item.id || item.template_id || null
-      const backendId = isUuidString(backendIdRaw) ? String(backendIdRaw).trim() : null
-      const isDatabaseTemplate = item.source === 'database'
+      const backendId = getCrfTemplateDeleteId(item)
+      const routeId = backendId || (item.template_code != null ? String(item.template_code) : '')
       return ({
         id: routeId,
-        backendId,
+        backendId: backendId || null,
         name: item.template_name || item.name || '未命名模板',
         category: item.category || '',
-        source: item.source || '',
+        source: item.source || 'database',
         isSystem: Boolean(item.is_system),
-        deletable: isDatabaseTemplate && !Boolean(item.is_system) && Boolean(routeId),
+        deletable: isCrfTemplateDeletable(item) && Boolean(routeId),
         isPublished: typeof item.is_published === 'boolean' ? item.is_published : null,
         fieldGroupsCount: Array.isArray(item.field_groups)
           ? item.field_groups.length
@@ -293,6 +296,7 @@ const MainLayout = () => {
   const [researchTemplateLoading, setResearchTemplateLoading] = useState(false)
   const [researchTemplateItems, setResearchTemplateItems] = useState([])
   const [deletingTemplateId, setDeletingTemplateId] = useState('')
+  const [cloneTemplateModal, setCloneTemplateModal] = useState({ open: false, templateId: '', templateName: '' })
   const [researchProjectPaneHeight, setResearchProjectPaneHeight] = useState(null)
   const [researchRailContainerHeight, setResearchRailContainerHeight] = useState(0)
   const [isResearchSplitterDragging, setIsResearchSplitterDragging] = useState(false)
@@ -304,6 +308,7 @@ const MainLayout = () => {
   const [patientCreateVisible, setPatientCreateVisible] = useState(false)
   const [projectCreateVisible, setProjectCreateVisible] = useState(false)
   const [templateCreateVisible, setTemplateCreateVisible] = useState(false)
+  const [templateCsvImportVisible, setTemplateCsvImportVisible] = useState(false)
   const [templateCreateForm] = Form.useForm()
   const searchTimerRef = useRef(null)
   const searchInputRef = useRef(null)
@@ -565,6 +570,11 @@ const MainLayout = () => {
     setTemplateCreateVisible(true)
   }, [])
 
+  const openTemplateCsvImportFlow = useCallback(() => {
+    setActiveToolbarPanel('')
+    setTemplateCsvImportVisible(true)
+  }, [])
+
   /**
    * 跳转到首个 CRF 模板；若无模板则进入模板空状态页。
    *
@@ -761,7 +771,7 @@ const MainLayout = () => {
 
     const loadDocumentCounts = async () => {
       try {
-        const response = await getFileListV2Tree()
+        const response = await getFileListV2Counts()
         if (!response?.success || cancelled) return
         const counts = response.data?.counts || {}
         setDocumentCounts({
@@ -778,8 +788,10 @@ const MainLayout = () => {
     }
 
     loadDocumentCounts()
+    const timer = window.setInterval(loadDocumentCounts, 30000)
     return () => {
       cancelled = true
+      window.clearInterval(timer)
     }
   }, [activePrimaryNavKey, location.pathname, location.search])
 
@@ -1106,6 +1118,7 @@ const MainLayout = () => {
    * @param {string} config.sortValue 排序值
    * @param {(value: string) => void} config.onSortChange 排序变更
    * @param {Array<{value: string, label: string}>} config.sortOptions 排序选项
+   * @param {React.ReactNode} [config.extraToolbarActions] 新建按钮右侧的额外操作（如 CSV 导入）
    * @param {string} [config.defaultSortValue='updated_desc'] 默认排序值
    * @returns {React.ReactNode}
    */
@@ -1113,6 +1126,7 @@ const MainLayout = () => {
     panelPrefix,
     onCreate,
     createTooltip,
+    extraToolbarActions = null,
     searchValue,
     onSearchChange,
     searchPlaceholder,
@@ -1131,6 +1145,7 @@ const MainLayout = () => {
           style={{ borderColor: token.colorBorder }}
         />
       </Tooltip>
+      {extraToolbarActions}
       <Popover
         trigger="click"
         placement="bottomLeft"
@@ -1486,19 +1501,27 @@ const MainLayout = () => {
      * @returns {Promise<string>} 可用于删除接口的模板 UUID
      */
     const resolveTemplateDeleteId = async (item) => {
-      const directId = item?.backendId
-      if (isUuidString(directId)) {
-        return String(directId).trim()
-      }
+      const directId = item?.backendId || getCrfTemplateDeleteId({ id: item?.id })
+      if (directId) return directId
       const routeId = item?.id
       if (!routeId) return ''
 
-      const detail = await getCRFTemplate(String(routeId), { _silent: true })
-      const detailId = detail?.data?.id
-      if (isUuidString(detailId)) {
-        return String(detailId).trim()
-      }
-      return ''
+      const detail = await getCRFTemplate(String(routeId))
+      return getCrfTemplateDeleteId(detail?.data || {})
+    }
+
+    /**
+     * 打开复制模板弹窗。
+     *
+     * @param {{id: string, name: string}} item 模板项
+     */
+    const handleCloneTemplateFromRail = (item) => {
+      if (!item?.id) return
+      setCloneTemplateModal({
+        open: true,
+        templateId: String(item.id),
+        templateName: item.name || '未命名模板',
+      })
     }
 
     /**
@@ -1507,7 +1530,7 @@ const MainLayout = () => {
      * @param {{id: string, name: string, deletable?: boolean}} item 模板项
      * @returns {void}
      */
-    const handleDeleteTemplateFromRail = (item) => {
+    const handleDeleteTemplateFromRail = async (item) => {
       if (!item?.id || !item.deletable) return
       const currentId = String(item.id)
       const currentIndex = researchTemplateItems.findIndex((row) => String(row.id) === currentId)
@@ -1515,26 +1538,25 @@ const MainLayout = () => {
         ? (researchTemplateItems[currentIndex + 1] || researchTemplateItems[currentIndex - 1] || null)
         : null
 
-      Modal.confirm({
-        title: '确认删除模板',
-        content: `确定删除模板「${item.name || '未命名模板'}」吗？删除后将从前台隐藏，如需恢复可联系管理员处理。`,
-        okText: '确认删除',
-        cancelText: '取消',
-        okButtonProps: { danger: true },
-        onOk: async () => {
+      const deleteId = await resolveTemplateDeleteId(item)
+      if (!deleteId) {
+        message.error('无法解析可删除的数据库模板 ID，请刷新后重试')
+        return
+      }
+
+      await confirmDeleteCrfTemplate({
+        templateId: deleteId,
+        templateName: item.name,
+        onConfirm: async ({ affectedProjectCount = 0 } = {}) => {
           setDeletingTemplateId(currentId)
           try {
-            const deleteId = await resolveTemplateDeleteId(item)
-            if (!deleteId) {
-              message.error('无法解析可删除的数据库模板 ID，请刷新后重试')
-              return
-            }
-
             await deleteCrfTemplate(deleteId, { _silent: true })
-            message.success('模板已删除，如需恢复可联系管理员')
-
+            if (affectedProjectCount > 0) {
+              message.success(`模板已删除，已解除 ${affectedProjectCount} 个项目的模板关联`)
+            } else {
+              message.success('模板已删除')
+            }
             await refreshResearchTemplateRail()
-
             if (fallbackNext?.id) {
               navigate(templateView(fallbackNext.id))
               return
@@ -1545,6 +1567,7 @@ const MainLayout = () => {
               ? error.message
               : '删除模板失败，请稍后重试'
             message.error(fallbackMessage)
+            throw error
           } finally {
             setDeletingTemplateId('')
           }
@@ -1771,6 +1794,17 @@ const MainLayout = () => {
               panelPrefix: 'template',
               onCreate: openCreateTemplateFlow,
               createTooltip: '新建模板',
+              extraToolbarActions: (
+                <Tooltip title="CSV 导入">
+                  <Button
+                    size="small"
+                    shape="circle"
+                    icon={<UploadOutlined />}
+                    onClick={openTemplateCsvImportFlow}
+                    style={{ borderColor: token.colorBorder }}
+                  />
+                </Tooltip>
+              ),
               searchValue: researchTemplateSearch,
               onSearchChange: (event) => setResearchTemplateSearch(event.target.value),
               searchPlaceholder: '搜索模板',
@@ -1839,6 +1873,18 @@ const MainLayout = () => {
                           onClick={(event) => {
                             event.stopPropagation()
                             handleOpenTemplateMeta(item.id)
+                          }}
+                        />
+                      </Tooltip>
+                      <Tooltip title="复制为新模板">
+                        <Button
+                          type="text"
+                          size="small"
+                          shape="circle"
+                          icon={<CopyOutlined />}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            handleCloneTemplateFromRail(item)
                           }}
                         />
                       </Tooltip>
@@ -2193,6 +2239,31 @@ const MainLayout = () => {
           navigate(templateCreate(), {
             state: { pendingTemplateCreateTs: Date.now() },
           })
+        }}
+      />
+      <CrfTemplateCsvImportModal
+        open={templateCsvImportVisible}
+        onCancel={() => setTemplateCsvImportVisible(false)}
+        onSuccess={(template) => {
+          setTemplateCsvImportVisible(false)
+          const newId = template?.id
+          if (newId) {
+            navigate(templateEdit(newId))
+          }
+        }}
+      />
+      <CrfTemplateCloneModal
+        open={cloneTemplateModal.open}
+        templateId={cloneTemplateModal.templateId}
+        sourceName={cloneTemplateModal.templateName}
+        onCancel={() => setCloneTemplateModal({ open: false, templateId: '', templateName: '' })}
+        onCloned={(newId) => {
+          setCloneTemplateModal({ open: false, templateId: '', templateName: '' })
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('research-template-rail-refresh'))
+          }
+          refreshResearchTemplateRail()
+          navigate(templateEdit(newId))
         }}
       />
     </Layout>

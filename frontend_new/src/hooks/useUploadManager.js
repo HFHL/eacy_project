@@ -3,7 +3,9 @@
  * 支持：并发上传、状态持久化、失败重试、断点续传
  */
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { message } from 'antd'
 import { uploadDocument } from '../api/document'
+import { validateUploadBatch } from '../constants/uploadLimits'
 
 // localStorage 存储键前缀（实际键为 upload_manager_state_${userId}，按账号隔离）
 const STORAGE_KEY_PREFIX = 'upload_manager_state'
@@ -255,9 +257,15 @@ export const useUploadManager = (options = {}) => {
 
   // 添加文件到上传队列
   const addFiles = useCallback((files, existingFingerprints = new Set()) => {
+    const batchResult = validateUploadBatch(files)
+    if (!batchResult.ok) {
+      message.error(batchResult.message)
+      return 0
+    }
+
     const newTasks = []
     
-    files.forEach(file => {
+    batchResult.validFiles.forEach(file => {
       const fingerprint = generateFileFingerprint(file)
 
       const taskId = generateTaskId()

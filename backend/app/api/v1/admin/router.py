@@ -4,12 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.core.auth import CurrentUser, get_current_user, is_admin_user
+from app.services.admin_extraction_trace_service import AdminExtractionTraceService
 from app.services.admin_task_service import (
     AdminTaskNotFoundError,
     AdminTaskService,
     AdminUserNotFoundError,
     VALID_USER_ROLES,
 )
+from app.services.extraction_service import ExtractionService, ExtractionServiceError
 
 
 class UpdateUserStatusRequest(BaseModel):
@@ -24,6 +26,14 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 def get_admin_task_service() -> AdminTaskService:
     return AdminTaskService()
+
+
+def get_admin_extraction_trace_service() -> AdminExtractionTraceService:
+    return AdminExtractionTraceService()
+
+
+def get_extraction_service() -> ExtractionService:
+    return ExtractionService()
 
 
 async def require_admin_user(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
@@ -156,15 +166,74 @@ async def admin_extraction_task_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
 
+@router.get("/extraction-tasks/{task_id}/trace")
+async def admin_extraction_task_trace(
+    task_id: str,
+    document_id: str | None = Query(default=None),
+    job_id: str | None = Query(default=None),
+    include_prompts: bool = Query(default=False),
+    current_user: CurrentUser = Depends(require_admin_user),
+    service: AdminExtractionTraceService = Depends(get_admin_extraction_trace_service),
+) -> dict[str, Any]:
+    try:
+        return await service.get_extraction_task_trace(
+            task_id,
+            document_id=document_id,
+            job_id=job_id,
+            include_prompts=include_prompts,
+        )
+    except AdminTaskNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+
 @router.get("/extraction-tasks/{task_id}/events")
 async def admin_extraction_task_events(
     task_id: str,
     after_id: str | None = Query(default=None),
+    item_id: str | None = Query(default=None),
+    job_id: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     current_user: CurrentUser = Depends(require_admin_user),
-    service: AdminTaskService = Depends(get_admin_task_service),
+    trace_service: AdminExtractionTraceService = Depends(get_admin_extraction_trace_service),
 ) -> list[dict[str, Any]]:
     try:
-        return await service.list_extraction_task_events(task_id, after_id=after_id, limit=limit)
+        return await trace_service.list_extraction_task_events(
+            task_id,
+            after_id=after_id,
+            item_id=item_id,
+            job_id=job_id,
+            limit=limit,
+        )
     except AdminTaskNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+
+@router.get("/llm-calls/{call_id}")
+async def admin_llm_call_detail(
+    call_id: str,
+    current_user: CurrentUser = Depends(require_admin_user),
+    service: AdminExtractionTraceService = Depends(get_admin_extraction_trace_service),
+) -> dict[str, Any]:
+    try:
+        return await service.get_llm_call_detail(call_id)
+    except AdminTaskNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+
+@router.post("/extraction-jobs/abandon-stale-pending")
+async def abandon_stale_pending_extraction_jobs(
+    older_than_hours: int = Query(default=24, ge=0, le=24 * 30),
+    limit: int = Query(default=500, ge=1, le=2000),
+    dry_run: bool = Query(default=False),
+    current_user: CurrentUser = Depends(require_admin_user),
+    service: ExtractionService = Depends(get_extraction_service),
+) -> dict[str, Any]:
+    """Mark idle pending extraction jobs as failed (retryable via extraction-jobs retry API)."""
+    try:
+        return await service.abandon_stale_pending_jobs(
+            older_than_hours=older_than_hours,
+            limit=limit,
+            dry_run=dry_run,
+        )
+    except ExtractionServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error

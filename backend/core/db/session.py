@@ -87,3 +87,15 @@ async def session_factory() -> AsyncGenerator[AsyncSession, None]:
         yield _session
     finally:
         await _session.close()
+
+
+async def release_db_connection() -> None:
+    """Commit or rollback and return the scoped connection to the pool."""
+    try:
+        await session.commit()
+    except Exception:
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+    await session.remove()

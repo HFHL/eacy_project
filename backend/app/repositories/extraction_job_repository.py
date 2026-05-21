@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import desc, func, select
@@ -17,6 +18,24 @@ class ExtractionJobRepository(BaseRepo[ExtractionJob]):
 
     async def list_by_status(self, status: str, *, limit: int = 100) -> list[ExtractionJob]:
         query = select(ExtractionJob).where(ExtractionJob.status == status).limit(limit)
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_stale_pending(
+        self,
+        *,
+        older_than: datetime,
+        limit: int = 500,
+    ) -> list[ExtractionJob]:
+        """Return pending jobs whose last activity predates ``older_than``."""
+        marker = func.coalesce(ExtractionJob.updated_at, ExtractionJob.created_at)
+        query = (
+            select(ExtractionJob)
+            .where(ExtractionJob.status == "pending")
+            .where(marker < older_than)
+            .order_by(marker)
+            .limit(limit)
+        )
         result = await session.execute(query)
         return list(result.scalars().all())
 

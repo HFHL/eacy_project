@@ -33,7 +33,7 @@ import dayjs from 'dayjs'
 import { maskSensitiveField } from '@/utils/sensitiveUtils'
 import { appThemeToken } from '@/styles/themeTokens'
 import PdfPageWithHighlight from '@/components/PdfPageWithHighlight'
-import HighlightedImage from '@/components/HighlightedImage'
+import TraceDocumentPreview from '@/components/TraceDocumentPreview'
 
 const { Text, Title } = Typography
 
@@ -101,6 +101,7 @@ const RightPanel = ({
   const previewExt = getFileExt(documentPreviewUrl) || getFileExt(selectedDocument?.fileName || selectedDocument?.name)
   const isPdf = previewExt === 'pdf'
   const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(previewExt)
+    || Boolean(documentPreviewUrl && !isPdf && /ocr-pages\/|page-\d+\.(jpg|jpeg|png)/i.test(documentPreviewUrl))
 
   // 溯源模式下，用同样的逻辑判断文档类型（documentImageUrl 通常是 temp_url）
   const sourceName = Array.isArray(sourceLocation)
@@ -112,6 +113,7 @@ const RightPanel = ({
   const traceExt = getFileExt(documentImageUrl) || getFileExt(sourceName) || getFileExt(sourceMime) || getFileExt(latestHistory?.source_document_name) || getFileExt(fallbackDocument?.name)
   const traceIsPdf = traceExt === 'pdf'
   const traceIsImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(traceExt)
+    || Boolean(documentImageUrl && !traceIsPdf && /ocr-pages\/|page-\d+\.(jpg|jpeg|png)/i.test(documentImageUrl))
   const traceDocId =
     (Array.isArray(sourceLocation) ? sourceLocation.find(item => item?.document_id)?.document_id : sourceLocation?.document_id) ||
     latestHistory?.source_document_id ||
@@ -174,10 +176,9 @@ const RightPanel = ({
           ) : documentPreviewUrl ? (
             <div style={{ border: `1px solid ${appThemeToken.colorBorder}`, borderRadius: 6, overflow: 'hidden' }}>
               {isPdf ? (
-                <div style={{ maxHeight: '70vh', overflow: 'auto', padding: 8, display: 'flex', justifyContent: 'center' }}>
+                <div style={{ width: '100%', minWidth: 0, maxHeight: '70vh', overflow: 'auto', padding: 8 }}>
                   <PdfPageWithHighlight
                     pdfUrl={documentPreviewUrl}
-                    maxWidth="100%"
                     renderAllPages
                     loading={false}
                   />
@@ -286,22 +287,17 @@ const RightPanel = ({
                 <Spin tip="加载文档..." />
               </div>
             ) : documentImageUrl ? (
-              traceIsPdf ? (
-                <div style={{ border: `1px solid ${appThemeToken.colorBorder}`, borderRadius: 6, overflow: 'auto', padding: 8, maxHeight: '70vh' }}>
-                  <PdfPageWithHighlight
+              traceIsPdf || traceIsImage ? (
+                <div style={{ width: '100%', minWidth: 0, border: `1px solid ${appThemeToken.colorBorder}`, borderRadius: 6, overflow: 'auto', padding: 8, maxHeight: '70vh' }}>
+                  <TraceDocumentPreview
                     pdfUrl={documentImageUrl}
+                    imageUrl={documentImageUrl}
+                    isPdf={traceIsPdf}
+                    sourceLocation={sourceLocation}
                     pageNumber={Array.isArray(sourceLocation) ? null : (sourceLocation?.page ?? null)}
-                    locations={Array.isArray(sourceLocation) ? sourceLocation : (sourceLocation ? [sourceLocation] : [])}
-                    maxWidth="100%"
                     loading={false}
                   />
                 </div>
-              ) : traceIsImage ? (
-                <HighlightedImage
-                  imageUrl={documentImageUrl}
-                  sourceLocation={sourceLocation}
-                  loading={false}
-                />
               ) : (
                 <Empty
                   description="该文档类型暂不支持内嵌预览，请点击「查看完整文档」"
@@ -463,18 +459,13 @@ const RightPanel = ({
         destroyOnHidden
       >
         {documentImageUrl ? (
-          traceIsPdf ? (
-            <PdfPageWithHighlight
+          traceIsPdf || traceIsImage ? (
+            <TraceDocumentPreview
               pdfUrl={documentImageUrl}
-              pageNumber={Array.isArray(sourceLocation) ? null : (sourceLocation?.page ?? null)}
-              locations={Array.isArray(sourceLocation) ? sourceLocation : (sourceLocation ? [sourceLocation] : [])}
-              maxWidth="100%"
-              loading={false}
-            />
-          ) : traceIsImage ? (
-            <HighlightedImage
               imageUrl={documentImageUrl}
+              isPdf={traceIsPdf}
               sourceLocation={sourceLocation}
+              pageNumber={Array.isArray(sourceLocation) ? null : (sourceLocation?.page ?? null)}
               loading={false}
             />
           ) : (

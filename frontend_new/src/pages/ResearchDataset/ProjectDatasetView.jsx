@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { getProject, getProjectPatients, enrollPatient, removeProjectPatient, updateProjectCrfFolderBatch, getCrfExtractionProgress, getProjectExtractionTasks, getActiveExtractionTask, cancelCrfExtraction, resetCrfExtraction, exportProjectCrfFile, getProjectTemplateDesigner, updateProject } from '../../api/project'
+import { getProject, getProjectPatients, fetchProjectPatientsCrfGroupFields, enrollPatient, removeProjectPatient, exportProjectCrfFile, getProjectTemplateDesigner, updateProject } from '../../api/project'
 import { getProjectTemplate } from '../../api/crfTemplate'
 import { getPatientList } from '../../api/patient'
 import { maskName } from '../../utils/sensitiveUtils'
@@ -42,7 +42,6 @@ import {
   SettingOutlined,
   EditOutlined,
   PlayCircleOutlined,
-  PauseCircleOutlined,
   UserOutlined,
   FileTextOutlined,
   InfoCircleOutlined,
@@ -76,7 +75,9 @@ import { formatIsoDateDisplay } from '../../utils/dateDisplay'
 import { modalBodyPreset, modalWidthPreset } from '../../styles/themeTokens'
 import { adaptProjectPatients, adaptTemplateMeta } from './adapters/datasetAdapter'
 import { useProjectDatasetViewModel } from './hooks/useProjectDatasetViewModel'
+import useProjectExtractionProgress from './hooks/useProjectExtractionProgress'
 import ProjectDatasetV2 from './components/ProjectDatasetV2'
+import ProjectCrfTemplateBindModal from '../../components/Research/ProjectCrfTemplateBindModal'
 
 const { Title, Text } = Typography
 
@@ -104,6 +105,7 @@ const ProjectDatasetView = () => {
   const [extractionModalGroups, setExtractionModalGroups] = useState([])
   const [extractionModalMode, setExtractionModalMode] = useState('incremental')
   const [exportModalVisible, setExportModalVisible] = useState(false)
+  const [bindTemplateVisible, setBindTemplateVisible] = useState(false)
   const [patientSelectionVisible, setPatientSelectionVisible] = useState(false)
   const [selectedNewPatients, setSelectedNewPatients] = useState([])
   const [fieldGroupDetailVisible, setFieldGroupDetailVisible] = useState(false)
@@ -125,13 +127,8 @@ const ProjectDatasetView = () => {
   const [docDetailVisible, setDocDetailVisible] = useState(false)
   const [docDetailDoc, setDocDetailDoc] = useState(null)
   
-  // CRF 抽取任务状态
-  const [extractionTaskId, setExtractionTaskId] = useState(null)
-  const [extractionProgress, setExtractionProgress] = useState(null)
-  const [isExtractionProgressCardDismissed, setIsExtractionProgressCardDismissed] = useState(false)
-  const [isExtracting, setIsExtracting] = useState(false)
-  const [extractionTasks, setExtractionTasks] = useState([])
   const [extractionErrorModalVisible, setExtractionErrorModalVisible] = useState(false)
+  const [patientExtractChoice, setPatientExtractChoice] = useState(null)
   
   // CRF 模板字段组（用于动态生成表格列）
   const [templateFieldGroups, setTemplateFieldGroups] = useState([])
@@ -140,6 +137,8 @@ const ProjectDatasetView = () => {
   
   // API 数据状态
   const [loading, setLoading] = useState(false)
+  const [groupFieldsLoading, setGroupFieldsLoading] = useState(false)
+  const loadedGroupFieldsRef = useRef(new Set())
   const [projectData, setProjectData] = useState(null)
   const [patientDataset, setPatientDataset] = useState([])
   const [pagination, setPagination] = useState({
@@ -260,6 +259,86 @@ const ProjectDatasetView = () => {
       setLoading(false)
     }
   }, [projectId])
+
+  const mergeGroupFieldsIntoPatients = useCallback((patients, groupId, items) => {
+    const fieldMap = new Map(
+      (Array.isArray(items) ? items : []).map((item) => [String(item.project_patient_id), item.fields || {}]),
+    )
+    return (Array.isArray(patients) ? patients : []).map((patient) => {
+      const fields = fieldMap.get(String(patient.id))
+      if (!fields) return patient
+      const nextCrfGroups = { ...(patient.crfGroups || {}) }
+      const existing = nextCrfGroups[groupId] || {
+        group_id: groupId,
+        group_name: groupId,
+        completeness: 0,
+        filled_count: 0,
+        total_count: 0,
+        records: [],
+        is_repeatable: false,
+        fields: {},
+      }
+      nextCrfGroups[groupId] = {
+        ...existing,
+        fields: { ...(existing.fields || {}), ...fields },
+      }
+      const nextCrfDataGroups = { ...(patient.crf_data?.groups || {}) }
+      nextCrfDataGroups[groupId] = {
+        ...(nextCrfDataGroups[groupId] || {}),
+        group_id: groupId,
+        group_name: existing.group_name || groupId,
+        fields: nextCrfGroups[groupId].fields,
+      }
+      return {
+        ...patient,
+        crfGroups: nextCrfGroups,
+        crf_data: {
+          ...(patient.crf_data || {}),
+          groups: nextCrfDataGroups,
+        },
+      }
+    })
+  }, [])
+
+  useEffect(() => {
+    loadedGroupFieldsRef.current.clear()
+  }, [projectId, pagination.current, pagination.pageSize])
+
+  useEffect(() => {
+    if (!projectId || !activeGroupKey || !patientDataset.length) return undefined
+
+    const pendingPatients = patientDataset.filter((patient) => {
+      const cacheKey = `${activeGroupKey}:${patient.id}`
+      if (loadedGroupFieldsRef.current.has(cacheKey)) return false
+      const fields = patient.crfGroups?.[activeGroupKey]?.fields
+      return !fields || Object.keys(fields).length === 0
+    })
+    if (!pendingPatients.length) return undefined
+
+    let cancelled = false
+    setGroupFieldsLoading(true)
+    fetchProjectPatientsCrfGroupFields(projectId, {
+      groupId: activeGroupKey,
+      projectPatientIds: pendingPatients.map((patient) => patient.id),
+    })
+      .then((response) => {
+        if (cancelled || !response?.success) return
+        pendingPatients.forEach((patient) => {
+          loadedGroupFieldsRef.current.add(`${activeGroupKey}:${patient.id}`)
+        })
+        setPatientDataset((prev) => mergeGroupFieldsIntoPatients(prev, activeGroupKey, response.data?.items))
+      })
+      .catch((error) => {
+        console.error('懒加载字段组 CRF 失败:', error)
+      })
+      .finally(() => {
+        if (!cancelled) setGroupFieldsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, activeGroupKey, patientDataset, mergeGroupFieldsIntoPatients])
 
   // 加载项目详情
   const fetchProjectDetail = useCallback(async () => {
@@ -413,9 +492,6 @@ const ProjectDatasetView = () => {
     }
   }, [])
 
-  // 用于追踪轮询是否需要继续
-  const pollingRef = useRef(false)
-
   // 初始加载
   useEffect(() => {
     fetchProjectDetail()
@@ -466,89 +542,29 @@ const ProjectDatasetView = () => {
     }
   }, [openProjectEditModal, projectId])
 
-  // ============ CRF 抽取任务管理 ============
-  
-  // 检查活跃任务（页面加载时调用）
-  const checkActiveTask = useCallback(async () => {
-    try {
-      const response = await getActiveExtractionTask(projectId)
-      
-      if (response.success && response.data.has_active_task) {
-        const activeTask = response.data.active_task
-        setExtractionTaskId(activeTask.task_id)
-        setExtractionProgress(activeTask)
-        setIsExtractionProgressCardDismissed(false)
-        setIsExtracting(true)
-        
-        // 恢复轮询
-        pollExtractionProgress(activeTask.task_id)
-        message.info('检测到正在进行的抽取任务，已恢复进度显示')
-      }
-    } catch (error) {
-      console.error('检查活跃任务失败:', error)
-    }
-  }, [projectId])
-  
-  // 页面加载时检查活跃任务
-  useEffect(() => {
-    checkActiveTask()
-    
-    // 组件卸载时停止轮询
-    return () => {
-      pollingRef.current = false
-    }
-  }, [checkActiveTask])
-  
-  // 启动抽取任务（项目级一次性批量入队）
-  const handleStartExtraction = async (patientIds = null, mode = 'incremental', targetGroups = null) => {
-    try {
-      setIsExtracting(true)
-      const normalizedIds = Array.isArray(patientIds) && patientIds.length > 0 ? patientIds.filter(Boolean) : null
-      // 将选中的 patient_id 映射为 project_patient_id；为空（全部）时不传，由后端解析项目内所有患者
-      const projectPatientIds = normalizedIds
-        ? patientDataset
-            .filter((patient) => normalizedIds.includes(patient.patient_id) || normalizedIds.includes(patient.id))
-            .map((patient) => patient.id || patient.project_patient_id)
-            .filter(Boolean)
-        : null
+  const refreshPatientsAfterExtraction = useCallback(() => {
+    fetchProjectPatients(pagination.current, pagination.pageSize)
+  }, [fetchProjectPatients, pagination.current, pagination.pageSize])
 
-      const response = await updateProjectCrfFolderBatch(projectId, projectPatientIds)
+  const {
+    startExtraction: startCrfExtraction,
+    isExtracting,
+    extractionProgress,
+    extractionTasks,
+    patientExtractionById,
+    showProgressCard,
+    dismissProgressCard,
+  } = useProjectExtractionProgress({
+    projectId,
+    patientDataset,
+    onTasksFinished: refreshPatientsAfterExtraction,
+  })
 
-      if (response.success) {
-        const data = response.data || {}
-        const createdJobs = Number(data.submitted_jobs || data.created_jobs || 0)
-        const taskId = data.task_id || data.batch_id || data.job_ids?.[0] || ''
-        setExtractionTaskId(taskId)
-        setIsExtractionProgressCardDismissed(false)
-        setSelectedPatients([])
-        message.success(createdJobs > 0 ? `已提交 ${createdJobs} 个项目 CRF 抽取任务` : '暂无可提交的项目 CRF 抽取任务')
-
-        // 开始轮询进度
-        if (taskId) pollExtractionProgress(taskId)
-        if (!taskId) setIsExtracting(false)
-      } else {
-        // 检查是否是因为已有活跃任务
-        if (response.code === 40901 && response.data?.active_task) {
-          const activeTask = response.data.active_task
-          setExtractionTaskId(activeTask.task_id)
-          setExtractionProgress(activeTask)
-          setIsExtractionProgressCardDismissed(false)
-          setSelectedPatients([])
-          message.warning(response.message || '该项目已有正在进行的抽取任务')
-
-          // 恢复轮询
-          pollExtractionProgress(activeTask.task_id)
-        } else {
-          message.error(response.message || '启动抽取任务失败')
-          setIsExtracting(false)
-        }
-      }
-    } catch (error) {
-      console.error('启动抽取任务失败:', error)
-      message.error('启动抽取任务失败')
-      setIsExtracting(false)
-    }
-  }
+  const handleStartExtraction = useCallback(async (patientIds = null, mode = 'incremental', targetGroups = null) => {
+    const taskId = await startCrfExtraction({ patientIds, mode, targetGroups })
+    if (taskId) setSelectedPatients([])
+    return taskId
+  }, [startCrfExtraction])
 
   const confirmAndStartExtraction = useCallback((patientIds = null, mode = 'incremental', targetGroups = null) => {
     const normalizedIds = Array.isArray(patientIds) && patientIds.length > 0 ? patientIds.filter(Boolean) : null
@@ -591,119 +607,104 @@ const ProjectDatasetView = () => {
       onOk: () => handleStartExtraction(normalizedIds, mode, targetGroups),
     })
   }, [handleStartExtraction, patientDataset, token.colorTextSecondary])
-  
-  // 轮询抽取进度
-  const pollExtractionProgress = useCallback(async (taskId) => {
-    pollingRef.current = true
-    
-    const poll = async () => {
-      // 如果停止轮询，直接返回
-      if (!pollingRef.current) return
-      
-      try {
-        const response = await getCrfExtractionProgress(projectId, taskId)
-        
-        if (response.success) {
-          const progress = response.data
-          setExtractionProgress(progress)
-          
-          // 检查任务是否完成或取消
-          if (progress.status === 'completed' || progress.status === 'completed_with_errors' || progress.status === 'failed' || progress.status === 'cancelled') {
-            setIsExtracting(false)
-            setExtractionTaskId(null)
-            pollingRef.current = false
-            
-            if (progress.status === 'completed') {
-              message.success(`抽取完成！成功处理 ${progress.success_count} 位患者`)
-            } else if (progress.status === 'completed_with_errors') {
-              message.warning(`抽取完成，但有 ${progress.error_count} 个错误`)
-            } else if (progress.status === 'cancelled') {
-              message.info('抽取任务已取消')
-            } else {
-              message.error('抽取任务失败')
-            }
-            
-            // 刷新患者数据
-            fetchProjectPatients()
-            return
-          }
-          
-          // 继续轮询
-          if (pollingRef.current) {
-            setTimeout(() => poll(), 2000)
-          }
-        }
-      } catch (error) {
-        console.error('查询进度失败:', error)
-        // 出错时也继续轮询
-        if (pollingRef.current) {
-          setTimeout(() => poll(), 3000)
-        }
-      }
-    }
-    
-    poll()
-  }, [projectId, fetchProjectPatients])
-  
-  // 获取历史抽取任务
-  const fetchExtractionTasks = useCallback(async () => {
-    try {
-      const response = await getProjectExtractionTasks(projectId, 5)
-      if (response.success) {
-        setExtractionTasks(response.data.tasks || [])
-      }
-    } catch (error) {
-      console.error('获取抽取任务列表失败:', error)
-    }
-  }, [projectId])
-  
-  // 取消/暂停抽取任务
-  const handleCancelExtraction = async () => {
-    try {
-      const response = await cancelCrfExtraction(projectId)
-      
-      if (response.success) {
-        message.success('抽取任务已取消')
-        pollingRef.current = false
-        setIsExtracting(false)
-        setExtractionTaskId(null)
-        setExtractionProgress(prev => prev ? { ...prev, status: 'cancelled' } : null)
-      } else {
-        message.error(response.message || '取消任务失败')
-      }
-    } catch (error) {
-      console.error('取消任务失败:', error)
-      message.error('取消任务失败')
-    }
-  }
-  
-  // 重新抽取：先 reset 解锁，再立即 start（合并为一步）
-  const handleReextract = async (mode = 'incremental', patientIds = null) => {
-    try {
-      const resetResp = await resetCrfExtraction(projectId)
-      if (!resetResp.success) {
-        message.error(resetResp.message || '重置任务状态失败')
-        return
-      }
-      pollingRef.current = false
-      setIsExtracting(false)
-      setExtractionTaskId(null)
-      setExtractionProgress(null)
-      // 紧接着启动新一轮抽取
-      await handleStartExtraction(patientIds, mode)
-    } catch (error) {
-      console.error('重新抽取失败:', error)
-      message.error('重新抽取失败')
-    }
-  }
 
-  
-  // 加载历史任务
-  useEffect(() => {
-    if (projectId) {
-      fetchExtractionTasks()
+  const resolvePatientRecord = useCallback((patientOrId) => {
+    if (!patientOrId) return null
+    if (typeof patientOrId === 'object') {
+      const inlineId = patientOrId.patient_id || patientOrId.patientId || patientOrId.id
+      if (!inlineId) return patientOrId
+      return (
+        patientDataset.find(
+          (patient) =>
+            patient.patient_id === inlineId ||
+            patient.patientId === inlineId ||
+            patient.id === inlineId,
+        ) || patientOrId
+      )
     }
-  }, [projectId, fetchExtractionTasks])
+    const patientId = String(patientOrId)
+    return patientDataset.find(
+      (patient) =>
+        patient.patient_id === patientId ||
+        patient.patientId === patientId ||
+        patient.id === patientId,
+    ) || null
+  }, [patientDataset])
+
+  const crfPayloadHasValues = useCallback((payload) => {
+    if (payload == null) return false
+    if (Array.isArray(payload)) return payload.some((item) => crfPayloadHasValues(item))
+    if (typeof payload === 'object') {
+      return Object.values(payload).some((item) => crfPayloadHasValues(item))
+    }
+    return String(payload).trim() !== '' && String(payload).trim() !== '--'
+  }, [])
+
+  const patientHasCompletedExtraction = useCallback((patient) => {
+    if (!patient) return false
+    if (patient.hasExtractionHistory) return true
+    if (['done', 'partial', 'empty'].includes(patient.extractionStatus)) return true
+    if ((patient.overallCompleteness ?? 0) > 0) return true
+
+    const groups = patient.crfGroups || patient.crf_data?.groups || {}
+    if (Object.values(groups).some((group) => (group?.filled_count ?? 0) > 0)) return true
+    if (Object.values(groups).some((group) => {
+      const fields = group?.fields
+      if (!fields || typeof fields !== 'object') return false
+      return Object.values(fields).some((field) => crfPayloadHasValues(field?.value))
+    })) {
+      return true
+    }
+
+    const currentValues = patient.crf_data?.current_values
+    if (currentValues && typeof currentValues === 'object' && Object.keys(currentValues).length > 0) {
+      return true
+    }
+
+    return crfPayloadHasValues(patient.crf_data?.data)
+  }, [crfPayloadHasValues])
+
+  const handlePatientListExtract = useCallback((patientOrId) => {
+    const patient = resolvePatientRecord(patientOrId)
+    if (!patient) {
+      message.warning('未找到患者数据')
+      return
+    }
+    const patientId = patient.patient_id || patient.patientId || patient.id
+    if (!patientId) {
+      message.warning('缺少患者标识，无法发起抽取')
+      return
+    }
+    if (!patientHasCompletedExtraction(patient)) {
+      handleStartExtraction([patientId], 'incremental')
+      return
+    }
+    const displayName = patient.name || patient.subject_id || patient.patientId || patientId
+    setPatientExtractChoice({ patientId, displayName })
+  }, [handleStartExtraction, patientHasCompletedExtraction, resolvePatientRecord])
+
+  const closePatientExtractChoice = useCallback(() => {
+    setPatientExtractChoice(null)
+  }, [])
+
+  const startPatientExtractFromChoice = useCallback((mode) => {
+    const patientId = patientExtractChoice?.patientId
+    if (!patientId) return
+    closePatientExtractChoice()
+    handleStartExtraction([patientId], mode)
+  }, [closePatientExtractChoice, handleStartExtraction, patientExtractChoice?.patientId])
+
+  const confirmPatientFullExtract = useCallback(() => {
+    const displayName = patientExtractChoice?.displayName || '该患者'
+    Modal.confirm({
+      title: '确认全量重抽？',
+      content: `将对 ${displayName} 的所有合格文档重新规划并入队抽取，不跳过已有抽取记录。`,
+      okText: '确认重抽',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => startPatientExtractFromChoice('full'),
+    })
+  }, [patientExtractChoice?.displayName, startPatientExtractFromChoice])
 
   // 根据URL参数获取项目信息（优先使用 API 数据）
   // 从已加载的患者数据中实时计算平均完整度（更精确）
@@ -2130,9 +2131,7 @@ const ProjectDatasetView = () => {
     console.log('抽取字段:', patientId, fieldName)
   }
 
-  const handleExtractPatient = (patientId) => {
-    console.log('抽取患者数据:', patientId)
-  }
+  const handleExtractPatient = handlePatientListExtract
 
   const handleExtractGroup = (patientId, groupKey) => {
     if (!groupKey) return
@@ -2206,11 +2205,20 @@ const ProjectDatasetView = () => {
 
   const handleViewProjectTemplate = () => {
     if (!currentTemplateId) {
-      message.warning('项目未关联 CRF 模板')
+      setBindTemplateVisible(true)
       return
     }
     navigate(`/research/projects/${projectId}/template/edit`)
   }
+
+  const handleTemplateBound = useCallback(async () => {
+    setBindTemplateVisible(false)
+    await fetchProjectDetail()
+    await fetchProjectTemplateSchema()
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('research-project-rail-refresh'))
+    }
+  }, [fetchProjectDetail, fetchProjectTemplateSchema])
 
   // 当前项目锁定的 schema 版本
   const currentSchemaVersion = projectData?.template_scope_config?.schema_version
@@ -2766,27 +2774,30 @@ const ProjectDatasetView = () => {
                     {projectInfo.name}
                   </Text>
                 </Tooltip>
-                <Tooltip title={projectInfo.crfTemplate}>
+                <Tooltip title={currentTemplateId ? projectInfo.crfTemplate : '点击选择 CRF 模板'}>
                   <Button
                     size="small"
                     icon={<FileTextOutlined />}
-                    disabled={!currentTemplateId}
                     onClick={handleViewProjectTemplate}
                     style={{
-                      maxWidth: 190,
+                      maxWidth: currentTemplateId ? 190 : 150,
                       height: 26,
                       borderRadius: 999,
-                      borderColor: currentTemplateId ? token.colorPrimaryBorder : token.colorBorder,
-                      background: currentTemplateId ? token.colorPrimaryBg : token.colorBgLayout,
-                      color: currentTemplateId ? token.colorPrimary : token.colorTextSecondary,
+                      borderColor: currentTemplateId ? token.colorPrimaryBorder : token.colorWarning,
+                      background: currentTemplateId ? token.colorPrimaryBg : token.colorWarningBg,
+                      color: currentTemplateId ? token.colorPrimary : token.colorWarning,
                       boxShadow: 'none',
                     }}
                   >
                     <span style={{ display: 'inline-flex', alignItems: 'center', maxWidth: 112, overflow: 'hidden', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>
-                      <span style={{ flexShrink: 0, fontWeight: 500 }}>模板 ·&nbsp;</span>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: 500 }}>
-                        {projectInfo.crfTemplate || '-'}
+                      <span style={{ flexShrink: 0, fontWeight: 500 }}>
+                        {currentTemplateId ? '模板 ·\u00a0' : '选择模板'}
                       </span>
+                      {currentTemplateId ? (
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: 500 }}>
+                          {projectInfo.crfTemplate || '-'}
+                        </span>
+                      ) : null}
                     </span>
                   </Button>
                 </Tooltip>
@@ -2842,65 +2853,6 @@ const ProjectDatasetView = () => {
               <Button size="small" icon={<PlusOutlined />} onClick={handleAddPatients}>
                 添加患者
               </Button>
-              {isExtracting ? (
-                <Button
-                  size="small"
-                  danger
-                  icon={<PauseCircleOutlined />}
-                  onClick={handleCancelExtraction}
-                >
-                  暂停
-                </Button>
-              ) : null}
-              {extractionProgress && (extractionProgress.status === 'cancelled' || extractionProgress.status === 'failed') && (
-                <Dropdown
-                  menu={{
-                    items: [
-                      {
-                        key: 'incremental',
-                        label: (
-                          <div>
-                            <div style={{ fontWeight: 500 }}>增量续抽</div>
-                            <div style={{ fontSize: 12, color: token.colorTextSecondary }}>继续抽取尚未处理的患者</div>
-                          </div>
-                        ),
-                        icon: <PlayCircleOutlined />,
-                        onClick: () => handleReextract('incremental'),
-                      },
-                      {
-                        key: 'full',
-                        label: (
-                          <div>
-                            <div style={{ fontWeight: 500 }}>全量抽取</div>
-                            <div style={{ fontSize: 12, color: token.colorTextSecondary }}>对所有患者重新抽取，覆盖历史数据</div>
-                          </div>
-                        ),
-                        icon: <ReloadOutlined />,
-                        danger: true,
-                        onClick: () => {
-                          Modal.confirm({
-                            title: '确认全量抽取？',
-                            content: '将重新抽取所有患者的全部字段，已有数据将被覆盖。',
-                            okText: '确认抽取',
-                            okButtonProps: { danger: true },
-                            cancelText: '取消',
-                            onOk: () => handleReextract('full'),
-                          })
-                        },
-                      },
-                    ],
-                  }}
-                  trigger={['click']}
-                >
-                  <Button
-                    size="small"
-                    type="primary"
-                    icon={<ReloadOutlined />}
-                  >
-                    重新抽取 <DownOutlined style={{ fontSize: 12 }} />
-                  </Button>
-                </Dropdown>
-              )}
               <Button size="small" icon={<ExportOutlined />} onClick={handleExportData}>
                 导出数据
               </Button>
@@ -2985,14 +2937,14 @@ const ProjectDatasetView = () => {
           </div>
         )}
 
-        {extractionProgress && !isExtractionProgressCardDismissed && (
+        {showProgressCard && extractionProgress && (
           <div style={{
             marginBottom: 16,
-            border: `1px solid ${token.colorBorder}`,
+            border: `1px solid ${extractionProgress.status === 'submitting' ? token.colorPrimaryBorder : token.colorBorder}`,
             borderRadius: 12,
             padding: '14px 16px',
             paddingRight: 44,
-            background: token.colorBgContainer,
+            background: extractionProgress.status === 'submitting' ? token.colorPrimaryBg : token.colorBgContainer,
             position: 'relative',
           }}>
             <Button
@@ -3000,7 +2952,7 @@ const ProjectDatasetView = () => {
               size="small"
               icon={<CloseOutlined />}
               aria-label="关闭抽取进度提示"
-              onClick={() => setIsExtractionProgressCardDismissed(true)}
+              onClick={dismissProgressCard}
               style={{
                 position: 'absolute',
                 top: 8,
@@ -3012,28 +2964,37 @@ const ProjectDatasetView = () => {
             <Row gutter={16} align="middle">
               <Col flex="auto">
                 <div style={{ marginBottom: 8 }}>
-                  <Space>
+                  <Space wrap>
                     <Text strong>
-                      {extractionProgress.status === 'cancelled' ? 'CRF 数据抽取已暂停' :
+                      {extractionProgress.status === 'submitting' ? '正在提交抽取任务' :
+                       extractionProgress.status === 'cancelled' ? 'CRF 数据抽取已暂停' :
                        extractionProgress.status === 'failed' ? 'CRF 数据抽取失败' :
                        extractionProgress.status === 'completed' ? 'CRF 数据抽取完成' :
                        extractionProgress.status === 'completed_with_errors' ? 'CRF 数据抽取完成（有错误）' :
                        'CRF 数据抽取中'}
                     </Text>
+                    {extractionProgress.scopeLabel ? (
+                      <Tag>{extractionProgress.scopeLabel}</Tag>
+                    ) : null}
+                    {extractionProgress.modeLabel ? (
+                      <Tag color={extractionProgress.mode === 'full' ? 'red' : 'blue'}>{extractionProgress.modeLabel}</Tag>
+                    ) : null}
                     <Tag color={
+                      extractionProgress.status === 'submitting' ? 'processing' :
                       extractionProgress.status === 'cancelled' ? 'warning' :
                       extractionProgress.status === 'failed' ? 'error' :
                       extractionProgress.status === 'completed' ? 'success' :
                       extractionProgress.status === 'completed_with_errors' ? 'warning' :
                       'processing'
                     }>
-                      {extractionProgress.current_step}
+                      {extractionProgress.current_step || '处理中'}
                     </Tag>
                   </Space>
                 </div>
                 <Progress
                   percent={extractionProgress.progress || 0}
                   status={
+                    extractionProgress.status === 'submitting' ? 'active' :
                     extractionProgress.status === 'cancelled' ? 'exception' :
                     extractionProgress.status === 'failed' ? 'exception' :
                     extractionProgress.status === 'completed' ? 'success' :
@@ -3050,10 +3011,16 @@ const ProjectDatasetView = () => {
                   }
                 />
                 <div style={{ marginTop: 8 }}>
-                  <Space split={<Divider type="vertical" />}>
+                  <Space split={<Divider type="vertical" />} wrap>
+                    {(extractionProgress.active_task_count || 0) > 1 ? (
+                      <Text type="secondary">并行任务: {extractionProgress.active_task_count}</Text>
+                    ) : null}
                     <Text type="secondary">
-                      患者: {extractionProgress.processed_patients || 0}/{extractionProgress.total_patients || 0}
+                      子任务: {extractionProgress.processed_patients || 0}/{extractionProgress.total_patients || 0}
                     </Text>
+                    {extractionProgress.submitted_jobs != null ? (
+                      <Text type="secondary">已入队: {extractionProgress.submitted_jobs}</Text>
+                    ) : null}
                     <Text style={{ color: token.colorSuccess }}>
                       成功: {extractionProgress.success_count || 0}
                     </Text>
@@ -3074,6 +3041,15 @@ const ProjectDatasetView = () => {
                     )}
                   </Space>
                 </div>
+                {extractionTasks.length > 1 ? (
+                  <div style={{ marginTop: 10 }}>
+                    {extractionTasks.map((task) => (
+                      <div key={task.taskId} style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4 }}>
+                        {task.scopeLabel} · {task.modeLabel} · {task.progress || 0}% · {task.current_step || task.phase}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </Col>
             </Row>
           </div>
@@ -3098,7 +3074,7 @@ const ProjectDatasetView = () => {
           message="以下为任务执行时记录的失败明细（patient_id + error）"
           description={
             <div>
-              <div>任务ID: <Text code>{extractionProgress?.task_id || extractionTaskId || '-'}</Text></div>
+              <div>任务ID: <Text code>{extractionProgress?.task_id || '-'}</Text></div>
               <div style={{ marginTop: 4 }}>
                 你也可以在浏览器 Network 里查看接口：<Text code>/projects/{projectId}/crf/extraction/progress?task_id=&lt;task_id&gt;</Text>
               </div>
@@ -3153,6 +3129,7 @@ const ProjectDatasetView = () => {
           {rendererMode === 'v2' ? (
             <ProjectDatasetV2
               loading={loading}
+              groupFieldsLoading={groupFieldsLoading}
               patients={projectDatasetViewModel.visiblePatients}
               fieldGroups={projectDatasetViewModel.fieldGroups}
               folders={projectDatasetViewModel.folders}
@@ -3162,7 +3139,8 @@ const ProjectDatasetView = () => {
               selectedPatientIds={projectDatasetViewModel.selectedPatientIds}
               onToggleSelectPatient={toggleSelectPatient}
               onNavigatePatient={handleNavigatePatientDetail}
-              onExtractPatient={(patientId) => confirmAndStartExtraction([patientId], 'incremental')}
+              onExtractPatient={handlePatientListExtract}
+              patientExtractionById={patientExtractionById}
               pagination={pagination}
               onPageChange={(page, pageSize) => fetchProjectPatients(page, pageSize)}
               leftScrollY={projectDatasetTableScrollY}
@@ -3255,6 +3233,54 @@ const ProjectDatasetView = () => {
           </Col>
         </Row>
       </Card> */}
+
+      {/* 患者列表抽取方式选择 */}
+      <Modal
+        title={patientExtractChoice ? `抽取患者数据 · ${patientExtractChoice.displayName}` : '抽取患者数据'}
+        open={Boolean(patientExtractChoice)}
+        onCancel={closePatientExtractChoice}
+        getContainer={() => document.body}
+        zIndex={1200}
+        destroyOnClose
+        maskClosable
+        footer={[
+          <Button key="cancel" onClick={closePatientExtractChoice}>
+            取消
+          </Button>,
+          <Button
+            key="incremental"
+            type="primary"
+            disabled={isExtracting}
+            icon={<PlayCircleOutlined />}
+            onClick={() => startPatientExtractFromChoice('incremental')}
+          >
+            增量抽取
+          </Button>,
+          <Button
+            key="full"
+            danger
+            disabled={isExtracting}
+            icon={<ReloadOutlined />}
+            onClick={confirmPatientFullExtract}
+          >
+            重新抽取
+          </Button>,
+        ]}
+        width={modalWidthPreset.standard}
+        styles={modalBodyPreset}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="该患者已有抽取记录"
+          description={
+            <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+              <li><Text strong>增量抽取</Text>：仅补抽尚未入队的文档与字段组（跳过已成功抽取部分）。</li>
+              <li><Text strong>重新抽取</Text>：对所有 OCR 合格的文档重新规划并入队，不跳过已有抽取记录。</li>
+            </ul>
+          }
+        />
+      </Modal>
 
       {/* 专项抽取配置弹窗 */}
       <Modal
@@ -3506,9 +3532,6 @@ const ProjectDatasetView = () => {
           }}>
             关闭
           </Button>,
-          <Button key="extract" type="primary" icon={<PlayCircleOutlined />}>
-            重新抽取
-          </Button>
         ]}
         width={modalWidthPreset.wide}
         styles={modalBodyPreset}
@@ -3770,6 +3793,14 @@ const ProjectDatasetView = () => {
           </Row>
         </Form>
       </Modal>
+
+      <ProjectCrfTemplateBindModal
+        open={bindTemplateVisible}
+        projectId={projectId}
+        projectName={projectInfo.name}
+        onCancel={() => setBindTemplateVisible(false)}
+        onBound={handleTemplateBound}
+      />
 
       {/* 字段来源追踪弹窗 */}
       <FieldSourceModal

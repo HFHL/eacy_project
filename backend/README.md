@@ -5,16 +5,14 @@
 - FastAPI application factory
 - Middleware and exception foundation
 - Celery
-- Dockerized local services
 - Event dispatcher
 - Cache
 
 ## Run
 
-### Launch docker
-```shell
-> docker-compose -f docker/docker-compose.yml up
-```
+### Configure database
+
+Copy the repo root `.env.example` to `.env` and set `DATABASE_URL` to your **remote** PostgreSQL (`postgresql+asyncpg://...`). This project does not ship a local database compose.
 
 ### Install dependency
 ```shell
@@ -99,7 +97,7 @@ If you do not use a database connection like `session.add()`, it is recommended 
 
 ### Multiple databases
 
-Go to `core/config.py` and edit `WRITER_DB_URL` and `READER_DB_URL` in the config class.
+Set `DATABASE_URL` in the repo root `.env` (see `.env.example`). Optional: set `WRITER_DB_URL` / `READER_DB_URL` only when using separate read replicas.
 
 
 If you need additional logic to use the database, refer to the `get_bind()` method of `RoutingClass`.

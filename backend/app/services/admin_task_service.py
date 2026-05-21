@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 
 from app.models import (
     AsyncTaskBatch,
@@ -173,8 +173,8 @@ class AdminTaskService:
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
-        batches = await self._list_batch_task_summaries()
-        rows = batches
+        batches = await self._list_batch_candidates(task_type=task_type)
+        rows = await self._batch_task_summaries_from_batches(batches)
 
         if task_type and task_type != "all":
             rows = [row for row in rows if row["task_type"] == task_type]
@@ -198,6 +198,20 @@ class AdminTaskService:
         batch = await session.get(AsyncTaskBatch, task_id)
         if batch is not None:
             return await self._batch_detail(batch)
+
+        from app.repositories import AsyncTaskItemRepository
+
+        item = await AsyncTaskItemRepository().get_by_extraction_job(task_id)
+        if item is not None and item.batch_id:
+            linked_batch = await session.get(AsyncTaskBatch, item.batch_id)
+            if linked_batch is not None:
+                return await self._batch_detail(linked_batch)
+
+        job = await session.get(ExtractionJob, task_id)
+        if job is not None:
+            linked_item = item or await AsyncTaskItemRepository().get_by_extraction_job(job.id)
+            return await self._single_job_detail(job, linked_item)
+
         raise AdminTaskNotFoundError("Admin extraction task not found")
 
     async def list_extraction_task_events(self, task_id: str, *, after_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
@@ -227,19 +241,77 @@ class AdminTaskService:
         result = await session.execute(query)
         return int(result.scalar() or 0)
 
-    async def _list_batch_task_summaries(self) -> list[dict[str, Any]]:
-        result = await session.execute(select(AsyncTaskBatch).order_by(AsyncTaskBatch.updated_at.desc()).limit(1000))
-        batches = list(result.scalars().all())
+    async def _list_batch_candidates(
+        self,
+        *,
+        task_type: str | None = None,
+        limit: int = 1000,
+    ) -> list[AsyncTaskBatch]:
+        query = select(AsyncTaskBatch).order_by(AsyncTaskBatch.updated_at.desc())
+        if task_type and task_type not in {"all", "targeted"}:
+            if task_type == "patient_ehr":
+                query = query.where(AsyncTaskBatch.task_type.ilike("%patient_ehr%"))
+            elif task_type == "project_crf":
+                query = query.where(AsyncTaskBatch.task_type.ilike("%project_crf%"))
+        elif task_type == "targeted":
+            query = query.where(
+                or_(
+                    AsyncTaskBatch.task_type.ilike("%targeted%"),
+                    exists(
+                        select(AsyncTaskItem.id).where(
+                            AsyncTaskItem.batch_id == AsyncTaskBatch.id,
+                            AsyncTaskItem.target_form_key.isnot(None),
+                        )
+                    ),
+                )
+            )
+        result = await session.execute(query.limit(limit))
+        return list(result.scalars().all())
+
+    async def _batch_task_summaries_from_batches(self, batches: list[AsyncTaskBatch]) -> list[dict[str, Any]]:
+        if not batches:
+            return []
+
+        batch_ids = [batch.id for batch in batches]
+        items_result = await session.execute(
+            select(AsyncTaskItem)
+            .where(AsyncTaskItem.batch_id.in_(batch_ids))
+            .order_by(AsyncTaskItem.created_at)
+        )
+        items_by_batch: dict[str, list[AsyncTaskItem]] = {}
+        job_ids: set[str] = set()
+        for item in items_result.scalars().all():
+            items_by_batch.setdefault(item.batch_id, []).append(item)
+            if item.extraction_job_id:
+                job_ids.add(item.extraction_job_id)
+
+        jobs_by_id: dict[str, ExtractionJob] = {}
+        if job_ids:
+            jobs_result = await session.execute(select(ExtractionJob).where(ExtractionJob.id.in_(job_ids)))
+            jobs_by_id = {job.id: job for job in jobs_result.scalars().all()}
+
+        project_ids = {batch.project_id for batch in batches if batch.project_id}
+        patient_ids = {batch.patient_id for batch in batches if batch.patient_id}
+        project_patient_ids = {batch.project_patient_id for batch in batches if batch.project_patient_id}
+        schema_version_ids: set[str] = set()
+        for batch in batches:
+            first_job = self._first_job_from_items(items_by_batch.get(batch.id, []), jobs_by_id)
+            if first_job is not None and first_job.schema_version_id:
+                schema_version_ids.add(first_job.schema_version_id)
+
+        names_cache = await self._bulk_names_for_scope(
+            project_ids=project_ids,
+            patient_ids=patient_ids,
+            project_patient_ids=project_patient_ids,
+            schema_version_ids=schema_version_ids,
+        )
+
         rows: list[dict[str, Any]] = []
         for batch in batches:
-            items = await self._items_for_batch(batch.id)
-            first_job = await self._first_job_for_items(items)
-            project_name, patient_name, schema_name = await self._names_for_scope(
-                project_id=batch.project_id,
-                project_patient_id=batch.project_patient_id,
-                patient_id=batch.patient_id,
-                schema_version_id=first_job.schema_version_id if first_job is not None else None,
-            )
+            items = items_by_batch.get(batch.id, [])
+            first_job = self._first_job_from_items(items, jobs_by_id)
+            schema_version_id = first_job.schema_version_id if first_job is not None else None
+            project_name, patient_name, schema_name = self._names_from_cache(batch, schema_version_id, names_cache)
             status = self._normalize_batch_status(batch)
             rows.append(
                 {
@@ -268,6 +340,124 @@ class AdminTaskService:
                 }
             )
         return rows
+
+    async def _list_batch_task_summaries(self) -> list[dict[str, Any]]:
+        batches = await self._list_batch_candidates(limit=1000)
+        return await self._batch_task_summaries_from_batches(batches)
+
+    async def _bulk_names_for_scope(
+        self,
+        *,
+        project_ids: set[str],
+        patient_ids: set[str],
+        project_patient_ids: set[str],
+        schema_version_ids: set[str],
+    ) -> dict[str, Any]:
+        projects_by_id: dict[str, ResearchProject] = {}
+        if project_ids:
+            result = await session.execute(select(ResearchProject).where(ResearchProject.id.in_(project_ids)))
+            projects_by_id = {project.id: project for project in result.scalars().all()}
+
+        project_patients_by_id: dict[str, ProjectPatient] = {}
+        resolved_patient_ids = set(patient_ids)
+        if project_patient_ids:
+            result = await session.execute(select(ProjectPatient).where(ProjectPatient.id.in_(project_patient_ids)))
+            project_patients_by_id = {item.id: item for item in result.scalars().all()}
+            for item in project_patients_by_id.values():
+                if item.patient_id:
+                    resolved_patient_ids.add(item.patient_id)
+
+        patients_by_id: dict[str, Patient] = {}
+        if resolved_patient_ids:
+            result = await session.execute(select(Patient).where(Patient.id.in_(resolved_patient_ids)))
+            patients_by_id = {patient.id: patient for patient in result.scalars().all()}
+
+        schema_names: dict[str, str | None] = {}
+        if schema_version_ids:
+            result = await session.execute(
+                select(SchemaTemplateVersion.id, SchemaTemplate.template_name)
+                .join(SchemaTemplate, SchemaTemplate.id == SchemaTemplateVersion.template_id)
+                .where(SchemaTemplateVersion.id.in_(schema_version_ids))
+            )
+            schema_names = {version_id: template_name for version_id, template_name in result.all()}
+
+        return {
+            "projects": projects_by_id,
+            "patients": patients_by_id,
+            "project_patients": project_patients_by_id,
+            "schema_names": schema_names,
+        }
+
+    def _names_from_cache(
+        self,
+        batch: AsyncTaskBatch,
+        schema_version_id: str | None,
+        cache: dict[str, Any],
+    ) -> tuple[str | None, str | None, str | None]:
+        project = cache["projects"].get(batch.project_id) if batch.project_id else None
+        patient_id = batch.patient_id
+        if patient_id is None and batch.project_patient_id:
+            project_patient = cache["project_patients"].get(batch.project_patient_id)
+            patient_id = project_patient.patient_id if project_patient is not None else None
+        patient = cache["patients"].get(patient_id) if patient_id else None
+        schema_name = cache["schema_names"].get(schema_version_id) if schema_version_id else None
+        return (
+            project.project_name if project is not None else None,
+            patient.name if patient is not None else None,
+            schema_name,
+        )
+
+    @staticmethod
+    def _first_job_from_items(
+        items: list[AsyncTaskItem],
+        jobs_by_id: dict[str, ExtractionJob],
+    ) -> ExtractionJob | None:
+        for item in items:
+            if not item.extraction_job_id:
+                continue
+            job = jobs_by_id.get(item.extraction_job_id)
+            if job is not None:
+                return job
+        return None
+
+    async def _single_job_detail(self, job: ExtractionJob, item: AsyncTaskItem | None) -> dict[str, Any]:
+        jobs = [await self._job_detail_payload(job, item=item)]
+        project_name, patient_name, schema_name = await self._names_for_scope(
+            project_id=job.project_id,
+            project_patient_id=job.project_patient_id,
+            patient_id=job.patient_id,
+            schema_version_id=job.schema_version_id,
+        )
+        normalized_status = self._normalize_item_status(item) if item is not None else self._normalize_job_status(job)
+        summary = {
+            "id": item.batch_id if item is not None and item.batch_id else job.id,
+            "source_table": "extraction_jobs",
+            "task_type": self._admin_task_type(self._task_type_for_job(job), [item] if item else []),
+            "status": normalized_status,
+            "progress": item.progress if item is not None else int(job.progress or 0),
+            "project_id": job.project_id,
+            "project_name": project_name,
+            "patient_id": job.patient_id,
+            "patient_name": patient_name,
+            "schema_name": schema_name,
+            "target_section": job.target_form_key,
+            "completed_count": 1 if normalized_status in {"succeeded", "completed"} else 0,
+            "failed_count": 1 if normalized_status == "failed" else 0,
+            "running_count": 1 if normalized_status == "running" else 0,
+            "pending_count": 1 if normalized_status in {"pending", "queued", "created"} else 0,
+            "started_at": (item.started_at if item else None) or job.started_at,
+            "finished_at": (item.finished_at if item else None) or job.finished_at,
+            "error_message": (item.error_message if item else None) or job.error_message,
+        }
+        llm_calls = await self._llm_calls_for_jobs([job.id], jobs_payload=jobs)
+        return {"summary": summary, "jobs": jobs, "llm_source": "llm_call_logs", "llm_calls": llm_calls}
+
+    def _task_type_for_job(self, job: ExtractionJob) -> str:
+        if job.job_type == "project_crf":
+            return "project_crf_targeted_extract" if job.target_form_key else "project_crf_folder_extract"
+        if job.job_type == "targeted_schema":
+            return "patient_ehr_targeted_extract"
+        return "patient_ehr_targeted_extract" if job.target_form_key else "patient_ehr_folder_extract"
 
     async def _batch_detail(self, batch: AsyncTaskBatch) -> dict[str, Any]:
         items = await self._items_for_batch(batch.id)
@@ -331,6 +521,7 @@ class AdminTaskService:
         runs_result = await session.execute(select(ExtractionRun).where(ExtractionRun.job_id == job.id).order_by(ExtractionRun.run_no.desc()).limit(1))
         run = runs_result.scalars().first()
         extracted_fields = await self._extracted_fields(run.id) if run is not None else []
+        input_json = job.input_json if isinstance(job.input_json, dict) else None
         return {
             "id": item.id if item is not None else job.id,
             "extraction_job_id": job.id,
@@ -341,6 +532,8 @@ class AdminTaskService:
             "project_id": job.project_id,
             "project_patient_id": job.project_patient_id,
             "schema_name": schema_name,
+            "target_form_key": job.target_form_key,
+            "input_json": input_json,
             "status": self._normalize_item_status(item) if item is not None else self._normalize_job_status(job),
             "progress": item.progress if item is not None else int(job.progress or 0),
             "stage": item.stage if item is not None else None,
@@ -379,6 +572,9 @@ class AdminTaskService:
             or ((run.parsed_output_json or {}).get("validation_log") if isinstance(run.parsed_output_json, dict) else None),
             "error_type": run.error_type,
             "parsed_output_json": run.parsed_output_json,
+            "input_snapshot_json": run.input_snapshot_json,
+            "raw_output_json": run.raw_output_json,
+            "validation_status": run.validation_status,
         }
 
     async def _extracted_fields(self, run_id: str) -> list[dict[str, Any]]:

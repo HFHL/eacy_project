@@ -79,6 +79,53 @@ const getResultValue = (metadata = {}, key) => {
   return result[key]
 }
 
+const collectIdentifierLists = (metadata = {}, summary = {}) => {
+  const lists = []
+  const fromResult = getResultValue(metadata, '唯一标识符')
+  if (Array.isArray(fromResult)) lists.push(fromResult)
+  if (Array.isArray(metadata?.identifiers)) lists.push(metadata.identifiers)
+  if (Array.isArray(summary?.identifiers)) lists.push(summary.identifiers)
+  return lists
+}
+
+const isIdCardIdentifierType = (type) => {
+  const text = normalizeStr(type)
+  if (!text) return false
+  return text === '身份证号' || text === '身份证' || text.includes('身份证')
+}
+
+const extractIdNumberFromIdentifiers = (metadata = {}, summary = {}) => {
+  for (const identifiers of collectIdentifierLists(metadata, summary)) {
+    for (const item of identifiers) {
+      if (!item) continue
+      if (typeof item === 'string' || typeof item === 'number') {
+        const normalized = normalizeIdNumber(item)
+        if (normalized) return normalized
+        continue
+      }
+      if (typeof item !== 'object') continue
+      const type = item['标识符类型'] || item.type || item.identifier_type
+      const value = item['标识符编号'] || item.value || item.id || item.identifier || item['编号']
+      if (isIdCardIdentifierType(type)) {
+        const normalized = normalizeIdNumber(value)
+        if (normalized) return normalized
+      }
+    }
+  }
+
+  for (const identifiers of collectIdentifierLists(metadata, summary)) {
+    for (const item of identifiers) {
+      if (!item || typeof item !== 'object') continue
+      const normalized = normalizeIdNumber(
+        item['标识符编号'] || item.value || item.id || item.identifier || item['编号']
+      )
+      if (normalized) return normalized
+    }
+  }
+
+  return ''
+}
+
 export const normalizePatientPrefill = (source = {}) => {
   const metadata = source.document_metadata || source.metadata || source.metadata_json || {}
   const summary = source.document_metadata_summary || {}
@@ -112,10 +159,14 @@ export const normalizePatientPrefill = (source = {}) => {
     ),
     idNumber: normalizeIdNumber(
       extracted.id_number || extracted.idCard || extracted.id_card ||
-      metadata.id_number || metadata.idCard || metadata.id_card || source.idNumber || source.id_card
+      metadata.id_number || metadata.idCard || metadata.id_card ||
+      source.idNumber || source.id_number || source.id_card ||
+      extractIdNumberFromIdentifiers(metadata, summary)
     ),
     address: normalizeAddress(
-      extracted.address || metadata.address || summary.address || source.address
+      extracted.address || metadata.address || summary.address ||
+      getResultValue(metadata, '地址') || getResultValue(metadata, '家庭住址') ||
+      source.address
     )
   }
 }

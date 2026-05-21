@@ -27,8 +27,9 @@ stop_one() {
   rm -f "$f"
 }
 
-# 先停前端，再 Celery，再后端
+# 先停前端，再 Celery Beat / Worker，再后端
 stop_one frontend
+stop_one celery-beat
 stop_one celery
 stop_one backend
 

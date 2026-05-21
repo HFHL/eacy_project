@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -61,12 +62,20 @@ class EhrService:
         await self.initialize_default_record_instances(context_id=context.id, schema_json=schema_version.schema_json)
         return context
 
-    async def get_patient_ehr(self, patient_id: str, *, created_by: str | None = None) -> dict[str, Any]:
-        patient = await self.patient_repository.get_active_by_id(patient_id)
-        if patient is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
-
+    async def get_patient_ehr_schema(self, patient_id: str, *, owner_id: str | None = None) -> dict[str, Any]:
+        """Return published EHR JSON Schema only (no records / current_values)."""
+        await self._ensure_patient_access(patient_id, owner_id=owner_id)
         schema_version = await self.schema_service.get_latest_published("ehr")
+        if schema_version is None:
+            context = await self.context_repository.get_latest_patient_ehr(patient_id)
+            if context is not None:
+                schema_version = await self.schema_service.get_version(context.schema_version_id)
+        return {"schema": schema_version.schema_json if schema_version else None}
+
+    async def get_patient_ehr(self, patient_id: str, *, created_by: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        patient = await self._ensure_patient_access(patient_id, owner_id=owner_id)
+        schema_version = await self.schema_service.get_latest_published("ehr")
+
         context = None
         if schema_version is not None:
             context = await self.get_or_create_patient_ehr_context(
@@ -82,10 +91,12 @@ class EhrService:
         if context is None or schema_version is None:
             return {"context": None, "schema": None, "records": [], "current_values": {}}
 
-        records = await self.record_repository.list_by_context(context.id)
+        records, current_values = await asyncio.gather(
+            self.record_repository.list_by_context(context.id),
+            self.current_repository.list_by_context(context.id),
+        )
         if not records:
             records = await self.initialize_default_record_instances(context_id=context.id, schema_json=schema_version.schema_json)
-        current_values = await self.current_repository.list_by_context(context.id)
         return {
             "context": context,
             "schema": schema_version.schema_json,
@@ -93,8 +104,8 @@ class EhrService:
             "current_values": self._current_values_by_display_path(current_values, schema_version.schema_json),
         }
 
-    async def list_field_events(self, *, patient_id: str, field_path: str) -> list[FieldValueEvent]:
-        context = await self._get_patient_context_or_404(patient_id)
+    async def list_field_events(self, *, patient_id: str, field_path: str, owner_id: str | None = None) -> list[FieldValueEvent]:
+        context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
         for query_path in self._field_path_aliases(field_path):
             events = await self.event_repository.list_by_field(context_id=context.id, field_path=query_path)
             if events:
@@ -119,8 +130,8 @@ class EhrService:
                 return events
         return []
 
-    async def list_field_candidates(self, *, patient_id: str, field_path: str) -> dict[str, Any]:
-        context = await self._get_patient_context_or_404(patient_id)
+    async def list_field_candidates(self, *, patient_id: str, field_path: str, owner_id: str | None = None) -> dict[str, Any]:
+        context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
         query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
         events = await self.event_repository.list_candidates_by_context_field(
             context_id=context.id,
@@ -194,8 +205,8 @@ class EhrService:
             return current.value_datetime.isoformat()
         return current.value_text
 
-    async def list_field_evidence(self, *, patient_id: str, field_path: str) -> list[FieldValueEvidence]:
-        context = await self._get_patient_context_or_404(patient_id)
+    async def list_field_evidence(self, *, patient_id: str, field_path: str, owner_id: str | None = None) -> list[FieldValueEvidence]:
+        context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
         query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
         current_values = await self.current_repository.list_by_context(context.id)
         current = next((value for value in current_values if value.field_path == query_path), None)
@@ -218,6 +229,10 @@ class EhrService:
             next_location.setdefault("page_no", evidence.page_no or next_location.get("page") or 1)
             if "position" not in next_location and isinstance(next_location.get("polygon"), list):
                 next_location["position"] = next_location["polygon"]
+            if "renderable" not in next_location:
+                from app.services.evidence_location_resolver import has_renderable_polygon
+
+                next_location["renderable"] = has_renderable_polygon(next_location)
             return next_location
         return location
 
@@ -334,8 +349,9 @@ class EhrService:
         edited_by: str | None = None,
         note: str | None = None,
         values: dict[str, Any],
+        owner_id: str | None = None,
     ) -> FieldCurrentValue:
-        context = await self._get_patient_context_or_404(patient_id)
+        context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
         normalized_field_path = self._canonical_field_path(field_path)
         record = await self._resolve_record(context.id, record_instance_id)
         return await self.value_service.manual_edit(
@@ -357,8 +373,9 @@ class EhrService:
         field_path: str,
         event_id: str,
         selected_by: str | None = None,
+        owner_id: str | None = None,
     ) -> FieldCurrentValue:
-        context = await self._get_patient_context_or_404(patient_id)
+        context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
         event = await self.event_repository.get_by_id(event_id)
         allowed_paths = set(self._field_path_aliases(field_path))
         if event is None or event.context_id != context.id or event.field_path not in allowed_paths:
@@ -392,8 +409,9 @@ class EhrService:
         group_key: str | None = None,
         group_title: str | None = None,
         instance_label: str | None = None,
+        owner_id: str | None = None,
     ) -> RecordInstance:
-        context = await self._get_patient_context_or_404(patient_id)
+        context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
         repeat_index = await self.record_repository.next_repeat_index(context_id=context.id, form_key=form_key)
         return await self.record_repository.create(
             {
@@ -409,8 +427,8 @@ class EhrService:
         )
 
     @Transactional()
-    async def delete_record_instance(self, *, patient_id: str, record_instance_id: str) -> None:
-        context = await self._get_patient_context_or_404(patient_id)
+    async def delete_record_instance(self, *, patient_id: str, record_instance_id: str, owner_id: str | None = None) -> None:
+        context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
         record = await self.record_repository.get_by_id(record_instance_id)
         if record is None or record.context_id != context.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record instance not found")
@@ -422,16 +440,24 @@ class EhrService:
         await self.record_repository.delete(record)
 
     @Transactional()
-    async def delete_field_value(self, *, patient_id: str, field_path: str) -> None:
-        context = await self._get_patient_context_or_404(patient_id)
+    async def delete_field_value(self, *, patient_id: str, field_path: str, owner_id: str | None = None) -> None:
+        context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
         for query_path in self._field_path_aliases(field_path):
             await self.evidence_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
             await self.current_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
             await self.event_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
 
-    async def _get_patient_context_or_404(self, patient_id: str) -> DataContext:
-        ehr = await self.get_patient_ehr(patient_id)
-        context = ehr["context"]
+    async def _ensure_patient_access(self, patient_id: str, *, owner_id: str | None = None):
+        from app.models import Patient
+
+        patient = await self.patient_repository.get_active_by_id(patient_id, owner_id=owner_id)
+        if patient is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+        return patient
+
+    async def _get_patient_context_or_404(self, patient_id: str, *, owner_id: str | None = None) -> DataContext:
+        await self._ensure_patient_access(patient_id, owner_id=owner_id)
+        context = await self.context_repository.get_latest_patient_ehr(patient_id)
         if context is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient EHR context not found")
         return context

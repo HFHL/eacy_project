@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -303,7 +304,10 @@ async def test_extraction_service_reuses_sibling_location_for_derived_enum_evide
                 {
                     "quote_text": "左乙拉西坦",
                     "page_no": 1,
-                    "bbox_json": {"polygon": [10, 20, 110, 20, 110, 50, 10, 50]},
+                    "bbox_json": {
+                        "polygon": [10, 20, 110, 20, 110, 50, 10, 50],
+                        "renderable": True,
+                    },
                 }
             ],
         },
@@ -319,8 +323,9 @@ async def test_extraction_service_reuses_sibling_location_for_derived_enum_evide
     evidence = field_entries[1]["evidences"][0]
     assert evidence["quote_text"] == "神经系统药物"
     assert evidence["page_no"] == 1
-    assert evidence["bbox_json"]["polygon"] == [10, 20, 110, 20, 110, 50, 10, 50]
-    assert evidence["bbox_json"]["fallback_strategy"] == "sibling_field_location"
+    assert evidence["bbox_json"]["fallback_strategy"] == "sibling_page_hint"
+    assert evidence["bbox_json"].get("polygon") is None
+    assert evidence["bbox_json"]["renderable"] is False
 
 
 @pytest.mark.asyncio
@@ -423,6 +428,7 @@ async def test_extraction_service_process_existing_job_reuses_pending_job():
         run_repository=FakeExtractionRunRepository(),
         record_repository=FakeExtractionRecordRepository(),
         value_service=value_service,
+        task_progress_service=FakeTaskProgressService(),
     )
 
     processed_job = await service.process_existing_job("job-1")
@@ -545,7 +551,7 @@ class FakeSchemaExtractor:
     def __init__(self):
         self.calls = []
 
-    def extract(self, *, text, fields, document_id, document=None):
+    def extract(self, *, text, fields, document_id, document=None, **kwargs):
         self.calls.append({"text": text, "fields": fields, "document_id": document_id, "document": document})
         return {
             "extractor": "FakeSchemaExtractor",
@@ -588,6 +594,68 @@ def project_schema_json():
             }
         }
     }
+
+
+def test_extraction_service_classifies_connection_errors_as_transient():
+    service = ExtractionService()
+
+    class ConnectionDoesNotExistError(Exception):
+        pass
+
+    wrapped = Exception("connection was closed in the middle of operation")
+    wrapped.__cause__ = ConnectionDoesNotExistError()
+
+    assert service._is_transient_error(wrapped) is True
+    assert service._is_transient_error(ValueError("bad input")) is False
+
+
+@pytest.mark.asyncio
+async def test_extraction_service_releases_db_before_llm_extract(monkeypatch):
+    release_calls = []
+
+    async def fake_release_db_connection():
+        release_calls.append(True)
+
+    monkeypatch.setattr("app.services.extraction_service.release_db_connection", fake_release_db_connection)
+    monkeypatch.setattr(ExtractionService, "_use_llm_ehr_extractor", lambda self: True)
+
+    extractor = FakeSchemaExtractor()
+    service = ExtractionService(llm_ehr_extractor=extractor)
+    job = SimpleNamespace(
+        id="job-1",
+        job_type="project_crf",
+        document_id="document-1",
+        context_id="context-1",
+        schema_version_id="schema-version-1",
+        target_form_key="basic.demographics",
+        patient_id="patient-1",
+        project_id="project-1",
+        project_patient_id="project-patient-1",
+        input_json=None,
+    )
+
+    async def fake_resolve_scope(self, scoped_job):
+        document = SimpleNamespace(
+            id="document-1",
+            patient_id="patient-1",
+            ocr_text="性别：男",
+            parsed_content=None,
+        )
+        context = SimpleNamespace(id="context-1", context_type="project_crf", patient_id="patient-1")
+        return document, context
+
+    async def fake_get_version(version_id):
+        return SimpleNamespace(schema_json=project_schema_json())
+
+    monkeypatch.setattr(ExtractionService, "_resolve_schema_extraction_scope", fake_resolve_scope)
+    monkeypatch.setattr(service.ehr_service.schema_service, "get_version", fake_get_version)
+    monkeypatch.setattr("app.services.extraction_service.extract_document_text", lambda document: "性别：男")
+
+    output = await service._extract(job=job)
+
+    assert release_calls == [True]
+    assert len(extractor.calls) == 1
+    assert output["validation_status"] == "valid"
 
 
 @pytest.mark.asyncio
@@ -665,21 +733,22 @@ async def test_targeted_schema_extraction_filters_field_paths():
         error_message=None,
         patient_id="patient-1",
         document_id="document-1",
-        project_id="project-1",
-        project_patient_id="project-patient-1",
+        project_id=None,
+        project_patient_id=None,
         context_id="context-1",
         schema_version_id="schema-version-1",
         target_form_key=None,
         input_json={"field_paths": ["basic.diagnosis.name"]},
+        requested_by=None,
         started_at=None,
         finished_at=None,
     )
     context = SimpleNamespace(
         id="context-1",
-        context_type="project_crf",
+        context_type="patient_ehr",
         patient_id="patient-1",
-        project_id="project-1",
-        project_patient_id="project-patient-1",
+        project_id=None,
+        project_patient_id=None,
         schema_version_id="schema-version-1",
     )
     document = SimpleNamespace(
@@ -698,7 +767,7 @@ async def test_targeted_schema_extraction_filters_field_paths():
         effective_at=None,
     )
     extractor = FakeSchemaExtractor()
-    service = ExtractionService(
+    service = disable_extraction_enqueue(ExtractionService(
         job_repository=FakeExtractionJobRepository(job),
         run_repository=FakeExtractionRunRepository(),
         record_repository=FakeExtractionRecordRepository(),
@@ -706,7 +775,7 @@ async def test_targeted_schema_extraction_filters_field_paths():
         ehr_service=FakeEhrServiceForExtraction(context=context, schema_json=project_schema_json()),
         value_service=FakeExtractionValueService(),
         llm_ehr_extractor=extractor,
-    )
+    ))
 
     processed_job = await service.process_existing_job("job-1")
 
@@ -915,9 +984,65 @@ async def noop_commit_pending_jobs_before_enqueue():
     return None
 
 
+class FakeTaskProgressService:
+    def __init__(self):
+        self.batches: list[dict[str, Any]] = []
+        self.items: list[dict[str, Any]] = []
+
+    async def create_batch(self, **params):
+        batch = SimpleNamespace(id=f"batch-{len(self.batches) + 1}", **params)
+        self.batches.append(batch)
+        return batch
+
+    async def create_item_for_job(self, *, batch_id=None, task_type, job, **_kwargs):
+        item = SimpleNamespace(
+            id=f"item-{len(self.items) + 1}",
+            batch_id=batch_id,
+            task_type=task_type,
+            extraction_job_id=job.id,
+            target_form_key=job.target_form_key,
+            status="created",
+            progress=int(job.progress or 0),
+            stage=None,
+            stage_label=None,
+            message=None,
+            error_message=None,
+            started_at=None,
+            finished_at=None,
+        )
+        self.items.append(item)
+        return item
+
+    async def aggregate_batch(self, batch_id):
+        batch = next((entry for entry in self.batches if entry.id == batch_id), None)
+        return batch
+
+    async def mark_job_queued(self, job_id, **_kwargs):
+        return None
+
+    async def update_job_progress(self, job_or_id, **_kwargs):
+        return None
+
+    async def mark_job_failed(self, job, **_kwargs):
+        return None
+
+    async def mark_job_succeeded(self, job, **_kwargs):
+        return None
+
+
+async def noop_enqueue_extraction_task(job_id):
+    return None
+
+
+async def noop_attach_async_task_tracking_for_job(**kwargs):
+    return "batch-test-1"
+
+
 def disable_extraction_enqueue(service):
-    service._enqueue_extraction_task = lambda job_id: None
+    service.task_progress_service = FakeTaskProgressService()
+    service._enqueue_extraction_task = noop_enqueue_extraction_task
     service._commit_pending_jobs_before_enqueue = noop_commit_pending_jobs_before_enqueue
+    service._attach_async_task_tracking_for_job = noop_attach_async_task_tracking_for_job
     return service
 
 
@@ -1057,6 +1182,151 @@ async def test_update_patient_ehr_folder_skips_existing_extracted_documents():
 
     assert result["created_jobs"] == 0
     assert result["already_extracted_documents"] == 1
+
+
+@pytest.mark.asyncio
+async def test_update_patient_ehr_folder_filters_target_form_keys():
+    context = SimpleNamespace(
+        id="context-1",
+        context_type="patient_ehr",
+        patient_id="patient-1",
+        project_id=None,
+        project_patient_id=None,
+        schema_version_id="schema-version-1",
+    )
+    schema_json = {
+        "properties": {
+            "basic": {
+                "properties": {
+                    "demographics": {
+                        "type": "object",
+                        "x-sources": {"primary": ["病案首页"]},
+                        "properties": {"gender": {"type": "string", "x-display-name": "性别"}},
+                    },
+                    "diagnosis": {
+                        "type": "object",
+                        "x-sources": {"primary": ["病案首页"]},
+                        "properties": {"name": {"type": "string", "x-display-name": "诊断"}},
+                    },
+                }
+            }
+        }
+    }
+    documents = [
+        SimpleNamespace(
+            id="doc-1",
+            patient_id="patient-1",
+            status="archived",
+            ocr_status="completed",
+            ocr_text="性别：男",
+            ocr_payload_json=None,
+            parsed_content=None,
+            parsed_data=None,
+            doc_type="病历文书",
+            doc_subtype="病案首页",
+            document_type=None,
+            document_sub_type=None,
+            doc_title="病案首页",
+            original_filename="病案首页.pdf",
+            metadata_json={},
+            effective_at=None,
+        ),
+    ]
+    service = disable_extraction_enqueue(ExtractionService(
+        job_repository=FakeExtractionJobRepositoryWithExisting(),
+        run_repository=FakeExtractionRunRepository(),
+        record_repository=FakeExtractionRecordRepository(),
+        document_repository=FakePatientDocumentsRepository(documents),
+        ehr_service=FakePatientEhrServiceForFolderUpdate(context=context, schema_json=schema_json),
+        value_service=FakeExtractionValueService(),
+        llm_ehr_extractor=FakeSchemaExtractor(),
+    ))
+
+    result = await service.update_patient_ehr_folder(
+        patient_id="patient-1",
+        requested_by="user-1",
+        target_form_keys=["basic.demographics"],
+        mode="incremental",
+    )
+
+    assert result["created_jobs"] == 1
+    assert result["jobs"][0].target_form_key == "basic.demographics"
+    assert result["target_form_keys"] == ["basic.demographics"]
+
+
+@pytest.mark.asyncio
+async def test_update_patient_ehr_folder_targeted_incremental_skips_completed_form_only():
+    context = SimpleNamespace(
+        id="context-1",
+        context_type="patient_ehr",
+        patient_id="patient-1",
+        project_id=None,
+        project_patient_id=None,
+        schema_version_id="schema-version-1",
+    )
+    schema_json = {
+        "properties": {
+            "basic": {
+                "properties": {
+                    "demographics": {
+                        "type": "object",
+                        "x-sources": {"primary": ["病案首页"]},
+                        "properties": {"gender": {"type": "string", "x-display-name": "性别"}},
+                    },
+                    "diagnosis": {
+                        "type": "object",
+                        "x-sources": {"primary": ["病案首页"]},
+                        "properties": {"name": {"type": "string", "x-display-name": "诊断"}},
+                    },
+                }
+            }
+        }
+    }
+    document = SimpleNamespace(
+        id="doc-1",
+        patient_id="patient-1",
+        status="archived",
+        ocr_status="completed",
+        ocr_text="性别：男",
+        ocr_payload_json=None,
+        parsed_content=None,
+        parsed_data=None,
+        doc_type="病历文书",
+        doc_subtype="病案首页",
+        document_type=None,
+        document_sub_type=None,
+        doc_title="病案首页",
+        original_filename="病案首页.pdf",
+        metadata_json={},
+        effective_at=None,
+    )
+    existing_job = SimpleNamespace(
+        patient_id="patient-1",
+        document_id="doc-1",
+        job_type="targeted_schema",
+        target_form_key="basic.demographics",
+        status="completed",
+    )
+    service = disable_extraction_enqueue(ExtractionService(
+        job_repository=FakeExtractionJobRepositoryWithExisting(existing_jobs=[existing_job]),
+        run_repository=FakeExtractionRunRepository(),
+        record_repository=FakeExtractionRecordRepository(),
+        document_repository=FakePatientDocumentsRepository([document]),
+        ehr_service=FakePatientEhrServiceForFolderUpdate(context=context, schema_json=schema_json),
+        value_service=FakeExtractionValueService(),
+        llm_ehr_extractor=FakeSchemaExtractor(),
+    ))
+
+    result = await service.update_patient_ehr_folder(
+        patient_id="patient-1",
+        requested_by="user-1",
+        target_form_keys=["basic.demographics", "basic.diagnosis"],
+        mode="incremental",
+    )
+
+    assert result["created_jobs"] == 1
+    assert result["jobs"][0].target_form_key == "basic.diagnosis"
+
 
 @pytest.mark.asyncio
 async def test_structured_value_service_coerces_date_datetime_and_null_json_values():

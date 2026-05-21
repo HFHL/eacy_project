@@ -65,7 +65,7 @@ const SearchFilter = ({
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} sm={24} md={12} lg={8}>
           <Search
-            placeholder="搜索文档名称、内容关键词..."
+            placeholder="搜索文件名、患者姓名、标题、类型、日期..."
             allowClear
             enterButton={<SearchOutlined />}
             size="middle"

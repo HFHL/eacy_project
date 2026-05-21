@@ -1,15 +1,37 @@
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import asyncio
 
 import httpx
 
 from core.config import config
+from app.services.textin_image_bytes import TextInImageDecodeError, decode_binary_image_content
 
 
 class TextInOcrError(RuntimeError):
     pass
+
+
+TEXTIN_IMAGE_DOWNLOAD_URL = "https://api.textin.com/ocr_image/download"
+
+
+def build_textin_api_url(base_url: str | None = None) -> str:
+    raw_url = (base_url or config.TEXTIN_API_URL or "").strip()
+    if not raw_url:
+        return ""
+
+    parse_mode = (config.TEXTIN_PARSE_MODE or "auto").strip() or "auto"
+    get_image = (config.TEXTIN_GET_IMAGE or "page").strip() or "page"
+    extra_params = {
+        "parse_mode": parse_mode,
+        "get_image": get_image,
+    }
+
+    parsed = urlparse(raw_url)
+    existing = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    existing.update(extra_params)
+    return urlunparse(parsed._replace(query=urlencode(existing)))
 
 
 class TextInOcrClient:
@@ -25,6 +47,10 @@ class TextInOcrClient:
         self.secret_code = secret_code if secret_code is not None else config.TEXTIN_SECRET_CODE
         self.api_url = api_url if api_url is not None else config.TEXTIN_API_URL
         self.timeout_seconds = timeout_seconds if timeout_seconds is not None else config.TEXTIN_TIMEOUT_SECONDS
+
+    @property
+    def request_api_url(self) -> str:
+        return build_textin_api_url(self.api_url)
 
     def _headers(self, *, filename: str | None = None, mime_type: str | None = None) -> dict[str, str]:
         if not self.app_id or not self.secret_code:
@@ -64,7 +90,7 @@ class TextInOcrClient:
             try:
                 async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                     return await client.post(
-                        self.api_url,
+                        self.request_api_url,
                         content=content,
                         headers=self._headers(filename=filename, mime_type=mime_type),
                     )
@@ -82,7 +108,7 @@ class TextInOcrClient:
         filename: str | None = None,
         mime_type: str | None = None,
     ) -> dict[str, Any]:
-        if not self.api_url:
+        if not self.request_api_url:
             raise TextInOcrError("Missing TextIn API URL: TEXTIN_API_URL is required")
         if not content:
             raise TextInOcrError("Cannot OCR an empty document")
@@ -127,3 +153,48 @@ class TextInOcrClient:
             filename=filename,
             mime_type=mime_type,
         )
+
+    async def download_image(self, image_id: str) -> bytes:
+        if not image_id:
+            raise TextInOcrError("Cannot download TextIn image without image_id")
+        retryable_errors = (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadError,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+            httpx.WriteError,
+            httpx.WriteTimeout,
+        )
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
+                    response = await client.get(
+                        TEXTIN_IMAGE_DOWNLOAD_URL,
+                        params={"image_id": image_id},
+                        headers={
+                            "x-ti-app-id": self.app_id or "",
+                            "x-ti-secret-code": self.secret_code or "",
+                        },
+                    )
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise TextInOcrError(
+                        f"TextIn image download failed: {response.status_code} {response.text[:500]}"
+                    )
+                if not response.content:
+                    raise TextInOcrError("TextIn image download returned empty content")
+                try:
+                    decoded, _content_type = decode_binary_image_content(
+                        response.content,
+                        content_type=(response.headers.get("content-type") or "").split(";")[0].strip() or None,
+                    )
+                except TextInImageDecodeError as exc:
+                    raise TextInOcrError(str(exc)) from exc
+                return decoded
+            except retryable_errors as exc:
+                last_error = exc
+                if attempt == 3:
+                    break
+                await asyncio.sleep(attempt * 1.5)
+        raise TextInOcrError(f"TextIn image download failed after retries: {last_error}") from last_error

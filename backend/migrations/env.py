@@ -60,10 +60,13 @@ def run_migrations_offline():
 
 
 def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        transaction_per_migration=True,
+    )
 
-    with context.begin_transaction():
-        context.run_migrations()
+    context.run_migrations()
 
 
 async def run_migrations_online():

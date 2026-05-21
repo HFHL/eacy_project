@@ -71,8 +71,8 @@ DEBUG=true
 APP_HOST=0.0.0.0
 APP_PORT=8000
 
-# PostgreSQL async URL
-DATABASE_URL=postgresql+asyncpg://eacy:eacy_password@127.0.0.1:5432/eacy
+# 远程 PostgreSQL（必填，勿使用 127.0.0.1 本地库）
+DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:PORT/DATABASE
 
 # Auth
 ENABLE_AUTH=true

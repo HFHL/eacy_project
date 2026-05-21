@@ -798,5 +798,5 @@ const FormPanel = ({
   )
 }
 
-export default FormPanel
+export default React.memo(FormPanel)
 export { getSchemaAtPath }

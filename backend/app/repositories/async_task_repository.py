@@ -29,8 +29,18 @@ class AsyncTaskEventRepository(BaseRepo[AsyncTaskEvent]):
     def __init__(self):
         super().__init__(AsyncTaskEvent)
 
-    async def list_by_batch(self, batch_id: str, *, after_id: str | None = None, limit: int = 200) -> list[AsyncTaskEvent]:
-        query = select(AsyncTaskEvent).where(AsyncTaskEvent.batch_id == batch_id).order_by(AsyncTaskEvent.created_at, AsyncTaskEvent.id).limit(limit)
+    async def list_by_batch(
+        self,
+        batch_id: str,
+        *,
+        after_id: str | None = None,
+        item_id: str | None = None,
+        limit: int = 200,
+    ) -> list[AsyncTaskEvent]:
+        query = select(AsyncTaskEvent).where(AsyncTaskEvent.batch_id == batch_id)
+        if item_id:
+            query = query.where(AsyncTaskEvent.item_id == item_id)
+        query = query.order_by(AsyncTaskEvent.created_at, AsyncTaskEvent.id).limit(limit)
         if after_id:
             marker = await self.get_by_id(after_id)
             if marker is not None:
@@ -42,5 +52,7 @@ class AsyncTaskEventRepository(BaseRepo[AsyncTaskEvent]):
                     .order_by(AsyncTaskEvent.created_at, AsyncTaskEvent.id)
                     .limit(limit)
                 )
+                if item_id:
+                    query = query.where(AsyncTaskEvent.item_id == item_id)
         result = await session.execute(query)
         return list(result.scalars().all())

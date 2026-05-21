@@ -9,12 +9,22 @@ import {
   EditOutlined,
   SaveOutlined,
   UploadOutlined,
-  ReloadOutlined
+  ReloadOutlined,
+  DeleteOutlined,
+  CopyOutlined,
 } from '@ant-design/icons'
 import FormDesigner from '../../components/FormDesigner'
 import DesignerPageFrame from '../../components/FormDesigner/components/shared/DesignerPageFrame'
 import { CSVConverter } from '../../components/FormDesigner/utils/csvConverter'
-import { getCRFTemplate, saveCrfTemplateDesigner, createCrfTemplateDesigner, updateCrfTemplateMeta } from '../../api/crfTemplate'
+import {
+  getCRFTemplate,
+  saveCrfTemplateDesigner,
+  createCrfTemplateDesigner,
+  updateCrfTemplateMeta,
+  deleteCrfTemplate,
+} from '../../api/crfTemplate'
+import { getCrfTemplateDeleteId, isCrfTemplateDeletable } from '../../utils/crfTemplateGuards'
+import { confirmDeleteCrfTemplate } from '../../utils/crfTemplateDeleteFlow'
 import {
   buildFieldGroupsForBackend,
   fetchCrfDocTypeOptions,
@@ -22,6 +32,7 @@ import {
 } from '../../components/FormDesigner/utils/designerBridge'
 import { resolveTemplateAssets } from '../../utils/templateAssetResolver'
 import TemplateMetaModal from '../../components/Research/TemplateMetaModal'
+import CrfTemplateCloneModal from '../../components/Research/CrfTemplateCloneModal'
 import { templateEdit, templateFallback, templateView } from '../../utils/researchPaths'
 import { PAGE_LAYOUT_HEIGHTS, toViewportHeight } from '../../constants/pageLayout'
 import {
@@ -51,6 +62,14 @@ const CRFDesigner = () => {
   const [templateInfo, setTemplateInfo] = useState(createDefaultTemplateInfo(templateId || ''))
   const [templateForm] = Form.useForm()
   const [docTypeOptions, setDocTypeOptions] = useState([])
+  const [templateRaw, setTemplateRaw] = useState(null)
+  const [deletingTemplate, setDeletingTemplate] = useState(false)
+  const [cloneModalOpen, setCloneModalOpen] = useState(false)
+
+  const canDeleteTemplate = useMemo(
+    () => Boolean(templateId) && isCrfTemplateDeletable(templateRaw || { id: templateId }),
+    [templateId, templateRaw],
+  )
 
   useEffect(() => {
     const loadDocTypes = async () => {
@@ -219,6 +238,44 @@ const CRFDesigner = () => {
     }
   }, [templateForm, templateId])
 
+  const handleDeleteTemplate = useCallback(async () => {
+    if (!templateId || !canDeleteTemplate) return
+    const deleteId = getCrfTemplateDeleteId(templateRaw || { id: templateId })
+    if (!deleteId) {
+      message.error('无法解析可删除的模板 ID，请刷新后重试')
+      return
+    }
+
+    await confirmDeleteCrfTemplate({
+      templateId: deleteId,
+      templateName: templateInfo.name,
+      onConfirm: async ({ affectedProjectCount = 0 } = {}) => {
+        setDeletingTemplate(true)
+        try {
+          const res = await deleteCrfTemplate(deleteId)
+          if (res?.success === false) {
+            message.error(res?.message || '删除模板失败')
+            return
+          }
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('research-template-rail-refresh'))
+          }
+          if (affectedProjectCount > 0) {
+            message.success(`模板已删除，已解除 ${affectedProjectCount} 个项目的模板关联`)
+          } else {
+            message.success('模板已删除')
+          }
+          navigate(templateFallback())
+        } catch (error) {
+          message.error(error?.message || '删除模板失败，请稍后重试')
+          throw error
+        } finally {
+          setDeletingTemplate(false)
+        }
+      },
+    })
+  }, [canDeleteTemplate, navigate, templateId, templateInfo.name, templateRaw])
+
   /**
    * 监听来自侧栏的“编辑模板信息”事件。
    * - 命中当前模板：直接打开弹窗。
@@ -278,6 +335,12 @@ const CRFDesigner = () => {
         if (cancelled) return
         const tpl = res?.data
         if (!tpl) return
+        if (tpl.status === 'archived') {
+          message.warning('该模板已删除')
+          navigate(templateFallback(), { replace: true })
+          return
+        }
+        setTemplateRaw(tpl)
         const nextTemplateInfo = {
           id: tpl.id || templateId,
           name: tpl.template_name || tpl.name || '未命名模板',
@@ -319,7 +382,7 @@ const CRFDesigner = () => {
     return () => {
       cancelled = true
     }
-  }, [location.key, templateId, templateForm])
+  }, [location.key, templateId, templateForm, navigate])
 
   /**
    * CRF 模板设计页统一容器高度（view/edit 共用）。
@@ -383,6 +446,21 @@ const CRFDesigner = () => {
                 进入编辑
               </Button>
             )}
+            {templateId ? (
+              <Button icon={<CopyOutlined />} onClick={() => setCloneModalOpen(true)}>
+                复制为新模板
+              </Button>
+            ) : null}
+            {canDeleteTemplate ? (
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                loading={deletingTemplate}
+                onClick={handleDeleteTemplate}
+              >
+                删除模板
+              </Button>
+            ) : null}
           </Space>
         )}
       >
@@ -409,6 +487,19 @@ const CRFDesigner = () => {
         }}
         onCancel={() => setTemplateInfoVisible(false)}
         onOk={handleSaveTemplateInfo}
+      />
+      <CrfTemplateCloneModal
+        open={cloneModalOpen}
+        templateId={templateId}
+        sourceName={templateInfo.name}
+        onCancel={() => setCloneModalOpen(false)}
+        onCloned={(newId) => {
+          setCloneModalOpen(false)
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('research-template-rail-refresh'))
+          }
+          navigate(templateEdit(newId))
+        }}
       />
     </>
   )

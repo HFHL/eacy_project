@@ -306,6 +306,8 @@ export class CSVConverter {
         primary: primarySources,
         secondary: secondarySources,
       };
+      group.primarySources = primarySources;
+      group.secondarySources = secondarySources;
       group.isExtractionUnit = extractionUnit !== null ? extractionUnit : true;
     } else if (extractionUnit !== null) {
       group.isExtractionUnit = extractionUnit;

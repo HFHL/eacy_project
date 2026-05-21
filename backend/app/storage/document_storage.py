@@ -120,12 +120,14 @@ class AliyunOssDocumentStorage(DocumentStorage):
         ]
         return f"{object_url}{separator}{'&'.join(query_params)}"
 
-    def _put_object(self, key: str, content: bytes) -> None:
+    def put_object(self, key: str, content: bytes, *, content_type: str = "application/octet-stream") -> None:
+        self._put_object(key, content, content_type=content_type)
+
+    def _put_object(self, key: str, content: bytes, *, content_type: str = "application/octet-stream") -> None:
         parsed = urlparse(self.endpoint)
         endpoint_host = parsed.netloc or parsed.path
         host = f"{self.bucket_name}.{endpoint_host}"
         path = f"/{quote(key, safe='/')}"
-        content_type = "application/octet-stream"
         date_header = email.utils.formatdate(usegmt=True)
         signature = self._sign("PUT", key, date_header=date_header, content_type=content_type)
 
@@ -153,7 +155,7 @@ class AliyunOssDocumentStorage(DocumentStorage):
         content = await file.read()
         file_hash.update(content)
 
-        self._put_object(key, content)
+        self._put_object(key, content, content_type="application/octet-stream")
 
         return StoredDocumentFile(
             provider="oss",

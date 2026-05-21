@@ -273,7 +273,6 @@ const ImagePreviewArea = ({
           pdfUrl={imageUrl}
           pageNumber={Math.max(0, pageIndex) + 1}
           locations={currentPageBlocks}
-          maxWidth="100%"
           loading={false}
           showToolbar={false}
         />

@@ -45,6 +45,70 @@ def schema_top_level_forms(schema_json: dict[str, Any]) -> list[dict[str, str | 
     return forms
 
 
+def schema_dataset_group_paths(schema_json: dict[str, Any]) -> dict[str, set[str]]:
+    """Return {group_id: leaf_field_paths} aligned with frontend dataset group ids."""
+
+    def collect_leaf_paths(node: dict[str, Any], path_segments: list[str]) -> set[str]:
+        if not isinstance(node, dict):
+            return set()
+        target = node
+        if node.get("type") == "array" and isinstance(node.get("items"), dict):
+            target = node["items"]
+        props = target.get("properties")
+        if not props or not isinstance(props, dict):
+            if path_segments:
+                return {".".join(path_segments)}
+            return set()
+        leaves: set[str] = set()
+        for child_key, child_schema in props.items():
+            if not isinstance(child_schema, dict):
+                continue
+            child_target = child_schema
+            if child_schema.get("type") == "array" and isinstance(child_schema.get("items"), dict):
+                child_target = child_schema["items"]
+            child_props = child_target.get("properties")
+            if child_props and isinstance(child_props, dict):
+                leaves.update(collect_leaf_paths(child_schema, [*path_segments, str(child_key)]))
+            else:
+                leaves.add(".".join([*path_segments, str(child_key)]))
+        return leaves
+
+    groups: dict[str, set[str]] = {}
+    root_props = (schema_json or {}).get("properties") or {}
+    if not isinstance(root_props, dict):
+        return groups
+
+    for folder_key, folder_schema in root_props.items():
+        if not isinstance(folder_schema, dict):
+            continue
+        folder_inner = folder_schema
+        if folder_schema.get("type") == "array" and isinstance(folder_schema.get("items"), dict):
+            folder_inner = folder_schema["items"]
+        child_props = (folder_inner or {}).get("properties") or {}
+        if child_props and isinstance(child_props, dict):
+            has_nested = any(
+                isinstance(child, dict)
+                and (
+                    (isinstance(child.get("properties"), dict) and child.get("properties"))
+                    or (
+                        child.get("type") == "array"
+                        and isinstance((child.get("items") or {}).get("properties"), dict)
+                        and (child.get("items") or {}).get("properties")
+                    )
+                )
+                for child in child_props.values()
+            )
+            if has_nested:
+                for group_key, group_schema in child_props.items():
+                    if not isinstance(group_schema, dict):
+                        continue
+                    group_id = f"{folder_key}/{group_key}"
+                    groups[group_id] = collect_leaf_paths(group_schema, [str(folder_key), str(group_key)])
+                continue
+        groups[str(folder_key)] = collect_leaf_paths(folder_schema, [str(folder_key)])
+    return groups
+
+
 def schema_leaf_paths(schema_json: dict[str, Any]) -> set[str]:
     """返回 schema 中所有叶子字段的"规范化路径"集合（去除数组下标）。
 
@@ -106,6 +170,8 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
         record_form_title: str | None,
     ) -> None:
         if is_leaf(schema):
+            if schema.get("x-skip-extraction"):
+                return
             if not path:
                 return
             field_key = path[-1]

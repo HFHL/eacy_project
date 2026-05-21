@@ -58,7 +58,6 @@ const ProjectSchemaEhrTab = ({
   onSave,
   onDataChange,
   onDocumentSelect,
-  onUploadDocument,
   onFieldCandidateSolidified,
   externalHistoryRefreshKey = 0,
 
@@ -191,11 +190,10 @@ const ProjectSchemaEhrTab = ({
     documents: projectDocuments,
     selectedDocument,
     onDocumentSelect: handleDocumentSelect,
-    onUploadDocument,
     onAddRepeatableInstance: handleAddRepeatableInstance,
     repeatableNamingPattern: '{formName}_{index}',
     sourcePatientId
-  }), [projectDocuments, selectedDocument, handleDocumentSelect, onUploadDocument, handleAddRepeatableInstance, sourcePatientId])
+  }), [projectDocuments, selectedDocument, handleDocumentSelect, handleAddRepeatableInstance, sourcePatientId])
   
   // 加载/错误状态:projectId 模式下完全跟随父组件,默认 schema 模式下沿用本地状态
   const effectiveLoading = isSchemaManagedByParent ? Boolean(schemaLoading) : loading

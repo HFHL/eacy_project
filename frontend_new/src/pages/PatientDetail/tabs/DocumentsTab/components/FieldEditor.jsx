@@ -32,11 +32,16 @@ const FieldEditor = ({
   const [editValue, setEditValue] = useState(value)
   const [editConfidence, setEditConfidence] = useState(confidence)
   const [valueHovered, setValueHovered] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   useEffect(() => {
     setEditValue(value)
     setEditConfidence(confidence)
   }, [value, confidence])
+
+  useEffect(() => {
+    if (!isEditing) setPickerOpen(false)
+  }, [isEditing])
 
   /**
    * 提交字段编辑（仅前端暂存，不直接落库）
@@ -67,6 +72,9 @@ const FieldEditor = ({
   const handleEnterEditMode = () => {
     if (!editable || isEditing) return
     setIsEditing(true)
+    if ((field.uiComponentHint || 'text') === 'datepicker') {
+      setPickerOpen(true)
+    }
   }
 
   /**
@@ -74,6 +82,7 @@ const FieldEditor = ({
    */
   const handleEditorBlurCapture = (e) => {
     if (!isEditing) return
+    if (pickerOpen) return
     const nextFocused = e.relatedTarget
     if (!nextFocused || !e.currentTarget.contains(nextFocused)) {
       handleSave()
@@ -126,10 +135,21 @@ const FieldEditor = ({
       case 'datepicker':
         return (
           <DatePicker
-            value={editValue ? dayjs(editValue) : null}
-            onChange={(date) => setEditValue(date ? date.format('YYYY-MM-DD') : '')}
+            autoFocus
+            open={pickerOpen}
+            value={editValue ? dayjs(editValue, 'YYYY-MM-DD') : null}
+            format="YYYY-MM-DD"
+            onChange={(date, dateString) => {
+              const nextValue = dateString || ''
+              setEditValue(nextValue)
+              if (nextValue !== value || editConfidence !== confidence) {
+                onSave?.(field.fieldId, nextValue, editConfidence)
+              }
+              setPickerOpen(false)
+              setIsEditing(false)
+            }}
             onOpenChange={(open) => {
-              if (!open) handleSave()
+              setPickerOpen(open)
             }}
             style={{ width: '100%' }}
             placeholder={`请选择${field.fieldName}`}
@@ -224,6 +244,8 @@ const FieldEditor = ({
         return <Text>{value === 'true' || value === true ? '是' : '否'}</Text>
       case 'checkbox':
         return <Text>{value.split(',').join(', ')}</Text>
+      case 'datepicker':
+        return <Text>{value ? dayjs(value, 'YYYY-MM-DD').format('YYYY-MM-DD') : ''}</Text>
       default:
         return <Text>{value}</Text>
     }
