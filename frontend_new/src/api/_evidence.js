@@ -54,6 +54,11 @@ export const normalizeEvidenceLocation = (evidence = {}) => {
     document_id: evidence.document_id,
     fallback_strategy: location.fallback_strategy || null,
     coord_warning: location.coord_warning || null,
+    // 0.70~0.88 区间的模糊匹配仍然渲染，但 low_confidence=true 让 UI 用浅色或虚线区分
+    low_confidence: Boolean(location.low_confidence)
+      || evidence.evidence_type === 'document_fuzzy_low_confidence',
+    record_shared: Boolean(location.record_shared)
+      || evidence.evidence_type === 'document_record_shared',
   }
 }
 
@@ -82,5 +87,7 @@ export const getEvidenceQualityFlags = (sourceLocation) => {
     )),
     coordWarning: locations.find((item) => item?.coord_warning)?.coord_warning || null,
     nonRenderable: locations.length > 0 && locations.every((item) => !hasRenderablePolygon(item)),
+    lowConfidence: locations.some((item) => item?.low_confidence === true),
+    recordShared: locations.some((item) => item?.record_shared === true),
   }
 }

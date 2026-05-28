@@ -522,7 +522,20 @@ class LlmEhrExtractor:
             for evidence in evidences
             if self._evidence_matches_field(field_path=field_path, spec=spec, value=value, evidence=evidence)
         ]
-        return matched
+        if matched:
+            return matched
+        # Fallback: record-level evidences exist but none textually contains this field's
+        # value/key/title (common for derived numerics, enums, truncated long text). Keep
+        # them as shared evidences so the field still has a renderable polygon via its
+        # source_id; downstream knows they are shared via record_shared=True.
+        shared = []
+        for evidence in evidences:
+            if not isinstance(evidence, dict):
+                continue
+            cloned = dict(evidence)
+            cloned["record_shared"] = True
+            shared.append(cloned)
+        return shared
 
     def _evidence_matches_field(
         self,
@@ -919,7 +932,19 @@ class LlmEhrExtractor:
                 continue
             normalized = {
                 key: evidence.get(key)
-                for key in ("quote_text", "page_no", "bbox_json", "start_offset", "end_offset", "source_type", "source_id", "line_id", "block_id", "cell_key")
+                for key in (
+                    "quote_text",
+                    "page_no",
+                    "bbox_json",
+                    "start_offset",
+                    "end_offset",
+                    "source_type",
+                    "source_id",
+                    "line_id",
+                    "block_id",
+                    "cell_key",
+                    "record_shared",
+                )
                 if evidence.get(key) is not None
             }
             if normalized:

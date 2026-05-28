@@ -127,7 +127,8 @@ def test_fuzzy_match_respects_page_no():
     assert resolved[0]["bbox_json"]["block_id"] == "b2"
 
 
-def test_low_confidence_fuzzy_match_drops_polygon():
+def test_very_low_confidence_fuzzy_match_drops_polygon():
+    """Below the LOW_CONFIDENCE floor (0.70) the polygon is stripped entirely."""
     document = SimpleNamespace(
         ocr_payload_json={
             "blocks": [
@@ -146,6 +147,41 @@ def test_low_confidence_fuzzy_match_drops_polygon():
 
     bbox = resolved[0].get("bbox_json")
     assert bbox is None or bbox.get("renderable") is False
+
+
+def test_medium_confidence_fuzzy_match_keeps_polygon_with_low_confidence_flag():
+    """Fuzzy hits in [0.70, 0.88) used to lose their polygon. They now keep it
+    but are labelled low_confidence so the UI can render a lighter / dashed box
+    instead of dropping the source pointer entirely."""
+    document = SimpleNamespace(
+        ocr_payload_json={
+            "blocks": [
+                {
+                    "block_id": "b1",
+                    "page_no": 1,
+                    "text": "完成情况备注栏",
+                    "polygon": [10, 10, 80, 10, 80, 30, 10, 30],
+                    "page_width": 1000,
+                    "page_height": 1400,
+                }
+            ]
+        },
+        parsed_data=None,
+    )
+
+    resolved = resolve_evidence_locations(
+        document,
+        [{"quote_text": "完成情况备注", "page_no": 1}],
+        fallback_text="完成情况备注",
+    )
+
+    bbox = resolved[0]["bbox_json"]
+    score = float(bbox.get("match_score") or 0)
+    assert 0.70 <= score < 0.88, f"unexpected match_score: {score}"
+    assert bbox.get("renderable") is True
+    assert bbox.get("low_confidence") is True
+    assert bbox.get("coord_warning") == "low_confidence_fuzzy_match"
+    assert isinstance(bbox.get("polygon"), list) and len(bbox["polygon"]) >= 8
 
 
 def test_build_ocr_reading_units_prefers_blocks_and_deduplicates_line_duplicates():

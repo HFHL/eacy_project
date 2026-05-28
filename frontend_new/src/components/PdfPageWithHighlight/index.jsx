@@ -428,8 +428,17 @@ export function PdfPageWithHighlight({
             >
               {visibleItems.map(({ loc, idx }) => {
                 const isActive = activeIndex === idx
-                const fill = isActive ? 'rgba(255, 77, 79, 0.18)' : 'rgba(255, 77, 79, 0.08)'
+                const isLow = Boolean(loc?.low_confidence)
+                const isShared = Boolean(loc?.record_shared) && !isLow
+                // 低置信度模糊匹配/record_shared 用橙色，正常高置信度匹配维持红色
+                const accent = isLow || isShared ? '#fa8c16' : appThemeToken.colorError
+                const fill = isLow
+                  ? (isActive ? 'rgba(250, 140, 22, 0.16)' : 'rgba(250, 140, 22, 0.08)')
+                  : isShared
+                    ? (isActive ? 'rgba(250, 140, 22, 0.18)' : 'rgba(250, 140, 22, 0.10)')
+                    : (isActive ? 'rgba(255, 77, 79, 0.18)' : 'rgba(255, 77, 79, 0.08)')
                 const strokeWidth = isActive ? 2 : 1
+                const dash = isLow ? '4,3' : undefined
                 const polygon = getPolygonPoints(loc)
                 if (polygon) {
                   return (
@@ -437,8 +446,9 @@ export function PdfPageWithHighlight({
                       key={`poly-${idx}`}
                       points={polygon.map((p) => `${p.x},${p.y}`).join(' ')}
                       fill={fill}
-                      stroke={appThemeToken.colorError}
+                      stroke={accent}
                       strokeWidth={strokeWidth}
+                      strokeDasharray={dash}
                       vectorEffect="non-scaling-stroke"
                     />
                   )
@@ -452,8 +462,9 @@ export function PdfPageWithHighlight({
                     width={Math.max(rect.width, 2)}
                     height={Math.max(rect.height, 2)}
                     fill={fill}
-                    stroke={appThemeToken.colorError}
+                    stroke={accent}
                     strokeWidth={strokeWidth}
+                    strokeDasharray={dash}
                     vectorEffect="non-scaling-stroke"
                   />
                 )

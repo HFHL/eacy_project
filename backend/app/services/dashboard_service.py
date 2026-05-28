@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, time
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from app.models import Document, ExtractionJob, FieldValueEvent, Patient, ProjectPatient, ResearchProject
 from app.services.archive_grouping_service import ArchiveGroupingService
@@ -86,7 +86,11 @@ class DashboardService:
             "tasks": {
                 "queue": self._document_queue_items(documents, task_status_counts),
                 "recent_activities": [],
-                "project_extraction_summary": self._job_summary(jobs, today=today),
+                # KPI 必须用 DB 端 count，避免被 _list_jobs(limit=500) 截断。
+                # 旧版基于 len(jobs) 的实现会让"任务"卡片在抽取量大时卡在 500。
+                "project_extraction_summary": await self._job_summary_from_db(
+                    user_id=user_id, today=today
+                ),
             },
             "activities": {
                 "recent": self._recent_activities(documents, patients, projects, jobs),
@@ -121,7 +125,13 @@ class DashboardService:
         return list(result.scalars().all())
 
     async def _list_projects(self, *, user_id: str | None) -> list[ResearchProject]:
-        query = select(ResearchProject).order_by(ResearchProject.created_at.desc())
+        # research_project_service.archive_project 通过把 status 置为 "deleted" 实现软删，
+        # 仪表盘 KPI 必须把这部分过滤掉，否则与"科研项目"列表对不上账。
+        query = (
+            select(ResearchProject)
+            .where(ResearchProject.status != "deleted")
+            .order_by(ResearchProject.created_at.desc())
+        )
         if user_id is not None:
             query = query.where(ResearchProject.owner_id == user_id)
         result = await session.execute(query)
@@ -274,6 +284,43 @@ class DashboardService:
             "completed": sum(1 for job in jobs if job.status == "completed"),
             "failed": sum(1 for job in jobs if job.status == "failed"),
         }
+
+    async def _job_summary_from_db(self, *, user_id: str | None, today: datetime) -> dict[str, Any]:
+        """直接在数据库侧聚合 ExtractionJob 计数，避免内存截断。
+
+        旧实现先把最近 500 条加载到内存再做 sum/len，超过 500 时仪表盘的
+        "任务"KPI 会卡在 500、"今日新增"也只算这 500 条里的一部分。这里改成
+        一条 GROUP BY 查询拿到全量统计，与"科研项目-数据抽取统计"卡片对得上。
+        """
+        is_today = case((ExtractionJob.created_at >= today, 1), else_=0)
+        query = select(
+            ExtractionJob.status.label("status"),
+            func.count().label("total"),
+            func.coalesce(func.sum(is_today), 0).label("today"),
+        ).group_by(ExtractionJob.status)
+        if user_id is not None:
+            query = query.where(ExtractionJob.requested_by == user_id)
+
+        result = await session.execute(query)
+        rows = result.all()
+
+        summary: dict[str, Any] = {
+            "total": 0,
+            "today": 0,
+            "pending": 0,
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+        }
+        for row in rows:
+            status = (row.status or "").strip()
+            total = int(row.total or 0)
+            today_count = int(row.today or 0)
+            summary["total"] += total
+            summary["today"] += today_count
+            if status in summary:
+                summary[status] = total
+        return summary
 
     def _recent_activities(
         self,

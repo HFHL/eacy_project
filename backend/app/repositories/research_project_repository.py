@@ -88,6 +88,7 @@ class ProjectPatientRepository(BaseRepo[ProjectPatient]):
         query = (
             select(ProjectPatient)
             .where(ProjectPatient.project_id == project_id)
+            .where(ProjectPatient.status != "withdrawn")
             .order_by(ProjectPatient.created_at.desc())
         )
         result = await session.execute(query)

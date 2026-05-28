@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.core.auth import CurrentUser, get_current_user, is_admin_user
 from app.services.admin_extraction_trace_service import AdminExtractionTraceService
 from app.services.admin_task_service import (
+    AdminTemplateNotFoundError,
     AdminTaskNotFoundError,
     AdminTaskService,
     AdminUserNotFoundError,
@@ -20,6 +21,11 @@ class UpdateUserStatusRequest(BaseModel):
 
 class UpdateUserRoleRequest(BaseModel):
     role: str = Field(..., description="User role: admin or user")
+
+
+class UpdateTemplateVisibilityRequest(BaseModel):
+    is_system: bool = Field(..., description="Whether the template is visible to all users")
+
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -123,6 +129,19 @@ async def admin_templates(
 ) -> dict[str, Any]:
     templates = await service.list_templates()
     return {"templates": templates, "items": templates, "total": len(templates)}
+
+
+@router.patch("/templates/{template_id}/visibility")
+async def admin_update_template_visibility(
+    template_id: str,
+    payload: UpdateTemplateVisibilityRequest,
+    current_user: CurrentUser = Depends(require_admin_user),
+    service: AdminTaskService = Depends(get_admin_task_service),
+) -> dict[str, Any]:
+    try:
+        return await service.update_template_visibility(template_id, is_system=payload.is_system)
+    except AdminTemplateNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
 
 @router.get("/documents")

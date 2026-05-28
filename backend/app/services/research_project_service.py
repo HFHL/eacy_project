@@ -562,12 +562,14 @@ class ResearchProjectService:
             raise ResearchProjectNotFoundError("Patient not found")
 
         existing = await self.project_patient_repository.get_by_project_patient(project_id, patient_id)
+        now = datetime.utcnow()
         if existing is not None:
             project_patient = existing
             if project_patient.status == "withdrawn":
                 project_patient.status = "enrolled"
                 project_patient.withdrawn_at = None
-                project_patient.enrolled_at = datetime.utcnow()
+                project_patient.enrolled_at = now
+                project_patient.updated_at = now
                 project_patient = await self.project_patient_repository.save(project_patient)
         else:
             project_patient = await self.project_patient_repository.create(
@@ -576,8 +578,10 @@ class ResearchProjectService:
                     "patient_id": patient_id,
                     "enroll_no": enroll_no,
                     "status": "enrolled",
-                    "enrolled_at": datetime.utcnow(),
+                    "enrolled_at": now,
                     "extra_json": extra_json,
+                    "created_at": now,
+                    "updated_at": now,
                 }
             )
 
@@ -596,8 +600,10 @@ class ResearchProjectService:
         project_patient = await self.project_patient_repository.get_by_id(project_patient_id)
         if project_patient is None or project_patient.project_id != project_id:
             raise ResearchProjectNotFoundError("Project patient not found")
+        now = datetime.utcnow()
         project_patient.status = "withdrawn"
-        project_patient.withdrawn_at = datetime.utcnow()
+        project_patient.withdrawn_at = now
+        project_patient.updated_at = now
         return await self.project_patient_repository.save(project_patient)
 
     async def get_or_create_project_crf_context(
@@ -757,14 +763,7 @@ class ResearchProjectService:
         current_values = await self.current_repository.list_by_context(context.id)
         current = next((value for value in current_values if value.field_path == query_path), None)
         if current is not None and current.selected_event_id:
-            evidences = await self.evidence_repository.list_by_event(current.selected_event_id)
-            return self._relevant_evidences_for_field(
-                evidences,
-                field_path=current.field_path,
-                field_key=current.field_key,
-                field_title=None,
-                value=self._current_display_value(current),
-            )
+            return await self.evidence_repository.list_by_event(current.selected_event_id)
         return await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
 
     def _canonical_field_path(self, field_path: str) -> str:
@@ -808,7 +807,9 @@ class ResearchProjectService:
         field_title: str | None,
         value: Any,
     ) -> list[FieldValueEvidence]:
-        return [
+        if not evidences:
+            return []
+        matched = [
             evidence
             for evidence in evidences
             if self._evidence_matches_field(
@@ -819,6 +820,20 @@ class ResearchProjectService:
                 value=value,
             )
         ]
+        if matched:
+            return matched
+        # Fallback: keep evidences that already carry a usable polygon (resolved by
+        # source_id at extraction time) even when quote_text does not literally contain
+        # the field value/key/title. This is the common case for derived numerics,
+        # enums, fragmented long text where LLM only emits record-level evidence.
+        return [evidence for evidence in evidences if self._evidence_has_polygon(evidence)]
+
+    def _evidence_has_polygon(self, evidence: FieldValueEvidence) -> bool:
+        bbox_json = getattr(evidence, "bbox_json", None)
+        if not isinstance(bbox_json, dict):
+            return False
+        polygon = bbox_json.get("polygon") or bbox_json.get("textin_position") or bbox_json.get("position")
+        return isinstance(polygon, list) and len(polygon) >= 8 and bbox_json.get("renderable") is not False
 
     def _evidence_matches_field(
         self,

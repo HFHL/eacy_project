@@ -6,13 +6,19 @@ const { Text } = Typography
 const COORD_WARNING_LABELS = {
   missing_page_dimensions: '缺少页尺寸，坐标可能不准',
   missing_polygon: '缺少有效坐标，无法精确定位',
-  low_confidence_fuzzy_match: '模糊匹配置信度不足，未绘制精确红框',
+  low_confidence_fuzzy_match: '模糊匹配置信度较低，红框仅供参考',
   sibling_page_only: '仅继承相邻字段页码，无精确红框',
 }
 
 export function EvidenceQualityTags({ sourceLocation, style }) {
   const flags = getEvidenceQualityFlags(sourceLocation)
-  if (!flags.siblingFallback && !flags.coordWarning && !flags.nonRenderable) {
+  if (
+    !flags.siblingFallback
+    && !flags.coordWarning
+    && !flags.nonRenderable
+    && !flags.lowConfidence
+    && !flags.recordShared
+  ) {
     return null
   }
 
@@ -23,7 +29,17 @@ export function EvidenceQualityTags({ sourceLocation, style }) {
           仅继承相邻字段页码，无精确红框
         </Tag>
       )}
-      {flags.coordWarning && (
+      {flags.lowConfidence && !flags.nonRenderable && (
+        <Tag color="orange" style={{ marginBottom: 4 }}>
+          低置信度模糊匹配，红框仅供参考
+        </Tag>
+      )}
+      {flags.recordShared && !flags.lowConfidence && (
+        <Tag color="gold" style={{ marginBottom: 4 }}>
+          沿用同记录其他字段的位置
+        </Tag>
+      )}
+      {flags.coordWarning && !flags.lowConfidence && (
         <Tag color="orange" style={{ marginBottom: 4 }}>
           {COORD_WARNING_LABELS[flags.coordWarning] || flags.coordWarning}
         </Tag>

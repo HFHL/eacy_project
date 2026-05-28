@@ -13,6 +13,8 @@ from app.services.research_project_service import (
     ResearchProjectNotFoundError,
     ResearchProjectService,
 )
+from app.services.task_progress_service import TaskProgressService
+from app.api.v1.tasks.router import TaskBatchResponse
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -355,6 +357,10 @@ def get_extraction_service() -> ExtractionService:
     return ExtractionService()
 
 
+def get_task_progress_service() -> TaskProgressService:
+    return TaskProgressService()
+
+
 def get_research_project_export_service() -> ResearchProjectExportService:
     return ResearchProjectExportService()
 
@@ -669,6 +675,27 @@ async def update_project_crf_folder_batch(
             "job_ids": [job.id for job in result.get("jobs", [])],
         }
     )
+
+
+@router.get(
+    "/{project_id}/crf/extraction-batches/active",
+    response_model=list[TaskBatchResponse],
+)
+async def list_active_project_extraction_batches(
+    project_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    research_service: ResearchProjectService = Depends(get_research_project_service),
+    task_service: TaskProgressService = Depends(get_task_progress_service),
+) -> list[TaskBatchResponse]:
+    """返回项目下进行中的 CRF 抽取批次，供项目页恢复进度条。"""
+    project = await research_service.get_project(project_id, owner_id=uuid_user_id_or_none(current_user))
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research project not found")
+    payloads = await task_service.list_active_batches_for_project(
+        project_id,
+        requested_by=uuid_user_id_or_none(current_user),
+    )
+    return [TaskBatchResponse.model_validate(payload) for payload in payloads]
 
 
 @router.patch("/{project_id}/patients/{project_patient_id}/crf/fields/{field_path}", response_model=CrfCurrentValueResponse)

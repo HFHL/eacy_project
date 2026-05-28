@@ -804,14 +804,28 @@ export const getCrfExtractionProgress = async (_projectId = '', taskId = '') => 
   } catch (error) {
     if (error?.status && error.status !== 404) throw error
   }
-  const job = await request.get(`/extraction-jobs/${taskId}`)
-  return emptySuccess({
-    ...job,
-    task_id: job.id,
-    progress: job.progress ?? 0,
-    success_count: job.status === 'completed' ? 1 : 0,
-    error_count: job.status === 'failed' ? 1 : 0,
-  })
+  try {
+    const job = await request.get(`/extraction-jobs/${taskId}`)
+    return emptySuccess({
+      ...job,
+      task_id: job.id,
+      progress: job.progress ?? 0,
+      success_count: job.status === 'completed' ? 1 : 0,
+      error_count: job.status === 'failed' ? 1 : 0,
+    })
+  } catch (error) {
+    if (error?.status === 404) {
+      return emptySuccess(null, { notFound: true })
+    }
+    throw error
+  }
+}
+
+/** 查询项目下进行中的 CRF 抽取批次（用于离开页面后恢复进度条）。 */
+export const listProjectActiveExtractionBatches = async (projectId = '') => {
+  if (!projectId) return emptySuccess([])
+  const batches = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/crf/extraction-batches/active`)
+  return emptySuccess(Array.isArray(batches) ? batches : [])
 }
 const fetchActiveProjectBinding = async (projectId = '') => {
   if (!projectId) return null
@@ -1029,6 +1043,7 @@ export default {
   removeProjectPatient,
   startCrfExtraction,
   getCrfExtractionProgress,
+  listProjectActiveExtractionBatches,
   getProjectTemplateDesigner,
   saveProjectTemplateDesigner,
   applyTemplateVersion,

@@ -38,6 +38,10 @@ class AdminUserNotFoundError(ValueError):
     pass
 
 
+class AdminTemplateNotFoundError(ValueError):
+    pass
+
+
 VALID_USER_ROLES = {"admin", "user"}
 
 
@@ -85,6 +89,17 @@ class AdminTaskService:
         await session.refresh(user)
         return self._user_payload(user)
 
+    async def update_template_visibility(self, template_id: str, *, is_system: bool) -> dict[str, Any]:
+        template = await session.get(SchemaTemplate, template_id)
+        if template is None or template.status == "archived":
+            raise AdminTemplateNotFoundError("Schema template not found")
+        template.is_system = is_system
+        template.updated_at = datetime.utcnow()
+        await session.commit()
+        await session.refresh(template)
+        latest_versions = await self._latest_template_versions([template.id])
+        return self._template_payload(template, latest_versions)
+
     @staticmethod
     def _user_payload(user: User) -> dict[str, Any]:
         return {
@@ -120,18 +135,7 @@ class AdminTaskService:
         templates = list(result.scalars().all())
         latest_versions = await self._latest_template_versions([template.id for template in templates])
         return [
-            {
-                "id": template.id,
-                "template_name": template.template_name,
-                "template_code": template.template_code,
-                "category": template.template_type,
-                "is_system": False,
-                "is_published": latest_versions.get(template.id, {}).get("status") == "published",
-                "field_count": latest_versions.get(template.id, {}).get("field_count"),
-                "version": latest_versions.get(template.id, {}).get("version_no"),
-                "source": "database",
-                "created_at": template.created_at,
-            }
+            self._template_payload(template, latest_versions)
             for template in templates
         ]
 
@@ -675,8 +679,31 @@ class AdminTaskService:
                 "version_no": version.version_no,
                 "status": version.status,
                 "field_count": self._schema_field_count(version.schema_json),
+                "form_coverage": self._schema_form_coverage(version.schema_json),
             }
         return latest
+
+    @staticmethod
+    def _template_payload(template: SchemaTemplate, latest_versions: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        latest_version = latest_versions.get(template.id, {})
+        return {
+            "id": template.id,
+            "template_name": template.template_name,
+            "template_code": template.template_code,
+            "category": template.template_type,
+            "is_system": template.is_system,
+            "is_published": latest_version.get("status") == "published",
+            "field_count": latest_version.get("field_count"),
+            "version": latest_version.get("version_no"),
+            # form_coverage tells the admin UI how many forms in this template are
+            # discoverable by the document→form planner (i.e. have x-sources.primary).
+            # Forms missing primary sources will never be auto-extracted, which is
+            # the dominant root cause of "many CRF fields stay empty".
+            "form_coverage": latest_version.get("form_coverage"),
+            "source": "database",
+            "created_at": template.created_at,
+            "updated_at": template.updated_at,
+        }
 
     def _normalize_batch_status(self, batch: AsyncTaskBatch) -> str:
         if self._is_stale(status=batch.status, heartbeat_at=batch.heartbeat_at, updated_at=batch.updated_at):
@@ -851,3 +878,53 @@ class AdminTaskService:
 
         walk(schema_json)
         return count
+
+    def _schema_form_coverage(self, schema_json: Any) -> dict[str, Any]:
+        """Compute how many `form` schemas declare an `x-sources.primary` mapping.
+
+        A form without primary sources is invisible to the extraction planner and
+        will never be auto-matched to any document. This summary is exposed on the
+        admin template list so reviewers can spot misconfigured forms before users
+        wonder why fields are empty.
+        """
+        if not isinstance(schema_json, dict):
+            return {
+                "total_forms": 0,
+                "with_primary_sources": 0,
+                "missing_primary": [],
+            }
+
+        missing: list[dict[str, Any]] = []
+        total = 0
+        with_primary = 0
+        for group_key, group_schema in (schema_json.get("properties") or {}).items():
+            if not isinstance(group_schema, dict):
+                continue
+            for form_key, form_schema in (group_schema.get("properties") or {}).items():
+                if not isinstance(form_schema, dict):
+                    continue
+                target = (
+                    form_schema.get("items")
+                    if form_schema.get("type") == "array" and isinstance(form_schema.get("items"), dict)
+                    else form_schema
+                )
+                sources = form_schema.get("x-sources") or (target or {}).get("x-sources") or {}
+                primary_list = sources.get("primary") if isinstance(sources, dict) else None
+                has_primary = isinstance(primary_list, list) and bool([s for s in primary_list if s])
+                total += 1
+                if has_primary:
+                    with_primary += 1
+                else:
+                    title = (target or {}).get("x-display-name") or form_schema.get("x-display-name") or form_key
+                    missing.append(
+                        {
+                            "form_key": f"{group_key}.{form_key}",
+                            "form_title": str(title),
+                            "group_key": str(group_key),
+                        }
+                    )
+        return {
+            "total_forms": total,
+            "with_primary_sources": with_primary,
+            "missing_primary": missing,
+        }

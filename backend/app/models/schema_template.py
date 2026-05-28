@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.db import Base
@@ -18,3 +18,4 @@ class SchemaTemplate(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
     created_by: Mapped[str | None] = mapped_column(Uuid(as_uuid=False))
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

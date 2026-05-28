@@ -6,10 +6,13 @@ from typing import Any
 
 from app.models import Document
 
-# 模糊匹配低于此分数时不写入可渲染 polygon
+# 模糊匹配高于此分数视为高置信度（可被 auto_select / 精确溯源信任）
 FUZZY_RENDER_MIN_SCORE = 0.88
 # 短 query（≤4 字）模糊匹配最低分数
 SHORT_QUERY_MIN_SCORE = 0.85
+# 模糊匹配低于此分数则连 polygon 都不保留；位于 [LOW_CONFIDENCE_MIN, FUZZY_RENDER_MIN) 区间
+# 的命中视为「低置信度但仍可渲染」，前端可按 low_confidence=true 画浅色框。
+FUZZY_RENDER_LOW_CONFIDENCE_MIN_SCORE = 0.70
 
 
 def has_renderable_polygon(location: dict[str, Any] | None) -> bool:
@@ -71,12 +74,21 @@ def _apply_location_quality_gate(location: dict[str, Any]) -> dict[str, Any]:
             score = float(next_location.get("match_score") or 0)
         except (TypeError, ValueError):
             score = 0.0
-        if score < FUZZY_RENDER_MIN_SCORE:
+        # < 0.70: 完全不可信，连 polygon 一起丢弃，前端不渲染。
+        if score < FUZZY_RENDER_LOW_CONFIDENCE_MIN_SCORE:
             next_location.pop("polygon", None)
             next_location.pop("textin_position", None)
             next_location.pop("position", None)
             next_location["renderable"] = False
             next_location["coord_warning"] = "low_confidence_fuzzy_match"
+            return next_location
+        # 0.70 ~ 0.88: 仍然可渲染但属于「低置信度」匹配。保留 polygon 让用户至少
+        # 看到位置候选框，同时打上 low_confidence=true / coord_warning 让前端用
+        # 浅色或虚线区分，且不被 evidence_location_is_trusted 信任、不参与 auto_select。
+        if score < FUZZY_RENDER_MIN_SCORE:
+            next_location["low_confidence"] = True
+            next_location["coord_warning"] = "low_confidence_fuzzy_match"
+            next_location["renderable"] = has_renderable_polygon(next_location)
             return next_location
     next_location["renderable"] = has_renderable_polygon(next_location)
     return next_location
@@ -355,34 +367,44 @@ def _wildcard_match_score(query: str, text: str) -> float:
 
 def _build_location_index(payload: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
     index: dict[tuple[str, str], dict[str, Any]] = {}
+    page_sizes = _page_sizes_by_no(payload)
     for line in _as_list(payload.get("lines")):
         if isinstance(line, dict):
-            _add_location(index, source_type="line", source_id=line.get("line_id"), item=line)
+            _add_location(index, source_type="line", source_id=line.get("line_id"), item=line, page_sizes=page_sizes)
     for block in _as_list(payload.get("blocks")):
         if isinstance(block, dict):
-            _add_location(index, source_type="block", source_id=block.get("block_id"), item=block)
+            _add_location(index, source_type="block", source_id=block.get("block_id"), item=block, page_sizes=page_sizes)
     for table in _as_list(payload.get("tables")):
         if not isinstance(table, dict):
             continue
         for cell in _as_list(table.get("cells")):
             if isinstance(cell, dict):
                 item = {**cell, "page_no": table.get("page_no"), "table_id": table.get("table_id")}
-                _add_location(index, source_type="table_cell", source_id=cell.get("cell_key"), item=item)
+                _add_location(index, source_type="table_cell", source_id=cell.get("cell_key"), item=item, page_sizes=page_sizes)
     return index
 
 
-def _add_location(index: dict[tuple[str, str], dict[str, Any]], *, source_type: str, source_id: Any, item: dict[str, Any]) -> None:
+def _add_location(
+    index: dict[tuple[str, str], dict[str, Any]],
+    *,
+    source_type: str,
+    source_id: Any,
+    item: dict[str, Any],
+    page_sizes: dict[int, tuple[Any, Any]] | None = None,
+) -> None:
     if not source_id:
         return
     polygon = item.get("polygon") or item.get("textin_position") or item.get("position")
     if not (isinstance(polygon, list) and len(polygon) >= 8):
         return
+    page_no = item.get("page_no")
+    fallback_width, fallback_height = _page_size_for(page_sizes or {}, page_no)
     location = {
-        "page_no": item.get("page_no"),
+        "page_no": page_no,
         "polygon": polygon,
         "coord_space": item.get("coord_space") or "pixel",
-        "page_width": item.get("page_width"),
-        "page_height": item.get("page_height"),
+        "page_width": item.get("page_width") or item.get("width") or fallback_width,
+        "page_height": item.get("page_height") or item.get("height") or fallback_height,
         "source_type": source_type,
         "source_id": str(source_id),
         "textin_position": item.get("textin_position") or polygon,
@@ -397,6 +419,28 @@ def _add_location(index: dict[tuple[str, str], dict[str, Any]], *, source_type: 
         location["table_id"] = item.get("table_id")
         location["cell_key"] = str(source_id)
     index[(source_type, str(source_id))] = {key: value for key, value in location.items() if value is not None}
+
+
+def _page_sizes_by_no(payload: dict[str, Any]) -> dict[int, tuple[Any, Any]]:
+    sizes: dict[int, tuple[Any, Any]] = {}
+    for page in _as_list(payload.get("pages")):
+        if not isinstance(page, dict):
+            continue
+        page_no = _normalize_page_no(page.get("page_no"))
+        if page_no is None:
+            continue
+        width = page.get("page_width") or page.get("width")
+        height = page.get("page_height") or page.get("height")
+        if width is not None and height is not None:
+            sizes[page_no] = (width, height)
+    return sizes
+
+
+def _page_size_for(page_sizes: dict[int, tuple[Any, Any]], page_no: Any) -> tuple[Any, Any]:
+    normalized_page_no = _normalize_page_no(page_no)
+    if normalized_page_no is None:
+        return None, None
+    return page_sizes.get(normalized_page_no, (None, None))
 
 
 def _ocr_payload(document: Document | None) -> dict[str, Any]:

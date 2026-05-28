@@ -263,6 +263,14 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
     }
   })
 
+  const pixelBoxQuality = pixelBoxes.map((_, index) => {
+    const loc = locations[index] || {}
+    return {
+      lowConfidence: Boolean(loc.low_confidence),
+      recordShared: Boolean(loc.record_shared),
+    }
+  })
+
   const cropWidth = maxX - minX
   const cropHeight = maxY - minY
 
@@ -405,16 +413,29 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
                 preserveAspectRatio="none"
                 style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
               >
-                {fullScreenBoxes.map((box, index) => (
-                  <polygon
-                    key={index}
-                    points={box.scaledPoints.map(point => `${point.x},${point.y}`).join(' ')}
-                    fill="rgba(255, 77, 79, 0.12)"
-                    stroke={appThemeToken.colorError}
-                    strokeWidth="2"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
+                {fullScreenBoxes.map((box, index) => {
+                  const quality = pixelBoxQuality[index] || {}
+                  const isLow = quality.lowConfidence
+                  const isShared = quality.recordShared && !isLow
+                  const stroke = isLow || isShared ? '#fa8c16' : appThemeToken.colorError
+                  const fill = isLow
+                    ? 'rgba(250, 140, 22, 0.08)'
+                    : isShared
+                      ? 'rgba(250, 140, 22, 0.10)'
+                      : 'rgba(255, 77, 79, 0.12)'
+                  const dash = isLow ? '4,3' : undefined
+                  return (
+                    <polygon
+                      key={index}
+                      points={box.scaledPoints.map(point => `${point.x},${point.y}`).join(' ')}
+                      fill={fill}
+                      stroke={stroke}
+                      strokeWidth="2"
+                      strokeDasharray={dash}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )
+                })}
               </svg>
             )}
           </div>
@@ -486,16 +507,35 @@ const HighlightedImage = ({ imageUrl, sourceLocation, loading }) => {
             preserveAspectRatio="none"
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 1 }}
           >
-            {pixelBoxes.map((box, index) => (
-              <polygon
-                key={index}
-                points={box.points.map(point => `${point.x - finalX1},${point.y - finalY1}`).join(' ')}
-                fill="rgba(255, 77, 79, 0.12)"
-                stroke={appThemeToken.colorError}
-                strokeWidth="2"
-                vectorEffect="non-scaling-stroke"
-              />
-            ))}
+            {pixelBoxes.map((box, index) => {
+              const quality = pixelBoxQuality[index] || {}
+              // 低置信度模糊匹配：浅色虚线，提示"位置仅供参考"
+              // record_shared：橙色实线，提示"沿用同记录其它字段的位置"
+              const isLow = quality.lowConfidence
+              const isShared = quality.recordShared && !isLow
+              const stroke = isLow
+                ? '#fa8c16'
+                : isShared
+                  ? '#fa8c16'
+                  : appThemeToken.colorError
+              const fill = isLow
+                ? 'rgba(250, 140, 22, 0.08)'
+                : isShared
+                  ? 'rgba(250, 140, 22, 0.10)'
+                  : 'rgba(255, 77, 79, 0.12)'
+              const dash = isLow ? '4,3' : undefined
+              return (
+                <polygon
+                  key={index}
+                  points={box.points.map(point => `${point.x - finalX1},${point.y - finalY1}`).join(' ')}
+                  fill={fill}
+                  stroke={stroke}
+                  strokeWidth="2"
+                  strokeDasharray={dash}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )
+            })}
           </svg>
         )}
 

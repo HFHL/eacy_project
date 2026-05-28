@@ -1,4 +1,4 @@
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 
 from app.models import DataContext, ProjectTemplateBinding, SchemaTemplate, SchemaTemplateVersion
 from core.db import session
@@ -25,7 +25,7 @@ class SchemaTemplateRepository(BaseRepo[SchemaTemplate]):
     ) -> list[SchemaTemplate]:
         query = select(SchemaTemplate)
         if created_by is not None:
-            query = query.where(SchemaTemplate.created_by == created_by)
+            query = query.where(or_(SchemaTemplate.created_by == created_by, SchemaTemplate.is_system.is_(True)))
         query = query.order_by(SchemaTemplate.created_at.desc())
         if template_type is not None:
             query = query.where(SchemaTemplate.template_type == template_type)
@@ -45,7 +45,7 @@ class SchemaTemplateRepository(BaseRepo[SchemaTemplate]):
     ) -> int:
         query = select(func.count()).select_from(SchemaTemplate)
         if created_by is not None:
-            query = query.where(SchemaTemplate.created_by == created_by)
+            query = query.where(or_(SchemaTemplate.created_by == created_by, SchemaTemplate.is_system.is_(True)))
         if template_type is not None:
             query = query.where(SchemaTemplate.template_type == template_type)
         if status is not None:

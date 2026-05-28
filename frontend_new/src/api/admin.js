@@ -14,6 +14,8 @@ export const updateAdminUserRole = async (userId, role) =>
   wrap(await request.patch(`/admin/users/${encodeURIComponent(userId)}/role`, { role }))
 export const getAdminProjects = async () => wrap(await request.get('/admin/projects'))
 export const getAdminTemplates = async () => wrap(await request.get('/admin/templates'))
+export const updateAdminTemplateVisibility = async (templateId, isSystem) =>
+  wrap(await request.patch(`/admin/templates/${encodeURIComponent(templateId)}/visibility`, { is_system: isSystem }))
 export const getAdminDocuments = async (params = {}) => wrap(await request.get('/admin/documents', params))
 export const getAdminStats = async () => wrap(await request.get('/admin/stats'))
 export const getAdminExtractionTasks = async (params = {}) => wrap(await request.get('/admin/extraction-tasks', params))

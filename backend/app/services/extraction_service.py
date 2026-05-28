@@ -1370,14 +1370,36 @@ class ExtractionService:
             finished_at = datetime.utcnow()
             run.status = "completed"
             run.finished_at = finished_at
+            empty_result_message = self._empty_result_message(
+                parsed=parsed,
+                validation_status=run.validation_status,
+                target_form_key=job.target_form_key,
+            )
+            if empty_result_message:
+                # The job did not fail technically, but the LLM returned zero usable
+                # fields. Record the reason on both the run and the job so the user
+                # sees "completed but no data" instead of a silently empty form.
+                run.error_type = "empty_result"
+                run.error_message = empty_result_message
             await self.run_repository.save(run)
 
             job.status = "completed"
             job.progress = 100
             job.finished_at = finished_at
+            if empty_result_message:
+                job.error_type = "empty_result"
+                job.error_message = empty_result_message
+            else:
+                # Clear any prior empty-result marker on retries that did produce data.
+                if job.error_type == "empty_result":
+                    job.error_type = None
+                    job.error_message = None
             await self.job_repository.save(job)
             await flush_llm_call_logs(llm_call_buffer)
-            await self.task_progress_service.mark_job_succeeded(job)
+            await self.task_progress_service.mark_job_succeeded(
+                job,
+                warning_message=empty_result_message,
+            )
             return job
         except Exception as error:
             await session.rollback()
@@ -1436,6 +1458,30 @@ class ExtractionService:
             "fields": output.get("fields", []),
             "attempt_count": output.get("attempt_count", 1),
         }
+
+    def _empty_result_message(
+        self,
+        *,
+        parsed: dict[str, Any] | None,
+        validation_status: str | None,
+        target_form_key: str | None,
+    ) -> str | None:
+        """Return a human-readable reason if a completed run produced no fields.
+
+        Distinguishes between:
+        - LLM explicitly returned an empty result (validation_status == "valid_empty"):
+          the model did read the document but found nothing matching the requested form.
+        - LLM returned data but normalization stripped everything (no valid value_type,
+          no matching field_path, etc.).
+        Returns None when fields were successfully extracted.
+        """
+        fields = (parsed or {}).get("fields") if isinstance(parsed, dict) else None
+        if isinstance(fields, list) and fields:
+            return None
+        form_hint = f"（表单：{target_form_key}）" if target_form_key else ""
+        if validation_status == "valid_empty":
+            return f"LLM 未在文档中找到该表单的可抽取字段{form_hint}；可能是文档与表单不匹配或字段提示不够具体。"
+        return f"已完成但未写入任何字段{form_hint}；LLM 输出中的字段全部被规则规范化阶段丢弃，请检查模板字段定义。"
 
     def _ensure_can_process(self, job: ExtractionJob) -> None:
         if job.status == "cancelled":
@@ -1738,6 +1784,9 @@ class ExtractionService:
             for evidence in resolved_field_evidences:
                 if not isinstance(evidence, dict):
                     continue
+                bbox_json = evidence.get("bbox_json")
+                if evidence.get("record_shared") and isinstance(bbox_json, dict):
+                    bbox_json = {**bbox_json, "record_shared": True}
                 evidences.append(
                     {
                         "document_id": document_id,
@@ -1745,7 +1794,7 @@ class ExtractionService:
                         "quote_text": self._resolved_evidence_quote(evidence=evidence, field=field),
                         "evidence_score": field.get("confidence"),
                         "page_no": evidence.get("page_no"),
-                        "bbox_json": evidence.get("bbox_json"),
+                        "bbox_json": bbox_json,
                         "start_offset": evidence.get("start_offset"),
                         "end_offset": evidence.get("end_offset"),
                     }
@@ -1774,7 +1823,10 @@ class ExtractionService:
         location = bbox_json if isinstance(bbox_json, dict) else {}
         if location.get("fallback_strategy") == "sibling_page_hint":
             return "document_page_hint"
+        is_record_shared = bool(evidence.get("record_shared") or location.get("record_shared"))
         if evidence_location_is_trusted(location):
+            if is_record_shared:
+                return "document_record_shared"
             if location.get("match_strategy") == "ocr_value_fuzzy":
                 return "document_fuzzy"
             return "document_source_id"

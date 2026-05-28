@@ -252,7 +252,10 @@ function _sourceLocationToCoordinates(loc) {
       polygon,
       pageWidth: hasTextinPageSize ? rawPageWidth : (isPixel ? null : 1000),
       pageHeight: hasTextinPageSize ? rawPageHeight : (isPixel ? null : 1000),
-      pageIdx: Math.max(0, page - 1)
+      pageIdx: Math.max(0, page - 1),
+      lowConfidence: Boolean(item.low_confidence),
+      recordShared: Boolean(item.record_shared),
+      coordWarning: item.coord_warning || null,
     }
   }
 
@@ -874,6 +877,10 @@ const SourceDocumentPreview = ({ documentInfo, activeCoordinates, panelWidth = 4
         polygon: Array.isArray(c.polygon) && c.polygon.length >= 8 ? c.polygon : null,
         page_width: c.pageWidth || null,
         page_height: c.pageHeight || null,
+        // 透传质量标记，让 PdfPageWithHighlight 能区分浅色/虚线/橙色框
+        low_confidence: Boolean(c.lowConfidence),
+        record_shared: Boolean(c.recordShared),
+        coord_warning: c.coordWarning || null,
       }))
     : []
 

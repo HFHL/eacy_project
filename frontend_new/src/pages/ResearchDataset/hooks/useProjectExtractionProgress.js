@@ -2,18 +2,90 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { message } from 'antd'
 import {
   getCrfExtractionProgress,
+  listProjectActiveExtractionBatches,
   updateProjectCrfFolder,
   updateProjectCrfFolderBatch,
 } from '../../../api/project'
 import { claimExtractionNotifyOnce } from '../../../utils/taskStore'
 import { TASK_TYPE_LABEL, pushTaskNotification } from '../../../utils/taskNotifications'
 
-const TERMINAL_STATUSES = new Set(['completed', 'completed_with_errors', 'failed', 'cancelled', 'succeeded'])
+const TERMINAL_STATUSES = new Set([
+  'completed',
+  'completed_with_errors',
+  'completed_with_empty',
+  'failed',
+  'cancelled',
+  'succeeded',
+  'succeeded_empty',
+])
 const ACTIVE_POLL_STATUSES = new Set(['submitting', 'queued', 'running', 'pending'])
 
 const MODE_LABELS = {
   incremental: '增量抽取',
   full: '全量重抽',
+}
+
+// 进度条本地持久化：用户离开项目页/刷新后再回来仍能看到正在跑的抽取批次，
+// 直到批次真正终态再清掉。键按 projectId 隔离，避免不同项目互相串读。
+const PROGRESS_STORAGE_PREFIX = 'eacy_project_extract_progress_v1:'
+
+const getProgressStorageKey = (projectId) => {
+  if (!projectId) return null
+  return `${PROGRESS_STORAGE_PREFIX}${projectId}`
+}
+
+// 持久化任务的“新鲜度阈值”：超过 30 分钟未更新视为遗弃，避免历史脏数据卡进度条。
+const PROGRESS_STALE_MS = 30 * 60 * 1000
+
+const isProgressTaskFresh = (task) => {
+  const marker = Number(task?.lastSyncedAt || task?.startedAt || 0)
+  if (!marker || Number.isNaN(marker)) return true
+  return Date.now() - marker < PROGRESS_STALE_MS
+}
+
+const safeReadProgressStore = (projectId) => {
+  const key = getProgressStorageKey(projectId)
+  if (!key || typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage?.getItem(key)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    // mount 时丢弃终态任务和遗弃任务，避免“一直显示已完成”或脏数据卡 UI。
+    const cleaned = {}
+    Object.entries(parsed).forEach(([taskId, task]) => {
+      if (!taskId || !task || typeof task !== 'object') return
+      const status = String(task.status || '').toLowerCase()
+      if (TERMINAL_STATUSES.has(status)) return
+      if (!isProgressTaskFresh(task)) return
+      cleaned[taskId] = task
+    })
+    return cleaned
+  } catch (error) {
+    console.warn('[extraction] read progress store failed:', error)
+    return {}
+  }
+}
+
+const safeWriteProgressStore = (projectId, tasksById) => {
+  const key = getProgressStorageKey(projectId)
+  if (!key || typeof window === 'undefined') return
+  try {
+    // 只持久化“非 submitting 且有 taskId 的”任务，避免把过渡态 pending-xxx 写入持久化层。
+    const persisted = {}
+    Object.entries(tasksById || {}).forEach(([taskId, task]) => {
+      if (!taskId || String(taskId).startsWith('pending-')) return
+      if (!task || typeof task !== 'object') return
+      persisted[taskId] = task
+    })
+    if (Object.keys(persisted).length === 0) {
+      window.localStorage?.removeItem(key)
+      return
+    }
+    window.localStorage?.setItem(key, JSON.stringify(persisted))
+  } catch (error) {
+    console.warn('[extraction] write progress store failed:', error)
+  }
 }
 
 /**
@@ -29,10 +101,17 @@ export const normalizeExtractionBatchProgress = (raw = {}) => {
   if (backendStatus === 'queued' || backendStatus === 'pending') status = 'running'
 
   const totalItems = Number(raw.total_items ?? raw.total_patients ?? 0)
+  const emptyItems = Number(raw.empty_items ?? 0)
   const processed = Number(
     raw.processed_patients
     ?? ((Number(raw.succeeded_items || 0) + Number(raw.failed_items || 0) + Number(raw.cancelled_items || 0))),
   )
+
+  // Promote "all completed but some empty" to a dedicated terminal status so the
+  // UI can render a yellow warning instead of pretending everything is green.
+  if (status === 'completed' && emptyItems > 0) {
+    status = 'completed_with_empty'
+  }
 
   return {
     ...raw,
@@ -42,6 +121,7 @@ export const normalizeExtractionBatchProgress = (raw = {}) => {
     total_patients: totalItems,
     processed_patients: processed,
     success_count: Number(raw.success_count ?? raw.succeeded_items ?? 0),
+    empty_count: emptyItems,
     error_count: Number(raw.error_count ?? raw.failed_items ?? 0),
     current_step: raw.current_step || raw.message || '',
   }
@@ -56,20 +136,116 @@ export const normalizeExtractionBatchProgress = (raw = {}) => {
  *   onTasksFinished?: () => void;
  * }} options
  */
+/**
+ * 从服务端批次 payload 构建前端任务快照（用于 mount 时恢复进度条）。
+ *
+ * @param {Record<string, any>} batch 批次数据。
+ * @returns {Record<string, any>}
+ */
+const buildTaskSnapshotFromBatch = (batch = {}) => {
+  const normalized = normalizeExtractionBatchProgress(batch)
+  const taskId = String(batch.batch_id || batch.id || normalized.task_id || '')
+  const totalItems = Number(normalized.total_patients || batch.total_items || 0)
+  const isActive = !TERMINAL_STATUSES.has(normalized.status)
+  const backendStatus = String(batch.status || '').toLowerCase()
+  const phase = isActive
+    ? (backendStatus === 'queued' ? 'queued' : 'running')
+    : normalized.status
+  return {
+    taskId,
+    ...normalized,
+    phase,
+    mode: batch.plan_json?.options?.mode || 'incremental',
+    modeLabel: MODE_LABELS[batch.plan_json?.options?.mode] || MODE_LABELS.incremental,
+    scopeLabel: totalItems > 0 ? `${totalItems} 个子任务` : '抽取任务',
+    current_step: normalized.current_step || batch.message || (phase === 'queued' ? '排队中' : '抽取中'),
+    submitted_jobs: totalItems,
+    startedAt: batch.started_at ? new Date(batch.started_at).getTime() : Date.now(),
+    lastSyncedAt: batch.updated_at ? new Date(batch.updated_at).getTime() : Date.now(),
+    restoredFromServer: true,
+  }
+}
+
+/**
+ * 从持久化的任务列表里挑出仍需展示进度条的“主任务 ID”。
+ * 优先选活跃任务（非终态），保证 mount 时立刻有进度条。
+ *
+ * @param {Record<string, any>} tasks 任务字典。
+ * @returns {string|null}
+ */
+const pickPrimaryActiveTaskId = (tasks) => {
+  const found = Object.entries(tasks || {}).find(([, task]) => {
+    const status = String(task?.status || '').toLowerCase()
+    const phase = String(task?.phase || '').toLowerCase()
+    if (TERMINAL_STATUSES.has(status)) return false
+    return ACTIVE_POLL_STATUSES.has(phase) || ACTIVE_POLL_STATUSES.has(status) || phase === 'running'
+  })
+  return found?.[0] || null
+}
+
 export function useProjectExtractionProgress({
   projectId = '',
   patientDataset = [],
   onTasksFinished,
 } = {}) {
-  const [tasksById, setTasksById] = useState({})
-  const [primaryTaskId, setPrimaryTaskId] = useState(null)
+  // 首次 mount 时直接从 localStorage 还原任务，避免“离开 → 回来”看不到进度条。
+  // 真实状态以服务端为准：mount 后第一次轮询会刷新；这里只是“立即可见”。
+  const [tasksById, setTasksById] = useState(() => safeReadProgressStore(projectId))
+  const [primaryTaskId, setPrimaryTaskId] = useState(() => pickPrimaryActiveTaskId(safeReadProgressStore(projectId)))
   const [isProgressCardDismissed, setIsProgressCardDismissed] = useState(false)
   const pollingRef = useRef(false)
   const tasksRef = useRef(tasksById)
+  const lastProjectIdRef = useRef(projectId)
 
   useEffect(() => {
     tasksRef.current = tasksById
-  }, [tasksById])
+    safeWriteProgressStore(projectId, tasksById)
+  }, [projectId, tasksById])
+
+  // 切换项目（同一个组件实例复用、projectId 变化）时重新装载持久化任务。
+  // 第一次 mount 已经在 useState 初始化时读过了，这里只处理“切项目”场景。
+  useEffect(() => {
+    if (lastProjectIdRef.current === projectId) return
+    lastProjectIdRef.current = projectId
+    const restored = safeReadProgressStore(projectId)
+    setTasksById(restored)
+    setPrimaryTaskId(pickPrimaryActiveTaskId(restored))
+    setIsProgressCardDismissed(false)
+  }, [projectId])
+
+  // 进入项目页时从服务端拉取进行中的批次，弥补 localStorage 丢失或未写入的情况。
+  useEffect(() => {
+    if (!projectId) return undefined
+    let cancelled = false
+
+    const restoreActiveBatches = async () => {
+      try {
+        const response = await listProjectActiveExtractionBatches(projectId)
+        if (cancelled || !response?.success) return
+        const batches = Array.isArray(response.data) ? response.data : []
+        if (batches.length === 0) return
+
+        setIsProgressCardDismissed(false)
+        batches.forEach((batch) => {
+          const snapshot = buildTaskSnapshotFromBatch(batch)
+          if (!snapshot.taskId) return
+          upsertTask(snapshot.taskId, snapshot)
+        })
+        const latestBatch = batches[0]
+        const latestTaskId = String(latestBatch?.batch_id || latestBatch?.id || '')
+        if (latestTaskId) {
+          setPrimaryTaskId((prev) => prev || latestTaskId)
+        }
+      } catch (error) {
+        console.warn('[extraction] restore active batches failed:', error)
+      }
+    }
+
+    restoreActiveBatches()
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, upsertTask])
 
   const resolveScopePatients = useCallback((patientIds = null) => {
     const normalizedIds = Array.isArray(patientIds) && patientIds.length > 0
@@ -149,6 +325,13 @@ export function useProjectExtractionProgress({
       pushTaskNotification({ type: 'warning', taskType: 'project_crf_batch', title, description: desc })
       return
     }
+    if (normalized.status === 'completed_with_empty') {
+      const empty = normalized.empty_count || 0
+      const desc = `${modePrefix}${scopeLabel}完成（${empty} 个任务未抽到任何字段，请检查模板与文档匹配）`
+      message.warning({ key: `extract-done-${taskId}`, content: desc })
+      pushTaskNotification({ type: 'warning', taskType: 'project_crf_batch', title, description: desc })
+      return
+    }
     if (normalized.status === 'failed') {
       const desc = normalized.current_step || normalized.message || `${modePrefix}${scopeLabel}失败`
       message.error({ key: `extract-done-${taskId}`, content: desc })
@@ -181,6 +364,7 @@ export function useProjectExtractionProgress({
       ...existing,
       ...normalized,
       phase: TERMINAL_STATUSES.has(normalized.status) ? normalized.status : 'running',
+      lastSyncedAt: Date.now(),
       patientStatuses,
     })
 
@@ -200,6 +384,10 @@ export function useProjectExtractionProgress({
       try {
         const response = await getCrfExtractionProgress(projectId, taskId)
         if (!response.success) return
+        if (!response.data || response.notFound) {
+          removeTask(taskId)
+          return
+        }
         const normalized = applyTaskProgress(taskId, response.data)
 
         if (TERMINAL_STATUSES.has(normalized.status)) {

@@ -178,6 +178,12 @@ def _is_valid_uuid(value: Any) -> bool:
         return False
 
 
+# `LLMCallRecorder` 允许调用方塞任意 context 键值（如 batch_index/batch_count），用于
+# 在调试日志里关联 LLM 调用。但落库时必须严格限制到 `LLMCallLog` 真实声明的列，否则
+# `LLMCallLog(**record)` 会抛 TypeError，让整个 worker 任务直接失败、batch/job 卡住。
+_LLM_CALL_LOG_COLUMNS: frozenset[str] = frozenset(LLMCallLog.__table__.columns.keys())
+
+
 async def flush_llm_call_logs(buffer: list[dict[str, Any]] | None, *, commit: bool = False) -> None:
     """Persist accumulated LLM call records. Safe to call with an empty buffer."""
     if not buffer:
@@ -185,7 +191,12 @@ async def flush_llm_call_logs(buffer: list[dict[str, Any]] | None, *, commit: bo
     for record in buffer:
         if not all(_is_valid_uuid(record.get(key)) for key in ("job_id", "run_id", "document_id", "project_id", "requested_by")):
             continue
-        log = LLMCallLog(**{key: value for key, value in record.items() if value is not None})
+        log_kwargs = {
+            key: value
+            for key, value in record.items()
+            if value is not None and key in _LLM_CALL_LOG_COLUMNS
+        }
+        log = LLMCallLog(**log_kwargs)
         session.add(log)
     # Drain the buffer so the same records aren't flushed twice if the caller retries
     buffer.clear()

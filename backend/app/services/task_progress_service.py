@@ -1,12 +1,17 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+
+from sqlalchemy import select
 
 from app.models import AsyncTaskBatch, AsyncTaskEvent, AsyncTaskItem, ExtractionJob
 from app.repositories import AsyncTaskBatchRepository, AsyncTaskEventRepository, AsyncTaskItemRepository
 from core.db import session
 
 
-TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+TERMINAL_STATUSES = {"succeeded", "succeeded_empty", "failed", "cancelled"}
+ACTIVE_BATCH_STATUSES = {"created", "queued", "running"}
+ITEM_STALE_AFTER = timedelta(minutes=15)
+ITEM_STALE_MESSAGE = "任务长时间无进度更新，已自动标记失败（可重新提交）"
 
 
 class TaskProgressService:
@@ -183,17 +188,82 @@ class TaskProgressService:
             commit=commit,
         )
 
-    async def mark_job_succeeded(self, job: ExtractionJob, *, commit: bool = False) -> None:
+    async def mark_job_succeeded(
+        self,
+        job: ExtractionJob,
+        *,
+        commit: bool = False,
+        warning_message: str | None = None,
+    ) -> None:
+        """Mark a job item as succeeded.
+
+        When ``warning_message`` is provided, the item is recorded as
+        ``succeeded_empty`` so the frontend can clearly distinguish a job that
+        finished without producing any fields (e.g. LLM returned valid_empty,
+        normalization dropped everything) from a fully successful one. The
+        message is also stored on ``item.error_message`` so existing UI fields
+        that surface diagnostics on completed items pick it up automatically.
+        """
         await self.update_job_progress(
             job,
-            status="succeeded",
+            status="succeeded_empty" if warning_message else "succeeded",
             progress=100,
-            stage="completed",
-            stage_label="已完成",
-            message="抽取完成",
+            stage="completed_empty" if warning_message else "completed",
+            stage_label="已完成（无字段）" if warning_message else "已完成",
+            message=warning_message or "抽取完成",
+            error_message=warning_message,
             event_type="state_changed",
             commit=commit,
         )
+
+    async def list_active_batches_for_project(
+        self,
+        project_id: str,
+        *,
+        requested_by: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """返回项目下仍在进行中的抽取批次，供前端离开页面后恢复进度条。"""
+        query = (
+            select(AsyncTaskBatch)
+            .where(
+                AsyncTaskBatch.project_id == project_id,
+                AsyncTaskBatch.status.in_(tuple(ACTIVE_BATCH_STATUSES)),
+            )
+            .order_by(AsyncTaskBatch.created_at.desc())
+            .limit(max(1, min(limit, 20)))
+        )
+        if requested_by is not None:
+            query = query.where(AsyncTaskBatch.requested_by == requested_by)
+        result = await session.execute(query)
+        batches = list(result.scalars().all())
+        payloads: list[dict[str, Any]] = []
+        for batch in batches:
+            payload = await self.get_batch_payload(batch.id)
+            if payload is not None:
+                payloads.append(payload)
+        return payloads
+
+    async def _reconcile_stale_items(self, items: list[AsyncTaskItem]) -> None:
+        """将长时间无心跳的 queued/running 子任务标为 failed，避免批次永远卡在排队中。"""
+        now = datetime.utcnow()
+        changed = False
+        for item in items:
+            if item.status not in {"queued", "running"}:
+                continue
+            marker = item.heartbeat_at or item.updated_at or item.started_at
+            if marker is None or now - marker <= ITEM_STALE_AFTER:
+                continue
+            item.status = "failed"
+            item.progress = max(int(item.progress or 0), 0)
+            item.error_message = ITEM_STALE_MESSAGE
+            item.message = ITEM_STALE_MESSAGE
+            item.finished_at = item.finished_at or now
+            item.heartbeat_at = now
+            await self.item_repository.save(item)
+            changed = True
+        if changed:
+            await session.flush()
 
     async def aggregate_batch(self, batch_id: str | None) -> AsyncTaskBatch | None:
         if batch_id is None:
@@ -202,8 +272,14 @@ class TaskProgressService:
         if batch is None:
             return None
         items = await self.item_repository.list_by_batch(batch_id)
+        await self._reconcile_stale_items(items)
+        items = await self.item_repository.list_by_batch(batch_id)
         total = len(items)
-        succeeded = sum(1 for item in items if item.status == "succeeded")
+        # ``succeeded_empty`` items finished cleanly but produced 0 fields; we
+        # still count them as succeeded for batch aggregation (they are not
+        # failures), and surface the empty count separately for the UI.
+        succeeded = sum(1 for item in items if item.status in ("succeeded", "succeeded_empty"))
+        succeeded_empty = sum(1 for item in items if item.status == "succeeded_empty")
         failed = sum(1 for item in items if item.status == "failed")
         cancelled = sum(1 for item in items if item.status == "cancelled")
         running = sum(1 for item in items if item.status == "running")
@@ -244,6 +320,8 @@ class TaskProgressService:
         items = await self.item_repository.list_by_batch(batch_id)
         running = sum(1 for item in items if item.status == "running")
         queued = sum(1 for item in items if item.status == "queued")
+        empty = sum(1 for item in items if item.status == "succeeded_empty")
+        plan_summary = self._plan_skipped_summary(batch.plan_json)
         return {
             "batch_id": batch.id,
             "id": batch.id,
@@ -255,10 +333,20 @@ class TaskProgressService:
             "running_items": running,
             "queued_items": queued,
             "succeeded_items": batch.succeeded_items,
+            # Empty-result jobs are counted inside succeeded_items; this extra
+            # field lets the UI render a separate warning badge without
+            # double-counting them.
+            "empty_items": empty,
             "failed_items": batch.failed_items,
             "cancelled_items": batch.cancelled_items,
             "message": batch.message,
             "error_message": batch.error_message,
+            # Documents that the planner could not map to any form (typically
+            # because no schema form had an x-sources.primary matching the
+            # document's doc_type/doc_subtype). These docs never produced any
+            # field, so surface them so the operator can fix the template or
+            # re-classify the document.
+            "plan_summary": plan_summary,
             "patient_id": batch.patient_id,
             "document_id": batch.document_id,
             "project_id": batch.project_id,
@@ -268,6 +356,23 @@ class TaskProgressService:
             "started_at": batch.started_at,
             "finished_at": batch.finished_at,
             "items": [self._item_payload(item) for item in items],
+        }
+
+    def _plan_skipped_summary(self, plan_json: Any) -> dict[str, Any]:
+        if not isinstance(plan_json, dict):
+            return {"skipped_documents": 0, "skipped": []}
+        stats = plan_json.get("stats") if isinstance(plan_json.get("stats"), dict) else {}
+        skipped_entries: list[dict[str, Any]] = []
+        for entry in plan_json.get("skipped") or []:
+            if not isinstance(entry, dict):
+                continue
+            skipped_entries.append({
+                "document_id": entry.get("document_id"),
+                "reason": entry.get("reason") or "no primary source matched",
+            })
+        return {
+            "skipped_documents": int(stats.get("skipped_documents") or len(skipped_entries) or 0),
+            "skipped": skipped_entries[:50],
         }
 
     async def list_batch_events(self, batch_id: str, *, after_id: str | None = None, limit: int = 200) -> list[AsyncTaskEvent]:

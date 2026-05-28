@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
+from app.core.auth import CurrentUser, get_current_user, is_admin_user, uuid_user_id_or_none
 from app.services.schema_service import SchemaConflictError, SchemaNotFoundError, SchemaService
 
 router = APIRouter(tags=["schema-templates"])
@@ -58,6 +58,7 @@ class SchemaTemplateResponse(BaseModel):
     description: str | None = None
     status: str
     created_by: str | None = None
+    is_system: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -103,11 +104,13 @@ async def list_schema_templates(
     current_user: CurrentUser = Depends(get_current_user),
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateListResponse:
+    created_by = None if is_admin_user(current_user) else uuid_user_id_or_none(current_user)
     templates, total = await service.list_templates(
         page=page,
         page_size=page_size,
         template_type=template_type,
         status=status_filter,
+        created_by=created_by,
     )
     return SchemaTemplateListResponse(items=templates, total=total, page=page, page_size=page_size)
 
@@ -153,7 +156,8 @@ async def get_schema_template(
     current_user: CurrentUser = Depends(get_current_user),
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateDetailResponse:
-    template = await service.get_template(template_id)
+    created_by = None if is_admin_user(current_user) else uuid_user_id_or_none(current_user)
+    template = await service.get_template(template_id, created_by=created_by)
     if template is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schema template not found")
     versions = await service.list_versions(template_id)

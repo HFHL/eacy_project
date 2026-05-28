@@ -245,7 +245,9 @@ class EhrService:
         field_title: str | None,
         value: Any,
     ) -> list[FieldValueEvidence]:
-        return [
+        if not evidences:
+            return []
+        matched = [
             evidence
             for evidence in evidences
             if self._evidence_matches_field(
@@ -256,6 +258,19 @@ class EhrService:
                 value=value,
             )
         ]
+        if matched:
+            return matched
+        # Fallback: keep evidences that already have a usable polygon resolved by
+        # source_id even if the quote text does not literally contain the field
+        # value/key/title (common for derived numerics, enums, fragmented long text).
+        return [evidence for evidence in evidences if self._evidence_has_polygon(evidence)]
+
+    def _evidence_has_polygon(self, evidence: FieldValueEvidence) -> bool:
+        bbox_json = getattr(evidence, "bbox_json", None)
+        if not isinstance(bbox_json, dict):
+            return False
+        polygon = bbox_json.get("polygon") or bbox_json.get("textin_position") or bbox_json.get("position")
+        return isinstance(polygon, list) and len(polygon) >= 8 and bbox_json.get("renderable") is not False
 
     def _evidence_matches_field(
         self,

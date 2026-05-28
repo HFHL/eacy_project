@@ -586,7 +586,13 @@ const Dashboard = () => {
             >
               <Row gutter={[16, 16]}>
                 <Col xs={24} lg={8}>
-                  <Card size="small" title="项目状态分布" className="dashboard-project-card">
+                  <Card
+                    size="small"
+                    title="项目状态分布"
+                    hoverable
+                    onClick={() => navigate(researchHome())}
+                    className="dashboard-project-card"
+                  >
                     <MiniDonutChart items={projectStatusDistribution} emptyText="暂无项目数据" showDetails={false} />
                   </Card>
                 </Col>

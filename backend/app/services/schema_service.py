@@ -61,7 +61,7 @@ class SchemaService:
         template = await self.template_repository.get_by_id(template_id)
         if template is None:
             return None
-        if created_by is not None and template.created_by != created_by:
+        if created_by is not None and template.created_by != created_by and not template.is_system:
             return None
         return template
 

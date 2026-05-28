@@ -33,6 +33,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   ExperimentOutlined,
+  EyeOutlined,
   FileOutlined,
   FileTextOutlined,
   FlagOutlined,
@@ -78,6 +79,8 @@ import {
 } from './researchRailLayout'
 import { getPatientRailDisplayName } from './patientRailDisplay'
 import { pickMostRecentlyUpdatedItem } from '../../utils/researchProjectSelection'
+import { getFieldTypeLabel } from '../FormDesigner/utils/schemaHelpers'
+import { normalizeOptions } from '../FormDesigner/utils/fieldContract'
 import PatientCreateModal from '../Patient/PatientCreateModal'
 import ProjectCreateWizardModal from '../Research/ProjectCreateWizardModal'
 import TemplateMetaModal from '../Research/TemplateMetaModal'
@@ -267,6 +270,127 @@ const mapTemplateRailItems = (items = [], keyword = '', sortMode = 'updated_desc
     })
 }
 
+const orderedSchemaEntries = (properties = {}) => {
+  const entries = Object.entries(properties || {})
+  return entries.sort((left, right) => {
+    const leftOrder = Number(left[1]?.['x-property-order'])
+    const rightOrder = Number(right[1]?.['x-property-order'])
+    if (Number.isFinite(leftOrder) && Number.isFinite(rightOrder)) return leftOrder - rightOrder
+    if (Number.isFinite(leftOrder)) return -1
+    if (Number.isFinite(rightOrder)) return 1
+    return 0
+  })
+}
+
+const fieldDisplayName = (field = {}, fallback = '') => (
+  field.displayName
+  || field.title
+  || field.label
+  || field.name
+  || field.key
+  || field.fieldId
+  || field.id
+  || fallback
+)
+
+const fieldIdentifier = (field = {}, fallback = '') => (
+  field.fieldId
+  || field.key
+  || field.name
+  || field.id
+  || fallback
+)
+
+const fieldTypeLabel = (field = {}) => {
+  const displayType = field.displayType || field.type || field['x-display-type'] || ''
+  if (displayType === 'table_single_row') return '单行表格'
+  if (displayType === 'table_multi_row') return '多行表格'
+  if (displayType === 'table' && (field.config?.tableRows === 'multiRow' || field.multiRow)) return '多行表格'
+  if (displayType === 'table') return '单行表格'
+  return getFieldTypeLabel(displayType) || displayType || '-'
+}
+
+const flattenDesignerFields = (fields = [], parentPath = '', depth = 0) => {
+  if (!Array.isArray(fields)) return []
+  return fields.flatMap((field, index) => {
+    const key = fieldIdentifier(field, `field_${index + 1}`)
+    const path = parentPath ? `${parentPath}.${key}` : key
+    const row = {
+      id: field.id || path,
+      key,
+      path,
+      name: fieldDisplayName(field, key),
+      typeLabel: fieldTypeLabel(field),
+      dataType: field.dataType || field.type || '-',
+      required: Boolean(field.required),
+      sensitive: Boolean(field.sensitive),
+      editable: field.editable !== false,
+      options: normalizeOptions(field.options),
+      description: field.description || field.helpText || field.prompt || '',
+      depth,
+    }
+    const children = flattenDesignerFields(field.children || field.fields || [], path, depth + 1)
+    return [row, ...children]
+  })
+}
+
+const flattenSchemaFields = (properties = {}, parentPath = '', depth = 0) => {
+  return orderedSchemaEntries(properties).flatMap(([key, schema]) => {
+    const path = parentPath ? `${parentPath}.${key}` : key
+    const nestedProperties = schema?.properties || schema?.items?.properties || null
+    const row = {
+      id: path,
+      key,
+      path,
+      name: schema?.title || key,
+      typeLabel: schema?.['x-display-type'] ? getFieldTypeLabel(schema['x-display-type']) : (schema?.type || '-'),
+      dataType: schema?.type || '-',
+      required: false,
+      sensitive: Boolean(schema?.['x-sensitive']),
+      editable: schema?.readOnly !== true,
+      options: normalizeOptions(schema?.enum),
+      description: schema?.description || '',
+      depth,
+    }
+    const children = nestedProperties ? flattenSchemaFields(nestedProperties, path, depth + 1) : []
+    return [row, ...children]
+  })
+}
+
+const buildTemplatePreviewModel = (template = {}) => {
+  const designer = template.designer && typeof template.designer === 'object' ? template.designer : null
+  const schema = template.schema_json || template.schema || {}
+  const folders = Array.isArray(designer?.folders) ? designer.folders : []
+  if (folders.length > 0) {
+    const sections = folders.map((folder, folderIndex) => ({
+      id: folder.id || `folder_${folderIndex + 1}`,
+      title: folder.name || folder.title || `访视 ${folderIndex + 1}`,
+      groups: (Array.isArray(folder.groups) ? folder.groups : []).map((group, groupIndex) => ({
+        id: group.id || `group_${folderIndex + 1}_${groupIndex + 1}`,
+        title: group.name || group.title || `字段组 ${groupIndex + 1}`,
+        fields: flattenDesignerFields(group.fields || [], `${fieldIdentifier(folder, `folder_${folderIndex + 1}`)}.${fieldIdentifier(group, `group_${groupIndex + 1}`)}`),
+      })),
+    }))
+    return {
+      source: 'designer',
+      sections,
+      fieldCount: sections.reduce((sum, section) => sum + section.groups.reduce((groupSum, group) => groupSum + group.fields.length, 0), 0),
+    }
+  }
+
+  const schemaProperties = schema?.properties || {}
+  const fields = flattenSchemaFields(schemaProperties)
+  return {
+    source: 'schema',
+    sections: [{
+      id: 'schema',
+      title: schema?.title || template.template_name || template.name || 'Schema 字段',
+      groups: [{ id: 'schema_fields', title: '字段信息', fields }],
+    }],
+    fieldCount: fields.length,
+  }
+}
+
 const MainLayout = () => {
   const location = useLocation()
   const navigate = useNavigate()
@@ -297,6 +421,7 @@ const MainLayout = () => {
   const [researchTemplateItems, setResearchTemplateItems] = useState([])
   const [deletingTemplateId, setDeletingTemplateId] = useState('')
   const [cloneTemplateModal, setCloneTemplateModal] = useState({ open: false, templateId: '', templateName: '' })
+  const [templatePreviewModal, setTemplatePreviewModal] = useState({ open: false, loading: false, detail: null })
   const [researchProjectPaneHeight, setResearchProjectPaneHeight] = useState(null)
   const [researchRailContainerHeight, setResearchRailContainerHeight] = useState(0)
   const [isResearchSplitterDragging, setIsResearchSplitterDragging] = useState(false)
@@ -321,6 +446,10 @@ const MainLayout = () => {
     const match = location.pathname.match(/^\/patient\/detail\/([^/]+)/)
     return match?.[1] || null
   }, [location.pathname])
+  const templatePreviewModel = useMemo(
+    () => buildTemplatePreviewModel(templatePreviewModal.detail || {}),
+    [templatePreviewModal.detail]
+  )
 
   /**
    * 通知患者详情页刷新数据。
@@ -1525,6 +1654,24 @@ const MainLayout = () => {
     }
 
     /**
+     * 打开模板只读预览弹窗。
+     *
+     * @param {{id: string, name: string}} item 模板项
+     * @returns {Promise<void>}
+     */
+    const handlePreviewTemplateFromRail = async (item) => {
+      if (!item?.id) return
+      setTemplatePreviewModal({ open: true, loading: true, detail: { id: item.id, template_name: item.name } })
+      try {
+        const response = await getCRFTemplate(String(item.id))
+        setTemplatePreviewModal({ open: true, loading: false, detail: response?.data || null })
+      } catch (error) {
+        message.error(error?.message || '加载模板预览失败')
+        setTemplatePreviewModal({ open: false, loading: false, detail: null })
+      }
+    }
+
+    /**
      * 删除模板后跳转到下一个可展示模板，若为空则进入模板空态。
      *
      * @param {{id: string, name: string, deletable?: boolean}} item 模板项
@@ -1864,6 +2011,18 @@ const MainLayout = () => {
                       字段组 {item.fieldGroupsCount != null ? item.fieldGroupsCount : '--'}
                     </Text>
                     <Space size={2}>
+                      <Tooltip title="预览模板">
+                        <Button
+                          type="text"
+                          size="small"
+                          shape="circle"
+                          icon={<EyeOutlined />}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            handlePreviewTemplateFromRail(item)
+                          }}
+                        />
+                      </Tooltip>
                       <Tooltip title="编辑模板信息">
                         <Button
                           type="text"
@@ -2252,6 +2411,104 @@ const MainLayout = () => {
           }
         }}
       />
+      <Modal
+        title="CRF 模板预览"
+        open={templatePreviewModal.open}
+        width={920}
+        footer={null}
+        destroyOnClose
+        onCancel={() => setTemplatePreviewModal({ open: false, loading: false, detail: null })}
+        bodyStyle={{ maxHeight: '72vh', overflowY: 'auto' }}
+      >
+        {templatePreviewModal.loading ? (
+          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+            <Spin />
+          </div>
+        ) : (
+          <>
+            <div style={{ marginBottom: 16 }}>
+              <Text strong style={{ fontSize: 16 }}>{templatePreviewModal.detail?.template_name || templatePreviewModal.detail?.name || '未命名模板'}</Text>
+              <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px 16px', fontSize: 13 }}>
+                <div><Text type="secondary">模板代码：</Text><Text code>{templatePreviewModal.detail?.template_code || '-'}</Text></div>
+                <div><Text type="secondary">分类：</Text>{templatePreviewModal.detail?.type || templatePreviewModal.detail?.template_type || '-'}</div>
+                <div><Text type="secondary">状态：</Text>{templatePreviewModal.detail?.is_published ? <Tag color="green">已发布</Tag> : <Tag color="orange">草稿</Tag>}</div>
+                <div><Text type="secondary">能见度：</Text>{templatePreviewModal.detail?.is_system ? <Tag color="purple">所有账号可见</Tag> : <Tag color="blue">仅自己</Tag>}</div>
+                <div><Text type="secondary">版本：</Text>{templatePreviewModal.detail?.version || templatePreviewModal.detail?.active_version?.version_no || '-'}</div>
+                <div><Text type="secondary">字段数：</Text>{templatePreviewModel.fieldCount}</div>
+              </div>
+              {templatePreviewModal.detail?.description ? (
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">描述：</Text>
+                  <Text>{templatePreviewModal.detail.description}</Text>
+                </div>
+              ) : null}
+            </div>
+            <Divider style={{ margin: '12px 0' }} />
+            {templatePreviewModel.sections.some(section => section.groups.some(group => group.fields.length > 0)) ? (
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                {templatePreviewModel.sections.map((section) => (
+                  <div key={section.id} style={{ border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, overflow: 'hidden' }}>
+                    <div style={{ padding: '8px 12px', background: token.colorFillQuaternary, fontWeight: 600 }}>
+                      {section.title}
+                    </div>
+                    {section.groups.map((group) => (
+                      <div key={group.id} style={{ padding: '10px 12px' }}>
+                        <div style={{ marginBottom: 8, color: token.colorTextSecondary, fontWeight: 600 }}>{group.title}</div>
+                        <div style={{ border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 6, overflow: 'hidden' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '44px minmax(160px, 1.4fr) minmax(120px, 1fr) 96px minmax(160px, 1fr)', gap: 8, padding: '7px 10px', background: token.colorFillTertiary, fontSize: 12, color: token.colorTextSecondary }}>
+                            <span>序号</span>
+                            <span>字段名称</span>
+                            <span>字段标识</span>
+                            <span>类型</span>
+                            <span>说明 / 选项</span>
+                          </div>
+                          {group.fields.map((field, index) => (
+                            <div
+                              key={`${group.id}:${field.path}:${index}`}
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: '44px minmax(160px, 1.4fr) minmax(120px, 1fr) 96px minmax(160px, 1fr)',
+                                gap: 8,
+                                padding: '8px 10px',
+                                borderTop: `1px solid ${token.colorBorderSecondary}`,
+                                alignItems: 'start',
+                                fontSize: 13,
+                              }}
+                            >
+                              <Text type="secondary">{index + 1}</Text>
+                              <div style={{ paddingLeft: field.depth * 16, minWidth: 0 }}>
+                                <Text style={{ fontWeight: field.depth === 0 ? 500 : 400 }}>{field.name}</Text>
+                                <div style={{ marginTop: 4 }}>
+                                  {field.required ? <Tag color="red" style={{ marginInlineEnd: 4 }}>必填</Tag> : null}
+                                  {field.sensitive ? <Tag color="orange" style={{ marginInlineEnd: 4 }}>敏感</Tag> : null}
+                                  {!field.editable ? <Tag style={{ marginInlineEnd: 4 }}>只读</Tag> : null}
+                                </div>
+                              </div>
+                              <Text code style={{ whiteSpace: 'normal', wordBreak: 'break-all' }}>{field.key || '-'}</Text>
+                              <Tag style={{ width: 'fit-content' }}>{field.typeLabel}</Tag>
+                              <div style={{ minWidth: 0 }}>
+                                {field.description ? <Text>{field.description}</Text> : <Text type="secondary">-</Text>}
+                                {field.options.length ? (
+                                  <div style={{ marginTop: 4 }}>
+                                    <Text type="secondary">选项：</Text>
+                                    <Text>{field.options.join(' / ')}</Text>
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </Space>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无字段信息" />
+            )}
+          </>
+        )}
+      </Modal>
       <CrfTemplateCloneModal
         open={cloneTemplateModal.open}
         templateId={cloneTemplateModal.templateId}
