@@ -186,7 +186,7 @@ services:
       ENV: prod
       DEBUG: "false"
     volumes:
-      - ${CLAUDE_CODE_CREDENTIALS_DIR:-/root/.claude}:/root/.claude:ro
+      - ${CLAUDE_CODE_CREDENTIALS_DIR:-/root/.claude}:/home/eacy/.claude:ro
     command:
       - celery
       - -A
