@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import ForeignKey, Index, String, Uuid
+from sqlalchemy import ForeignKey, Index, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.db import Base
@@ -13,6 +13,13 @@ class DataContext(TimestampMixin, Base):
         Index("idx_data_contexts_project_patient_crf", "context_type", "project_patient_id", "schema_version_id"),
         Index("idx_data_contexts_project_crf", "context_type", "project_id", "schema_version_id"),
         Index("idx_data_contexts_patient_schema", "context_type", "patient_id", "schema_version_id"),
+        Index(
+            "uk_data_contexts_project_patient_schema_crf",
+            "project_patient_id",
+            "schema_version_id",
+            unique=True,
+            postgresql_where=text("context_type = 'project_crf' AND project_patient_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))

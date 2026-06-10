@@ -174,7 +174,7 @@ class SchemaService:
         self,
         *,
         template_id: str,
-        version_no: int,
+        version_no: int | None = None,
         schema_json: dict[str, Any],
         editable_by: str | None = None,
         **params: Any,
@@ -182,6 +182,8 @@ class SchemaService:
         template = await self._get_mutable_template(template_id, editable_by=editable_by)
         if template is None or template.status == "archived":
             raise SchemaNotFoundError("Schema template not found")
+        if version_no is None:
+            version_no = await self.version_repository.next_version_no(template_id)
         now = datetime.utcnow()
         return await self.version_repository.create(
             {

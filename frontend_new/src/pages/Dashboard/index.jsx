@@ -132,14 +132,20 @@ const Dashboard = () => {
   useEffect(() => {
     refreshAll()
     if (dashboardTimerRef.current) clearInterval(dashboardTimerRef.current)
-    if (taskTimerRef.current) clearInterval(taskTimerRef.current)
     dashboardTimerRef.current = setInterval(fetchDashboard, 60000)
-    taskTimerRef.current = setInterval(fetchActiveTasks, 15000)
     return () => {
       if (dashboardTimerRef.current) clearInterval(dashboardTimerRef.current)
-      if (taskTimerRef.current) clearInterval(taskTimerRef.current)
     }
   }, [fetchDashboard, fetchActiveTasks, refreshAll])
+
+  useEffect(() => {
+    if (taskTimerRef.current) clearInterval(taskTimerRef.current)
+    const pollInterval = toNumber(taskPayload.active_count) > 0 ? 15000 : 45000
+    taskTimerRef.current = setInterval(fetchActiveTasks, pollInterval)
+    return () => {
+      if (taskTimerRef.current) clearInterval(taskTimerRef.current)
+    }
+  }, [fetchActiveTasks, taskPayload.active_count])
 
   useEffect(() => {
     if (!projectSectionRef.current || typeof ResizeObserver === 'undefined') {

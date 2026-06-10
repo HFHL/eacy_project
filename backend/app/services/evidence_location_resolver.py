@@ -399,12 +399,17 @@ def _add_location(
         return
     page_no = item.get("page_no")
     fallback_width, fallback_height = _page_size_for(page_sizes or {}, page_no)
+    page_width = item.get("page_width") or item.get("width") or fallback_width
+    page_height = item.get("page_height") or item.get("height") or fallback_height
+    coord_space = item.get("coord_space")
+    if not coord_space:
+        coord_space = "pixel" if page_width and page_height else "unknown"
     location = {
         "page_no": page_no,
         "polygon": polygon,
-        "coord_space": item.get("coord_space") or "pixel",
-        "page_width": item.get("page_width") or item.get("width") or fallback_width,
-        "page_height": item.get("page_height") or item.get("height") or fallback_height,
+        "coord_space": coord_space,
+        "page_width": page_width,
+        "page_height": page_height,
         "source_type": source_type,
         "source_id": str(source_id),
         "textin_position": item.get("textin_position") or polygon,

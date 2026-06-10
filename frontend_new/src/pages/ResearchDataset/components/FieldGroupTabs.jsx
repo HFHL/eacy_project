@@ -308,7 +308,6 @@ const FieldGroupTabs = ({
               value: group.group_id,
               label: group.groupShortName || group.group_name,
             }))}
-            block
           />
         </div>
       </div>
@@ -367,4 +366,3 @@ const FieldGroupTabs = ({
 }
 
 export default FieldGroupTabs
-

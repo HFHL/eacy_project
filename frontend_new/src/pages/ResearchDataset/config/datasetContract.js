@@ -87,6 +87,23 @@ export const normalizeTemplateFieldMapping = (mappingRaw) => {
   return mappingRaw.field_map || mappingRaw.fieldMap || mappingRaw
 }
 
+const normalizeGroupPath = (value) => {
+  return String(value || '')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join('/')
+}
+
+const normalizeGroupDbFields = (group = {}) => {
+  if (Array.isArray(group.db_fields)) return group.db_fields.filter(Boolean).map(String)
+  if (!Array.isArray(group.fields)) return []
+  return group.fields
+    .map((field) => field?.fieldId || field?.field_id || field?.path || field?.db_field || field?.key)
+    .filter(Boolean)
+    .map(String)
+}
+
 /**
  * 规范化模板字段组列表。
  *
@@ -96,13 +113,20 @@ export const normalizeTemplateFieldMapping = (mappingRaw) => {
 export const normalizeTemplateFieldGroups = (groupsRaw) => {
   if (!Array.isArray(groupsRaw)) return []
   return groupsRaw
-    .filter((group) => group && typeof group === 'object' && group.group_id)
-    .map((group, index) => ({
-      group_id: String(group.group_id),
-      group_name: String(group.group_name || group.group_id),
-      db_fields: Array.isArray(group.db_fields) ? group.db_fields.filter(Boolean) : [],
-      is_repeatable: Boolean(group.is_repeatable),
-      order: Number.isFinite(group.order) ? Number(group.order) : index,
-      sources: group.sources || null,
-    }))
+    .filter((group) => group && typeof group === 'object')
+    .map((group, index) => {
+      const groupName = String(group.group_name || group.name || group.title || group.group_id || group.key || '')
+      const groupId = normalizeGroupPath(group.group_id || group.group_key || group.key || groupName)
+      if (!groupId) return null
+      const order = Number(group.order)
+      return {
+        group_id: groupId,
+        group_name: groupName || groupId,
+        db_fields: normalizeGroupDbFields(group),
+        is_repeatable: Boolean(group.is_repeatable ?? group.repeatable),
+        order: Number.isFinite(order) ? order : index,
+        sources: group.sources || group._sourcesByDocType || null,
+      }
+    })
+    .filter(Boolean)
 }

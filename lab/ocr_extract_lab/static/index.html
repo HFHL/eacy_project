@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EACY 抽取实验台</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>EACY 抽取实验台</h1>
+          <p>整批已缓存 TextIn OCR → 文档类型识别 → schema 表单匹配 → Claude Code 抽取 → 证据红框</p>
+        </div>
+        <button id="refreshBtn" class="ghost-btn">刷新文件</button>
+      </header>
+
+      <main class="layout">
+        <aside class="side-panel">
+          <label class="field-label">文件目录</label>
+          <div class="inline-row">
+            <input id="dirInput" class="text-input" placeholder="/path/to/files" />
+            <button id="loadBtn">读取</button>
+          </div>
+
+          <label class="field-label">字段关键词（可选）</label>
+          <input id="fieldQueryInput" class="text-input" placeholder="诊断 病理 影像 治疗" />
+
+          <label class="field-label">字段上限</label>
+          <input id="fieldLimitInput" class="text-input" type="number" min="0" placeholder="160；0 表示全部" />
+
+          <label class="field-label">测试文件数</label>
+          <input id="documentLimitInput" class="text-input" type="number" min="0" placeholder="0 表示整批" />
+
+          <div class="file-list" id="fileList"></div>
+        </aside>
+
+        <section class="work-panel">
+          <div class="action-row">
+            <div>
+              <div class="selected-title" id="selectedTitle">整批 OCR 病例抽取</div>
+              <div class="muted" id="statusText">等待开始</div>
+            </div>
+            <button id="runBtn" class="primary-btn" disabled>开始抽取电子病历夹</button>
+          </div>
+
+          <div class="result-grid">
+            <section class="document-panel">
+              <div class="panel-head">
+                <strong>OCR 页图与证据框</strong>
+                <select id="pageSelect"></select>
+              </div>
+              <div id="viewer" class="viewer empty-state">抽取后显示 OCR 页图和红框</div>
+            </section>
+
+            <section class="fields-panel">
+              <div class="panel-head">
+                <strong>抽取字段</strong>
+                <span id="fieldCount" class="badge">0</span>
+              </div>
+              <div id="fieldsList" class="fields-list empty-state">暂无结果</div>
+            </section>
+          </div>
+
+          <section class="ocr-panel">
+            <div class="panel-head">
+              <strong>OCR 文本</strong>
+              <span id="runMeta" class="muted"></span>
+            </div>
+            <pre id="ocrText" class="ocr-text">暂无 OCR 缓存</pre>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

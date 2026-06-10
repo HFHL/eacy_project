@@ -3795,11 +3795,32 @@ const FileList = () => {
             { key: 'unbind', icon: <DisconnectOutlined />, label: '解绑', disabled: !isArchived, onClick: () => handleUnbindDocument(record.id, record.file_name) },
             { type: 'divider' },
             { key: 'download', icon: <DownloadOutlined />, label: '下载', onClick: () => handleDownload(record) },
-            { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true, onClick: () => handleDeleteDocument(record.id, record.file_name) },
+            {
+              key: 'delete',
+              icon: <DeleteOutlined />,
+              label: '删除',
+              danger: true,
+              onClick: ({ domEvent }) => {
+                domEvent?.stopPropagation()
+                handleDeleteDocument(record.id, record.file_name)
+              },
+            },
           ]
           return (
-            <Dropdown menu={{ items: menuItems }} trigger={['click']} placement="bottomRight">
-              <Button type="text" size="small" icon={<MoreOutlined />} />
+            <Dropdown
+              menu={{
+                items: menuItems,
+                onClick: ({ domEvent }) => domEvent?.stopPropagation(),
+              }}
+              trigger={['click']}
+              placement="bottomRight"
+            >
+              <Button
+                type="text"
+                size="small"
+                icon={<MoreOutlined />}
+                onClick={(event) => event.stopPropagation()}
+              />
             </Dropdown>
           )
         },

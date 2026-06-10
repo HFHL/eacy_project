@@ -4,7 +4,7 @@ module: 部署运维
 status: reviewed
 audience: [ops]
 last_verified_commit: 132a529
-last_verified_date: 2026-05-13
+last_verified_date: 2026-05-31
 owner: 运维
 ---
 
@@ -27,10 +27,12 @@ owner: 运维
 
 ## 已有素材（来自项目根）
 
-- `DEPLOYMENT_RUNBOOK.md` — 现有部署 runbook，下一阶段拆分迁入
+- `AGENTS.md` / `CLAUDE.md` — 当前生产启动方式的 AI 接手入口
 - `SERVER_DEPLOYMENT_NOTES.md` — 服务器部署笔记
-- `start-all.bat` / `start-all.ps1` — 启动脚本
-- `deploy/` — 部署相关文件
+- `docker-compose.prod.yml` — 当前生产 Docker Compose 入口
+- `deploy/docker/` — 生产镜像 Dockerfile 与 nginx 配置
+- `.env.prod.example` — 生产 env 模板，真实值写 `.env.prod`
+- `DEPLOYMENT_RUNBOOK.md` — 裸机/开发参考，非当前生产入口
 
 ## 写作约定
 

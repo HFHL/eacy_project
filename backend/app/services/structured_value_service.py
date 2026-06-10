@@ -83,6 +83,11 @@ class StructuredValueService:
         selected_by: str | None = None,
         review_status: str = "confirmed",
     ) -> FieldCurrentValue:
+        await self._lock_current_field(
+            context_id=event.context_id,
+            record_instance_id=event.record_instance_id,
+            field_path=event.field_path,
+        )
         current = await self.current_repository.get_by_field(
             context_id=event.context_id,
             record_instance_id=event.record_instance_id,
@@ -176,15 +181,123 @@ class StructuredValueService:
             await self.add_evidence(value_event_id=event.id, **evidence)
 
         if auto_select_if_empty:
-            current = await self.current_repository.get_by_field(
+            await self._auto_select_ai_event(event)
+
+        return event
+
+    async def clear_current_value_with_fallback(
+        self,
+        *,
+        context_id: str,
+        record_instance_id: str,
+        field_path: str,
+    ) -> FieldCurrentValue | None:
+        await self._lock_current_field(
+            context_id=context_id,
+            record_instance_id=record_instance_id,
+            field_path=field_path,
+        )
+        current = await self.current_repository.get_by_field(
+            context_id=context_id,
+            record_instance_id=record_instance_id,
+            field_path=field_path,
+        )
+        excluded_event_id = getattr(current, "selected_event_id", None) if current is not None else None
+        if current is not None and excluded_event_id:
+            selected_event = await self.event_repository.get_by_id(excluded_event_id)
+            if selected_event is not None:
+                selected_event.review_status = "candidate"
+                await self.event_repository.save(selected_event)
+
+        await self.current_repository.delete_by_context_field(
+            context_id=context_id,
+            record_instance_id=record_instance_id,
+            field_path=field_path,
+        )
+
+        fallback_event = await self._latest_fallback_event(
+            context_id=context_id,
+            record_instance_id=record_instance_id,
+            field_path=field_path,
+            excluded_event_id=excluded_event_id,
+        )
+        if fallback_event is None:
+            return None
+        return await self.select_current_value(
+            event=fallback_event,
+            selected_by=None,
+            review_status="unreviewed",
+        )
+
+    async def _auto_select_ai_event(self, event: FieldValueEvent) -> FieldCurrentValue | None:
+        await self._lock_current_field(
+            context_id=event.context_id,
+            record_instance_id=event.record_instance_id,
+            field_path=event.field_path,
+        )
+        values = self._normalize_value_params({field: getattr(event, field, None) for field in VALUE_FIELDS})
+        now = datetime.utcnow()
+        current_values = {
+            "context_id": event.context_id,
+            "record_instance_id": event.record_instance_id,
+            "field_key": event.field_key,
+            "field_path": event.field_path,
+            "selected_event_id": event.id,
+            "value_type": event.value_type,
+            "selected_by": None,
+            "selected_at": now,
+            "review_status": "unreviewed",
+            "updated_at": now,
+            **values,
+        }
+        if hasattr(self.current_repository, "upsert_auto_selected_value"):
+            current = await self.current_repository.upsert_auto_selected_value(current_values)
+            if current is None:
+                return None
+            event.review_status = "accepted"
+            await self.event_repository.save(event)
+            return current
+        current = await self.current_repository.get_by_field(
+            context_id=event.context_id,
+            record_instance_id=event.record_instance_id,
+            field_path=event.field_path,
+        )
+        if current is None or getattr(current, "review_status", None) in {"unreviewed", "candidate"}:
+            return await self.select_current_value(event=event, selected_by=None, review_status="unreviewed")
+        return None
+
+    async def _latest_fallback_event(
+        self,
+        *,
+        context_id: str,
+        record_instance_id: str,
+        field_path: str,
+        excluded_event_id: str | None,
+    ) -> FieldValueEvent | None:
+        events = await self.event_repository.list_candidates_by_context_field(
+            context_id=context_id,
+            record_instance_id=record_instance_id,
+            field_path=field_path,
+        )
+        for event in events:
+            if event.id != excluded_event_id:
+                return event
+        return None
+
+    async def _lock_current_field(
+        self,
+        *,
+        context_id: str,
+        record_instance_id: str,
+        field_path: str,
+    ) -> None:
+        lock = getattr(self.current_repository, "lock_field_scope", None)
+        if lock is not None:
+            await lock(
                 context_id=context_id,
                 record_instance_id=record_instance_id,
                 field_path=field_path,
             )
-            if current is None:
-                await self.select_current_value(event=event, selected_by=None, review_status="unreviewed")
-
-        return event
 
     def _normalize_value_params(self, values: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(values)

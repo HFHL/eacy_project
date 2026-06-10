@@ -46,6 +46,42 @@ const readResponseBody = async (response) => {
   return text || null
 }
 
+const compactList = (items, limit = 8) => {
+  const values = (Array.isArray(items) ? items : [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+  if (!values.length) return ''
+  const shown = values.slice(0, limit)
+  const suffix = values.length > limit ? ` 等 ${values.length} 项` : ''
+  return `${shown.join('、')}${suffix}`
+}
+
+const formatInvalidExtractionTargetDetail = (detail) => {
+  if (!detail || typeof detail !== 'object' || detail.error !== 'invalid_extraction_target') return ''
+
+  const invalidParts = [
+    compactList(detail.invalid_form_keys) && `表单 ${compactList(detail.invalid_form_keys)}`,
+    compactList(detail.invalid_field_paths) && `字段路径 ${compactList(detail.invalid_field_paths)}`,
+    compactList(detail.invalid_field_keys) && `字段键 ${compactList(detail.invalid_field_keys)}`,
+  ].filter(Boolean)
+  const availableForms = compactList(detail.available_form_keys, 10)
+  const availableFields = compactList(
+    (detail.available_fields || detail.available_field_paths || []).map((field) => {
+      if (typeof field === 'string') return field
+      return field?.field_title
+        ? `${field.field_path || field.field_key || ''}（${field.field_title}）`
+        : field?.field_path || field?.field_key || ''
+    }),
+    10,
+  )
+
+  const sections = []
+  sections.push(invalidParts.length ? `抽取目标不存在：${invalidParts.join('；')}` : (detail.message || '抽取目标不存在'))
+  if (availableForms) sections.push(`可用表单：${availableForms}`)
+  if (availableFields) sections.push(`可用字段示例：${availableFields}`)
+  return sections.join('。')
+}
+
 const getErrorMessage = (body, fallback) => {
   if (!body) return fallback
   if (typeof body === 'string') return body
@@ -57,6 +93,8 @@ const getErrorMessage = (body, fallback) => {
       return loc ? `${loc}: ${msg}` : msg
     }).join('; ')
   }
+  const invalidTargetMessage = formatInvalidExtractionTargetDetail(body.detail)
+  if (invalidTargetMessage) return invalidTargetMessage
   if (typeof body.detail === 'string') return body.detail
   return body.message || body.error || fallback
 }

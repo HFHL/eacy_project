@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { message } from 'antd'
 import { getProjectPatientDetail } from '@/api/project'
 import { getProject } from '@/api/project'
+import { hasEffectiveValue } from '@/utils/valuePresence'
 
 // 默认空患者信息
 const emptyPatientInfo = {
@@ -205,7 +206,7 @@ export const useProjectPatientData = (projectId, patientId) => {
       const isRepeatable = group.is_repeatable || false
       
       // 检查是否有字段的 value 是数组（可重复组的标志）
-      const firstArrayField = Object.values(fields).find(f => Array.isArray(f.value) && f.value.length > 0)
+      const firstArrayField = Object.values(fields).find(f => Array.isArray(f.value) && hasEffectiveValue(f.value))
       
       if (isRepeatable && firstArrayField && Array.isArray(firstArrayField.value)) {
         // 可重复组：将 value 数组转换为 records 格式
@@ -290,9 +291,7 @@ export const useProjectPatientData = (projectId, patientId) => {
         const groupData = groups[fg.key] || {}
         const fields = groupData.fields || {}
         const totalFields = fg.dbFields.length || Object.keys(fields).length
-        const filledFields = Object.values(fields).filter(f => 
-          f.value !== null && f.value !== undefined && f.value !== ''
-        ).length
+        const filledFields = Object.values(fields).filter(f => hasEffectiveValue(f?.value)).length
         const completeness = totalFields > 0 ? Math.round((filledFields / totalFields) * 100) : 0
         
         return {
@@ -312,9 +311,7 @@ export const useProjectPatientData = (projectId, patientId) => {
       const group = groups[groupKey]
       const fields = group.fields || {}
       const totalFields = Object.keys(fields).length
-      const filledFields = Object.values(fields).filter(f => 
-        f.value !== null && f.value !== undefined && f.value !== ''
-      ).length
+      const filledFields = Object.values(fields).filter(f => hasEffectiveValue(f?.value)).length
       const completeness = totalFields > 0 ? Math.round((filledFields / totalFields) * 100) : 0
       
       return {

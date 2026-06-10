@@ -1,5 +1,6 @@
 import pytest
 import pytest_asyncio
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from core.helpers.cache.redis_backend import RedisBackend
 from core.helpers.redis import redis_client
@@ -9,8 +10,14 @@ redis_backend = RedisBackend()
 
 @pytest_asyncio.fixture(autouse=True)
 async def reset_redis_connections():
-    yield
-    await redis_client.connection_pool.disconnect()
+    try:
+        await redis_client.ping()
+    except RedisConnectionError:
+        pytest.skip("Redis is not running on localhost:6379")
+    try:
+        yield
+    finally:
+        await redis_client.connection_pool.disconnect()
 
 
 @pytest.mark.asyncio

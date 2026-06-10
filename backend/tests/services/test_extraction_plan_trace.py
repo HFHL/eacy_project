@@ -16,10 +16,11 @@ class FakeDocument:
 
 
 class FakeJob:
-    def __init__(self, *, document_id: str, target_form_key: str, job_id: str):
+    def __init__(self, *, document_id: str, target_form_key: str | None, job_id: str, input_json=None):
         self.id = job_id
         self.document_id = document_id
         self.target_form_key = target_form_key
+        self.input_json = input_json or {}
 
 
 def test_document_trace_terms_includes_doc_type():
@@ -45,3 +46,89 @@ def test_build_folder_plan_json_marks_skipped_document():
     assert plan["stats"]["skipped_documents"] == 1
     skipped_entry = next(item for item in plan["documents"] if item["document_id"] == "doc-skip")
     assert skipped_entry["status"] == "skipped"
+
+
+def test_build_folder_plan_json_maps_multi_form_job_to_each_form():
+    doc = FakeDocument(id="doc-1", doc_type="病案首页")
+    schema_json = {
+        "properties": {
+            "basic": {
+                "properties": {
+                    "demographics": {
+                        "type": "object",
+                        "x-sources": {"primary": ["病案首页"]},
+                        "properties": {"gender": {"type": "string"}},
+                    },
+                    "diagnosis": {
+                        "type": "object",
+                        "x-sources": {"primary": ["病案首页"]},
+                        "properties": {"name": {"type": "string"}},
+                    },
+                }
+            }
+        }
+    }
+
+    plan = build_folder_plan_json(
+        options={"mode": "incremental", "target_form_keys": []},
+        schema_version_id="schema-v1",
+        source_tag="patient_ehr_folder_update",
+        documents_total=1,
+        eligible_documents=[doc],
+        pending_documents=[doc],
+        already_extracted_document_ids=set(),
+        jobs=[
+            FakeJob(
+                document_id="doc-1",
+                target_form_key=None,
+                job_id="job-1",
+                input_json={"form_keys": ["basic.demographics", "basic.diagnosis"]},
+            )
+        ],
+        skipped=[],
+        schema_json=schema_json,
+    )
+
+    forms = plan["documents"][0]["forms"]
+    assert [form["target_form_key"] for form in forms] == ["basic.demographics", "basic.diagnosis"]
+    assert {form["job_id"] for form in forms} == {"job-1"}
+
+
+def test_build_folder_plan_json_marks_full_schema_job_without_form_keys():
+    doc = FakeDocument(id="doc-1", doc_type="病程记录")
+    plan = build_folder_plan_json(
+        options={"mode": "incremental", "target_form_keys": []},
+        schema_version_id="schema-v1",
+        source_tag="project_crf_folder_update",
+        documents_total=1,
+        eligible_documents=[doc],
+        pending_documents=[doc],
+        already_extracted_document_ids=set(),
+        jobs=[
+            FakeJob(
+                document_id="doc-1",
+                target_form_key=None,
+                job_id="job-1",
+                input_json={
+                    "source": "project_crf_folder_update",
+                    "all_schema": True,
+                    "match_role": "full_schema",
+                },
+            )
+        ],
+        skipped=[],
+        schema_json={"properties": {}},
+    )
+
+    document_entry = plan["documents"][0]
+    assert document_entry["status"] == "planned"
+    assert document_entry["forms"] == [
+        {
+            "target_form_key": None,
+            "form_title": "全部表单",
+            "match_role": "full_schema",
+            "reason": "document scheduled for full schema extraction",
+            "job_id": "job-1",
+            "status": "planned",
+        }
+    ]

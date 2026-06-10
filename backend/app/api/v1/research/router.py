@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
-from app.services.extraction_service import ExtractionConflictError, ExtractionNotFoundError, ExtractionService
+from app.services.extraction_service import (
+    ExtractionConflictError,
+    ExtractionNotFoundError,
+    ExtractionService,
+    ExtractionTargetValidationError,
+)
 from app.services.research_project_export_service import ExportRequest, ResearchProjectExportService
 from app.services.research_project_service import (
     ResearchProjectConflictError,
@@ -679,6 +684,8 @@ async def update_project_patient_crf_folder(
         )
     except ExtractionNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    except ExtractionTargetValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.to_detail())
     except ExtractionConflictError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     return CrfFolderUpdateResponse.model_validate(
@@ -711,6 +718,8 @@ async def update_project_crf_folder_batch(
         )
     except ExtractionNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    except ExtractionTargetValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.to_detail())
     except ExtractionConflictError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     return ProjectCrfFolderBatchResponse.model_validate(

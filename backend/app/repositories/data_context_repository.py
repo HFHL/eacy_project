@@ -104,4 +104,6 @@ class RecordInstanceRepository(BaseRepo[RecordInstance]):
         query = select(func.max(RecordInstance.repeat_index)).where(RecordInstance.context_id == context_id).where(RecordInstance.form_key == form_key)
         result = await session.execute(query)
         current = result.scalar()
-        return int(current or 0) + 1
+        if current is None:
+            return 0
+        return int(current) + 1

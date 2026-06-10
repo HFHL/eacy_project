@@ -55,6 +55,39 @@ def plan_item_payload(item: ExtractionPlanItem, *, job_id: str | None = None) ->
     }
 
 
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None]
+    return [str(value)]
+
+
+def _job_targets_full_schema(job: ExtractionJob) -> bool:
+    input_json = job.input_json if isinstance(job.input_json, dict) else {}
+    if getattr(job, "target_form_key", None):
+        return False
+    target_filters = (
+        _as_list(input_json.get("form_keys"))
+        + _as_list(input_json.get("field_paths"))
+        + _as_list(input_json.get("field_keys"))
+        + _as_list(input_json.get("group_keys"))
+    )
+    return not any(target_filters)
+
+
+def _full_schema_plan_payload(job: ExtractionJob) -> dict[str, Any]:
+    input_json = job.input_json if isinstance(job.input_json, dict) else {}
+    return {
+        "target_form_key": None,
+        "form_title": "全部表单",
+        "match_role": input_json.get("match_role") or "full_schema",
+        "reason": input_json.get("planned_reason") or "document scheduled for full schema extraction",
+        "job_id": job.id,
+        "status": "planned",
+    }
+
+
 def build_folder_plan_json(
     *,
     options: dict[str, Any],
@@ -72,9 +105,20 @@ def build_folder_plan_json(
 ) -> dict[str, Any]:
     planner = planner or ExtractionPlanner()
     job_id_by_doc_form: dict[tuple[str, str], str] = {}
+    full_schema_job_by_doc: dict[str, ExtractionJob] = {}
     for job in jobs:
-        if job.document_id and job.target_form_key:
-            job_id_by_doc_form[(str(job.document_id), str(job.target_form_key))] = job.id
+        if not job.document_id:
+            continue
+        doc_id = str(job.document_id)
+        if _job_targets_full_schema(job):
+            full_schema_job_by_doc[doc_id] = job
+            continue
+        input_json = job.input_json if isinstance(job.input_json, dict) else {}
+        form_keys = {str(key) for key in (input_json.get("form_keys") or []) if key}
+        if job.target_form_key:
+            form_keys.add(str(job.target_form_key))
+        for form_key in form_keys:
+            job_id_by_doc_form[(doc_id, form_key)] = job.id
 
     skipped_by_document: dict[str, str] = {}
     for entry in skipped:
@@ -103,6 +147,12 @@ def build_folder_plan_json(
         if doc_id not in pending_ids:
             summary["status"] = "not_planned"
             summary["forms"] = []
+            plan_documents.append(summary)
+            continue
+        full_schema_job = full_schema_job_by_doc.get(doc_id)
+        if full_schema_job is not None:
+            summary["status"] = "planned"
+            summary["forms"] = [_full_schema_plan_payload(full_schema_job)]
             plan_documents.append(summary)
             continue
 
@@ -149,14 +199,16 @@ def build_single_job_plan_json(*, job: ExtractionJob, document: Document | None)
     doc_summary["status"] = "planned"
     doc_summary["forms"] = [
         {
-            "target_form_key": job.target_form_key,
-            "form_title": job.target_form_key,
+            "target_form_key": form_key,
+            "form_title": form_key,
             "match_role": input_json.get("match_role"),
             "reason": input_json.get("planned_reason") or "single job",
             "job_id": job.id,
             "status": "planned",
         }
-    ] if job.target_form_key else []
+        for form_key in (input_json.get("form_keys") or [job.target_form_key])
+        if form_key
+    ]
     return {
         "options": {"mode": "single"},
         "schema_version_id": job.schema_version_id,

@@ -1,4 +1,4 @@
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models import FieldCurrentValue, FieldValueEvent, FieldValueEvidence
@@ -104,6 +104,19 @@ class FieldCurrentValueRepository(BaseRepo[FieldCurrentValue]):
         result = await session.execute(query)
         return result.scalars().first()
 
+    async def lock_field_scope(
+        self,
+        *,
+        context_id: str,
+        record_instance_id: str,
+        field_path: str,
+    ) -> None:
+        lock_key = f"field-current:{context_id}:{record_instance_id}:{field_path}"
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": lock_key},
+        )
+
     async def upsert_selected_value(self, values: dict) -> FieldCurrentValue:
         insert_stmt = insert(FieldCurrentValue).values(**values)
         update_values = {
@@ -133,6 +146,37 @@ class FieldCurrentValueRepository(BaseRepo[FieldCurrentValue]):
         )
         result = await session.execute(query)
         return result.scalars().one()
+
+    async def upsert_auto_selected_value(self, values: dict) -> FieldCurrentValue | None:
+        insert_stmt = insert(FieldCurrentValue).values(**values)
+        update_values = {
+            key: insert_stmt.excluded[key]
+            for key in (
+                "field_key",
+                "selected_event_id",
+                "value_type",
+                "value_text",
+                "value_number",
+                "value_date",
+                "value_datetime",
+                "value_json",
+                "unit",
+                "selected_by",
+                "selected_at",
+                "review_status",
+                "updated_at",
+            )
+        }
+        query = (
+            insert_stmt.on_conflict_do_update(
+                constraint="uk_current_field",
+                set_=update_values,
+                where=FieldCurrentValue.review_status.in_(["unreviewed", "candidate"]),
+            )
+            .returning(FieldCurrentValue)
+        )
+        result = await session.execute(query)
+        return result.scalars().first()
 
     async def list_by_context(self, context_id: str) -> list[FieldCurrentValue]:
         query = select(FieldCurrentValue).where(FieldCurrentValue.context_id == context_id)

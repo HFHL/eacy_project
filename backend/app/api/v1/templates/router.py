@@ -27,7 +27,7 @@ class SchemaTemplateUpdate(BaseModel):
 
 
 class SchemaTemplateVersionCreate(BaseModel):
-    version_no: int = Field(..., ge=1)
+    version_no: int | None = Field(default=None, ge=1)
     version_name: str | None = Field(default=None, max_length=100)
     schema_: dict[str, Any] = Field(alias="schema_json")
     status: str = Field(default="draft", max_length=50)

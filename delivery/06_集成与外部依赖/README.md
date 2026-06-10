@@ -4,7 +4,7 @@ module: 集成与外部依赖
 status: reviewed
 audience: [integrator, ops]
 last_verified_commit: 132a529
-last_verified_date: 2026-05-13
+last_verified_date: 2026-05-31
 owner: 后端
 ---
 
@@ -18,7 +18,7 @@ owner: 后端
 |---|---|---|---|
 | **TextIn OCR** | PDF / 扫描件文字与坐标识别 | TextIn-OCR.md（待写） | `backend/app/integrations/textin_ocr.py` |
 | **LLM Provider** | 字段抽取、metadata 生成 | LLM-Provider.md（待写） | `backend/app/workers/extraction_tasks.py`, `backend/app/workers/metadata_tasks.py` |
-| **对象存储** | 原始文档存放 | 对象存储.md（待写） | （以实际部署形态为准：本地磁盘 / OSS / S3） |
+| **阿里云 OSS** | 原始文档存放、临时签名 URL、后端流式预览 | 对象存储.md（待写） | `backend/app/integrations/oss_storage.py` |
 
 ## 写作约定
 

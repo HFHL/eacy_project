@@ -202,6 +202,7 @@ const deriveFieldGroupsFromPatientCrfData = (patientDataset) => {
 
     Object.entries(groups).forEach(([groupId, groupNode]) => {
       if (!groupId || !groupNode || typeof groupNode !== 'object') return
+      if (String(groupId).startsWith('_')) return
       const existing = groupMap.get(groupId) || {
         group_id: String(groupId),
         group_name: String(groupNode.group_name || groupNode.name || groupId),
@@ -235,7 +236,6 @@ const deriveFieldGroupsFromPatientCrfData = (patientDataset) => {
       order: group.order,
       sources: null,
     }))
-    .filter((group) => group.db_fields.length > 0)
 }
 
 /**

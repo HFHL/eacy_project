@@ -1,6 +1,7 @@
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.v1.documents.router import get_document_metadata_service, get_document_service
@@ -8,6 +9,26 @@ from app.server import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def isolate_document_repository_helpers(monkeypatch):
+    async def empty_extract_status_map(_documents):
+        return {}
+
+    async def empty_bound_patient_map(_documents, *, owner_id=None):
+        return {}
+
+    async def empty_extraction_records(_document_id):
+        return []
+
+    async def empty_linked_patients(_document, *, owner_id=None):
+        return []
+
+    monkeypatch.setattr("app.api.v1.documents.router.build_extract_status_map", empty_extract_status_map)
+    monkeypatch.setattr("app.api.v1.documents.router.build_bound_patient_map", empty_bound_patient_map)
+    monkeypatch.setattr("app.api.v1.documents.router.build_extraction_records", empty_extraction_records)
+    monkeypatch.setattr("app.api.v1.documents.router.build_linked_patients", empty_linked_patients)
 
 
 class FakeDocumentService:
@@ -55,7 +76,7 @@ class FakeDocumentService:
         ]
         return documents, len(documents)
 
-    async def get_document(self, document_id):
+    async def get_document(self, document_id, **_kwargs):
         document = self.documents.get(document_id)
         if document is not None and document.status == "deleted":
             return None
@@ -68,7 +89,7 @@ class FakeDocumentService:
         document.updated_at = datetime(2026, 1, 2)
         return document
 
-    async def get_preview_url(self, document_id, *, expires_in=3600):
+    async def get_preview_url(self, document_id, *, expires_in=3600, **_kwargs):
         document = self.documents[document_id]
         url = document.file_url
         return {
@@ -82,7 +103,7 @@ class FakeDocumentService:
             "file_name": document.original_filename,
         }
 
-    async def get_stream_document(self, document_id):
+    async def get_stream_document(self, document_id, **_kwargs):
         return self.documents[document_id]
 
     async def archive_to_patient(self, *, document_id, patient_id, requested_by=None, create_extraction_job=True):
@@ -104,7 +125,7 @@ class FakeDocumentService:
             archived_documents.append(document)
         return archived_documents
 
-    async def get_archive_tree(self):
+    async def get_archive_tree(self, **_kwargs):
         active_documents = [document for document in self.documents.values() if document.status != "deleted" and document.status != "archived"]
         archived_documents = [document for document in self.documents.values() if document.status == "archived"]
         todo_groups = []
@@ -128,7 +149,11 @@ class FakeDocumentService:
             "archived_patients": [],
         }
 
-    async def get_archive_group_documents(self, group_id):
+    async def get_archive_counts(self, **_kwargs):
+        tree = await self.get_archive_tree()
+        return tree["counts"]
+
+    async def get_archive_group_documents(self, group_id, **_kwargs):
         documents = [document for document in self.documents.values() if document.status != "deleted" and document.status != "archived"]
         return {
             "items": documents,
@@ -172,17 +197,20 @@ class FakeDocumentService:
     async def refresh_document_match_info(self, document_id, *, uploaded_by=None):
         return await self.get_document_match_info(document_id, uploaded_by=uploaded_by)
 
-    async def unarchive_document(self, document_id):
+    async def list_documents_by_ids(self, document_ids, **_kwargs):
+        return [self.documents[document_id] for document_id in document_ids if document_id in self.documents]
+
+    async def unarchive_document(self, document_id, **_kwargs):
         document = self.documents[document_id]
         document.patient_id = None
         document.status = "uploaded"
         document.archived_at = None
         return document
 
-    async def delete_document(self, document_id):
+    async def delete_document(self, document_id, **_kwargs):
         self.documents[document_id].status = "deleted"
 
-    async def queue_document_metadata(self, document_id):
+    async def queue_document_metadata(self, document_id, **_kwargs):
         document = self.documents[document_id]
         document.meta_status = "queued"
         document.updated_at = datetime(2026, 1, 4)
@@ -253,9 +281,42 @@ def test_document_upload_archive_unarchive_and_delete_flow():
     app.dependency_overrides.clear()
 
 
-def test_document_preview_uses_oss_url_flow():
+class FakeHttpxStreamResponse:
+    def raise_for_status(self):
+        return None
+
+    async def aiter_bytes(self):
+        yield b"fake image body"
+
+
+class FakeHttpxStreamContext:
+    async def __aenter__(self):
+        return FakeHttpxStreamResponse()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class FakeAsyncClient:
+    def __init__(self, **_kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def stream(self, method, url):
+        assert method == "GET"
+        assert url.startswith("https://cinocore-eacy.")
+        return FakeHttpxStreamContext()
+
+
+def test_document_preview_uses_oss_url_flow(monkeypatch):
     fake_service = FakeDocumentService()
     app.dependency_overrides[get_document_service] = lambda: fake_service
+    monkeypatch.setattr("app.api.v1.documents.router.httpx.AsyncClient", FakeAsyncClient)
 
     try:
         upload_response = client.post(
@@ -270,8 +331,8 @@ def test_document_preview_uses_oss_url_flow():
         assert preview_response.json()["temp_url"].startswith("https://cinocore-eacy.")
 
         stream_response = client.get(f"/api/v1/documents/{document_id}/stream", follow_redirects=False)
-        assert stream_response.status_code == 302
-        assert stream_response.headers["location"].startswith("https://cinocore-eacy.")
+        assert stream_response.status_code == 200
+        assert stream_response.content == b"fake image body"
     finally:
         app.dependency_overrides.clear()
 

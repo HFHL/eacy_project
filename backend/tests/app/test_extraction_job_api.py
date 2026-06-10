@@ -4,7 +4,11 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from app.api.v1.extraction.router import get_extraction_service
-from app.services.extraction_service import ExtractionConflictError, ExtractionNotFoundError
+from app.services.extraction_service import (
+    ExtractionConflictError,
+    ExtractionNotFoundError,
+    ExtractionTargetValidationError,
+)
 from app.server import app
 
 
@@ -25,6 +29,7 @@ class FakeExtractionService:
             finished_at=datetime(2026, 1, 1),
             created_at=datetime(2026, 1, 1),
             updated_at=None,
+            error_type=None,
             error_message=None,
             **params,
         )
@@ -41,6 +46,7 @@ class FakeExtractionService:
                 raw_output_json={"fields": [{"field_path": "basic.demographics.gender"}]},
                 parsed_output_json={"fields": [{"field_path": "basic.demographics.gender"}]},
                 validation_status="valid",
+                error_type=None,
                 error_message=None,
                 started_at=datetime(2026, 1, 1),
                 finished_at=datetime(2026, 1, 1),
@@ -118,6 +124,8 @@ def test_extraction_job_create_query_runs_retry_and_delete_policy():
     job = create_response.json()
     assert job["status"] == "completed"
     assert job["progress"] == 100
+    assert "error_type" in job
+    assert job["error_type"] is None
 
     detail_response = client.get(f"/api/v1/extraction-jobs/{job['id']}")
     assert detail_response.status_code == 200
@@ -126,6 +134,7 @@ def test_extraction_job_create_query_runs_retry_and_delete_policy():
     runs_response = client.get(f"/api/v1/extraction-jobs/{job['id']}/runs")
     assert runs_response.status_code == 200
     assert runs_response.json()[0]["model_name"] == "MockExtractor"
+    assert "error_type" in runs_response.json()[0]
     assert runs_response.json()[0]["parsed_output_json"]["fields"][0]["field_path"] == "basic.demographics.gender"
 
     retry_response = client.post(f"/api/v1/extraction-jobs/{job['id']}/retry")
@@ -149,5 +158,49 @@ def test_extraction_job_create_query_runs_retry_and_delete_policy():
 
     delete_response = client.delete(f"/api/v1/extraction-jobs/{job['id']}")
     assert delete_response.status_code == 409
+
+    app.dependency_overrides.clear()
+
+
+def test_invalid_extraction_target_returns_400_with_available_fields():
+    class InvalidTargetService:
+        async def create_and_process_job(self, **_params):
+            raise ExtractionTargetValidationError(
+                "Invalid extraction target: unknown field_paths=['bad.path']",
+                invalid_field_paths=["bad.path"],
+                available_form_keys=["basic.demographics"],
+                available_field_paths=["basic.demographics.gender"],
+                available_field_keys=["gender"],
+                available_fields=[
+                    {
+                        "field_path": "basic.demographics.gender",
+                        "field_key": "gender",
+                        "field_title": "性别",
+                        "form_key": "basic.demographics",
+                        "form_title": "demographics",
+                    }
+                ],
+            )
+
+    app.dependency_overrides[get_extraction_service] = lambda: InvalidTargetService()
+
+    response = client.post(
+        "/api/v1/extraction-jobs",
+        json={
+            "job_type": "targeted_schema",
+            "patient_id": "patient-1",
+            "document_id": "document-1",
+            "context_id": "context-1",
+            "schema_version_id": "schema-version-1",
+            "input_json": {"field_paths": ["bad.path"]},
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["error"] == "invalid_extraction_target"
+    assert detail["invalid_field_paths"] == ["bad.path"]
+    assert detail["available_field_paths"] == ["basic.demographics.gender"]
+    assert detail["available_fields"][0]["field_title"] == "性别"
 
     app.dependency_overrides.clear()

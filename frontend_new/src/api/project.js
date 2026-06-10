@@ -1054,11 +1054,6 @@ export const saveProjectTemplateDesigner = async (projectId = '', payload = {}) 
 
   // 1) 在原模板上创建新版本（草稿）并发布，使其成为最新活动版本
   const detail = await request.get(`/schema-templates/${binding.template_id}`)
-  const versions = Array.isArray(detail?.versions) ? detail.versions : []
-  const nextVersionNo = versions.reduce(
-    (max, v) => Math.max(max, Number(v?.version_no || 0)),
-    0,
-  ) + 1
   const exportedSchema = payload.schema_json || payload.schema || {}
   const schemaJson = {
     ...exportedSchema,
@@ -1080,8 +1075,7 @@ export const saveProjectTemplateDesigner = async (projectId = '', payload = {}) 
     fieldGroups,
   }
   const newVersion = await request.post(`/schema-templates/${binding.template_id}/versions`, {
-    version_no: nextVersionNo,
-    version_name: `v${nextVersionNo} project-save`,
+    version_name: 'project-save',
     schema_json: schemaJson,
     status: 'draft',
   })

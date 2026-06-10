@@ -1,9 +1,12 @@
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from app.models import RecordInstance
+from app.services.record_instance_label import record_instance_label
 
 
 @dataclass(frozen=True)
@@ -25,7 +28,7 @@ class RecordInstanceMergeResolver:
         *,
         record_repository: Any,
         records_by_form: dict[str, dict[int, RecordInstance]],
-        default_record: RecordInstance,
+        default_record: RecordInstance | None,
         context_id: str,
         source_document_id: str | None,
         extraction_run_id: str | None,
@@ -44,7 +47,7 @@ class RecordInstanceMergeResolver:
             local_repeat_index=self.local_repeat_index_for_field(field=field, record_form_key=form_key),
         )
 
-    async def resolve_record_for_group(self, fields: list[dict[str, Any]]) -> RecordInstance:
+    async def resolve_record_for_group(self, fields: list[dict[str, Any]]) -> RecordInstance | None:
         if not fields:
             return self.default_record
 
@@ -110,16 +113,22 @@ class RecordInstanceMergeResolver:
         fallback_names = self._binding_names(binding.get("fallback"))
         group_names = self._binding_names(binding.get("group_key"))
         interval_names = self._binding_names(binding.get("interval"), separator="|")
+        has_merge_rule = bool(anchor_names or fallback_names or group_names or interval_names)
+        anchor_source: str | None = None
 
         for name in anchor_names:
             value = self._field_value(field_by_label.get(self._label_key(name)))
             if value not in (None, "", [], {}):
                 anchor_values[name] = value
+        if anchor_values:
+            anchor_source = "anchor"
         if not anchor_values:
             for name in fallback_names:
                 value = self._field_value(field_by_label.get(self._label_key(name)))
                 if value not in (None, "", [], {}):
                     anchor_values[name] = value
+            if anchor_values:
+                anchor_source = "fallback"
 
         for name in group_names:
             value = self._field_value(field_by_label.get(self._label_key(name)))
@@ -140,15 +149,19 @@ class RecordInstanceMergeResolver:
             for name, value in sorted(values.items()):
                 merge_parts.append(f"{prefix}:{self._label_key(name)}={self._normalize_value(value, granularity)}")
 
+        missing_merge_anchor = has_merge_rule and not (anchor_values or group_values or interval_values)
         fallback_used = False
         if len(merge_parts) == 1:
             fallback_used = True
-            merge_parts.extend(
-                [
-                    f"document={self.source_document_id or 'unknown'}",
-                    f"local_repeat_index={local_repeat_index}",
-                ]
-            )
+            if missing_merge_anchor:
+                merge_parts.append("missing_merge_anchor=1")
+                fallback_scope = self.source_document_id or self.extraction_run_id
+                if fallback_scope:
+                    merge_parts.append(f"fallback_scope={fallback_scope}")
+                if local_repeat_index > 0:
+                    merge_parts.append(f"local_repeat_index={local_repeat_index}")
+            elif local_repeat_index > 0:
+                merge_parts.append(f"local_repeat_index={local_repeat_index}")
 
         merge_key = "|".join(merge_parts)
         return {
@@ -157,11 +170,15 @@ class RecordInstanceMergeResolver:
             "merge_binding": merge_binding,
             "merge_key": merge_key,
             "anchor_values": anchor_values,
+            "anchor_source": anchor_source,
             "group_values": group_values,
             "interval_values": interval_values,
             "source_document_id": self.source_document_id,
             "local_repeat_index": local_repeat_index,
             "fallback_used": fallback_used,
+            "anchor_missing": bool(anchor_names) and anchor_source != "anchor",
+            "duplicate_suspect": missing_merge_anchor,
+            "duplicate_suspect_reason": "missing_merge_anchor" if missing_merge_anchor else None,
         }
 
     async def _create_record(
@@ -186,7 +203,7 @@ class RecordInstanceMergeResolver:
                 "form_key": form_key,
                 "form_title": title,
                 "repeat_index": repeat_index,
-                "instance_label": title if repeat_index == 0 else f"{title}_{repeat_index + 1}",
+                "instance_label": record_instance_label(title, form_key, repeat_index),
                 "anchor_json": anchor_json,
                 "source_document_id": self.source_document_id,
                 "created_by_run_id": self.extraction_run_id,
@@ -230,7 +247,7 @@ class RecordInstanceMergeResolver:
         parts = [part for part in str(field_path or "").replace("/", ".").split(".") if part and not part.isdigit()]
         if len(parts) >= 2:
             return f"{parts[0]}.{parts[1]}"
-        return parts[0] if parts else None
+        return None
 
     @staticmethod
     def local_repeat_index_for_field(*, field: dict[str, Any], record_form_key: str | None) -> int:
@@ -314,11 +331,56 @@ class RecordInstanceMergeResolver:
             text = json.dumps(value, ensure_ascii=False, sort_keys=True)
         else:
             text = str(value or "").strip()
-        if granularity == "day":
-            match = re.search(r"(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2})日?)?", text)
-            if match:
-                year, month, day = match.groups()
-                return f"{year}-{int(month):02d}-{int(day or 1):02d}"
-            if re.match(r"^\d{4}-\d{2}-\d{2}", text):
-                return text[:10]
-        return re.sub(r"\s+", "", text).lower()
+        text = unicodedata.normalize("NFKC", text)
+        date_value = RecordInstanceMergeResolver._normalize_date_text(text)
+        if date_value and granularity in {None, "", "day"}:
+            return date_value
+        text = RecordInstanceMergeResolver._normalize_chinese_ordinals(text)
+        text = text.replace("第", "").replace("次", "")
+        return re.sub(r"[\s:：,，;；、_\-]+", "", text).lower()
+
+    @staticmethod
+    def _normalize_date_text(text: str) -> str | None:
+        match = re.search(r"(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2})日?)?", text)
+        if match:
+            year, month, day = match.groups()
+            return f"{int(year):04d}-{int(month):02d}-{int(day or 1):02d}"
+        for fmt in ("%Y%m%d", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text[:10], fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _normalize_chinese_ordinals(text: str) -> str:
+        chinese_digits = {
+            "零": 0,
+            "〇": 0,
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+            "十": 10,
+        }
+
+        def repl(match: re.Match[str]) -> str:
+            raw = match.group(0)
+            if raw == "十":
+                return "10"
+            if raw.startswith("十"):
+                return str(10 + chinese_digits.get(raw[-1], 0))
+            if raw.endswith("十"):
+                return str(chinese_digits.get(raw[0], 0) * 10)
+            if "十" in raw:
+                left, right = raw.split("十", 1)
+                return str(chinese_digits.get(left, 1) * 10 + chinese_digits.get(right, 0))
+            return str(chinese_digits.get(raw, raw))
+
+        return re.sub(r"[零〇一二两三四五六七八九十]{1,3}", repl, text)

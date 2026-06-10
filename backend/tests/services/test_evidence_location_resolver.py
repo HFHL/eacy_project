@@ -74,6 +74,32 @@ def test_resolve_evidence_locations_prefers_source_id_over_fuzzy_value_match():
     assert resolved[0]["bbox_json"]["text"] == "已婚"
 
 
+def test_resolve_evidence_locations_marks_missing_page_dimensions():
+    document = SimpleNamespace(
+        ocr_payload_json={
+            "blocks": [
+                {
+                    "block_id": "b1",
+                    "page_no": 1,
+                    "text": "姓名：张三",
+                    "polygon": [10, 10, 80, 10, 80, 30, 10, 30],
+                }
+            ]
+        },
+        parsed_data=None,
+    )
+
+    resolved = resolve_evidence_locations(
+        document,
+        [{"source_type": "block", "source_id": "b1", "quote_text": "姓名：张三", "page_no": 1}],
+    )
+
+    bbox = resolved[0]["bbox_json"]
+    assert bbox["coord_space"] == "unknown"
+    assert bbox["coord_warning"] == "missing_page_dimensions"
+    assert bbox["renderable"] is True
+
+
 def test_resolve_evidence_locations_uses_quote_before_fallback_when_source_id_missing():
     document = SimpleNamespace(
         ocr_payload_json={

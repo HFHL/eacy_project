@@ -1,3 +1,8 @@
+import asyncio
+from pathlib import Path
+
+import pytest
+
 from app.workers.celery_app import (
     ABANDON_STALE_PENDING_TASK_NAME,
     CLAUDE_CODE_QUEUE,
@@ -12,6 +17,20 @@ from app.workers.celery_app import (
     celery_app,
 )
 from core.config import config
+
+
+@pytest.fixture(autouse=True)
+def restore_event_loop_policy_after_worker_tests():
+    yield
+    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+
+
+def _compose_services() -> dict:
+    import yaml
+
+    project_root = Path(__file__).resolve().parents[3]
+    compose_path = project_root / "docker-compose.prod.yml"
+    return yaml.safe_load(compose_path.read_text(encoding="utf-8"))["services"]
 
 
 def test_celery_app_registers_worker_tasks():
@@ -33,6 +52,33 @@ def test_celery_task_routes_are_declared():
     assert CLAUDE_CODE_QUEUE == "claude-code"
     assert routes[ABANDON_STALE_PENDING_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
     assert routes[SCHEDULE_PENDING_EXTRACTION_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
+
+
+def test_prod_compose_has_dedicated_claude_code_worker():
+    services = _compose_services()
+    worker = services["worker-claude-code"]
+    command = worker["command"]
+
+    assert worker["image"] == "eacy-backend-claude-code:prod"
+    assert worker["build"]["args"]["INSTALL_CLAUDE_CODE"] == "true"
+    assert worker["build"]["args"]["CLAUDE_CODE_CLI_SOURCE"] == "${CLAUDE_CODE_CLI_SOURCE:-cc-haha}"
+    assert "codeload.github.com/NanmiCoder/cc-haha" in worker["build"]["args"]["CC_HAHA_ARCHIVE_URL"]
+    assert worker["environment"]["CLAUDE_CODE_BIN"] == "claude-haha"
+    assert worker["environment"]["CC_HAHA_SKIP_DOTENV"] == "1"
+    assert "ANTHROPIC_BASE_URL" in worker["environment"]
+    assert worker["environment"]["HTTP_PROXY"] == "${HTTP_PROXY:-${http_proxy:-}}"
+    assert worker["environment"]["NO_PROXY"] == "${NO_PROXY:-${no_proxy:-localhost,127.0.0.1,redis,api,.local}}"
+    assert command[command.index("-Q") + 1] == CLAUDE_CODE_QUEUE
+    assert "--concurrency=${CLAUDE_CODE_CONCURRENCY:-1}" in command
+    assert "${CLAUDE_CODE_CREDENTIALS_DIR:-/root/.claude}:/home/eacy/.claude:ro" in worker["volumes"]
+
+
+def test_prod_compose_keeps_regular_extraction_worker_on_default_queue():
+    services = _compose_services()
+    command = services["worker-extraction"]["command"]
+
+    assert command[command.index("-Q") + 1] == EXTRACTION_QUEUE
+    assert CLAUDE_CODE_QUEUE not in command
 
 
 def test_celery_beat_schedule_abandon_stale_pending_when_enabled():

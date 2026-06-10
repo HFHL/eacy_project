@@ -20,6 +20,7 @@ worker-ocr
 celery-beat
 nginx
 worker-extraction
+worker-claude-code
 ```
 
 说明：
@@ -27,7 +28,7 @@ worker-extraction
 - `nginx` 是唯一对外入口，宿主机端口由 `.env.prod` 的 `HTTP_PORT` 决定，映射到容器 `80`。
 - `api` 在 compose 网络内监听 `8000`，由 nginx 反代。
 - `migrate` 是一次性 Alembic migration job，成功后退出。
-- `worker-ocr`、`worker-metadata`、`worker-extraction` 分别消费 `ocr`、`metadata,maintenance`、`extraction` 队列。
+- `worker-ocr`、`worker-metadata`、`worker-extraction`、`worker-claude-code` 分别消费 `ocr`、`metadata,maintenance`、`extraction`、`claude-code` 队列。
 - `celery-beat` 负责定时维护任务，例如清理长时间 `pending` 的抽取任务。
 - 当前 compose **不包含 PostgreSQL 服务**；数据库由 `.env.prod` 的 `DATABASE_URL` 指向外部/远程 PostgreSQL。
 
@@ -42,10 +43,12 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod ps
 # 日志
 docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f api
 docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f worker-extraction
+docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f worker-claude-code
 
 # 重启单个服务
 docker compose -f docker-compose.prod.yml --env-file .env.prod restart api
 docker compose -f docker-compose.prod.yml --env-file .env.prod restart worker-ocr
+docker compose -f docker-compose.prod.yml --env-file .env.prod restart worker-claude-code
 
 # 跑迁移
 docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate

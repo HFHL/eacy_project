@@ -5,7 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
-from app.services.extraction_service import ExtractionConflictError, ExtractionNotFoundError, ExtractionService
+from app.services.extraction_service import (
+    ExtractionConflictError,
+    ExtractionNotFoundError,
+    ExtractionService,
+    ExtractionTargetValidationError,
+)
 from app.services.ehr_service import EhrService
 from app.services.patient_service import PatientService
 from app.services.patient_summary_service import PatientSummaryService
@@ -431,6 +436,8 @@ async def update_patient_ehr_folder(
         )
     except ExtractionNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    except ExtractionTargetValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.to_detail())
     except ExtractionConflictError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     return EhrFolderUpdateResponse.model_validate(

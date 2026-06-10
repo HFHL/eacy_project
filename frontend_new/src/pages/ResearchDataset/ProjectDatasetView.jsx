@@ -81,6 +81,32 @@ import ProjectCrfTemplateBindModal from '../../components/Research/ProjectCrfTem
 
 const { Title, Text } = Typography
 
+const measureTemplateFieldGroups = (groups = []) => {
+  const safeGroups = Array.isArray(groups) ? groups : []
+  const folderKeys = new Set()
+  let fieldCount = 0
+  safeGroups.forEach((group) => {
+    const folderName = String(group?.group_name || group?.group_id || '').split('/')[0]?.trim()
+    if (folderName) folderKeys.add(folderName)
+    fieldCount += Array.isArray(group?.db_fields) ? group.db_fields.length : 0
+  })
+  return {
+    groupCount: safeGroups.length,
+    folderCount: folderKeys.size,
+    fieldCount,
+  }
+}
+
+const shouldReplaceTemplateFieldGroups = (previousGroups = [], nextGroups = []) => {
+  if (!Array.isArray(nextGroups) || nextGroups.length === 0) return false
+  if (!Array.isArray(previousGroups) || previousGroups.length === 0) return true
+  const previous = measureTemplateFieldGroups(previousGroups)
+  const next = measureTemplateFieldGroups(nextGroups)
+  if (next.groupCount !== previous.groupCount) return next.groupCount > previous.groupCount
+  if (next.folderCount !== previous.folderCount) return next.folderCount > previous.folderCount
+  return next.fieldCount >= previous.fieldCount
+}
+
 const ProjectDatasetView = () => {
   const { token } = theme.useToken()
   const { projectId } = useParams()
@@ -134,6 +160,15 @@ const ProjectDatasetView = () => {
   const [templateFieldGroups, setTemplateFieldGroups] = useState([])
   const [templateFieldMapping, setTemplateFieldMapping] = useState({})
   const [templateSchemaJson, setTemplateSchemaJson] = useState(null)
+
+  const applyTemplateFieldGroups = useCallback((fieldGroups = []) => {
+    if (!Array.isArray(fieldGroups) || fieldGroups.length === 0) return
+    setTemplateFieldGroups((previousGroups) => (
+      shouldReplaceTemplateFieldGroups(previousGroups, fieldGroups)
+        ? fieldGroups
+        : previousGroups
+    ))
+  }, [])
   
   // API 数据状态
   const [loading, setLoading] = useState(false)
@@ -356,14 +391,14 @@ const ProjectDatasetView = () => {
             response.data.template_info.db_field_mapping || {},
             response.data.template_info.schema || response.data.template_info.schema_json || null,
           )
-          setTemplateFieldGroups(fieldGroups)
+          applyTemplateFieldGroups(fieldGroups)
           setTemplateFieldMapping(fieldMapping)
         }
       }
     } catch (error) {
       console.error('获取项目详情失败:', error)
     }
-  }, [projectId])
+  }, [applyTemplateFieldGroups, projectId])
 
   /**
    * 保存项目元数据编辑。
@@ -408,9 +443,7 @@ const ProjectDatasetView = () => {
             template.db_field_mapping || {},
             schema,
           )
-          if (fieldGroups.length > 0) {
-            setTemplateFieldGroups(fieldGroups)
-          }
+          applyTemplateFieldGroups(fieldGroups)
           setTemplateFieldMapping(fieldMapping)
           return
         }
@@ -419,7 +452,16 @@ const ProjectDatasetView = () => {
       // 兼容回退：当项目模板接口缺失 schema 时，回退到 designer 接口读取 schema_json。
       const fallbackResponse = await getProjectTemplateDesigner(projectId)
       if (fallbackResponse?.success && fallbackResponse?.data?.schema_json && typeof fallbackResponse.data.schema_json === 'object') {
-        setTemplateSchemaJson(fallbackResponse.data.schema_json)
+        const fallbackTemplate = fallbackResponse.data
+        const fallbackSchema = fallbackTemplate.schema_json
+        setTemplateSchemaJson(fallbackSchema)
+        const { fieldGroups, fieldMapping } = adaptTemplateMeta(
+          Array.isArray(fallbackTemplate.field_groups) ? fallbackTemplate.field_groups : [],
+          fallbackTemplate.db_field_mapping || {},
+          fallbackSchema,
+        )
+        applyTemplateFieldGroups(fieldGroups)
+        setTemplateFieldMapping(fieldMapping)
         return
       }
       setTemplateSchemaJson(null)
@@ -427,7 +469,7 @@ const ProjectDatasetView = () => {
       console.error('获取项目模板 schema 失败:', error)
       setTemplateSchemaJson(null)
     }
-  }, [projectId])
+  }, [applyTemplateFieldGroups, projectId])
 
   /**
    * 手动刷新当前项目页数据。
@@ -2581,10 +2623,24 @@ const ProjectDatasetView = () => {
         }
         .project-dataset-v2-group-pills {
           min-height: 26px;
-          overflow: hidden;
+          min-width: 0;
+          overflow-x: auto;
+          overflow-y: hidden;
+          scrollbar-width: thin;
         }
         .project-dataset-v2-group-pills .ant-segmented {
-          max-width: 100%;
+          width: max-content;
+          max-width: none;
+          min-width: 0;
+          display: inline-flex;
+          vertical-align: top;
+        }
+        .project-dataset-v2-group-pills .ant-segmented-group {
+          display: flex;
+          flex-wrap: nowrap;
+        }
+        .project-dataset-v2-group-pills .ant-segmented-item {
+          flex: 0 0 auto;
         }
         .project-dataset-v2-group-pills .ant-segmented-item-label {
           padding: 0 8px;

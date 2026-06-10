@@ -5,7 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
-from app.services.extraction_service import ExtractionConflictError, ExtractionNotFoundError, ExtractionService
+from app.services.extraction_service import (
+    ExtractionConflictError,
+    ExtractionNotFoundError,
+    ExtractionService,
+    ExtractionTargetValidationError,
+)
 
 router = APIRouter(prefix="/extraction-jobs", tags=["extraction-jobs"])
 
@@ -43,6 +48,7 @@ class ExtractionJobResponse(BaseModel):
     target_form_key: str | None = None
     input_json: dict[str, Any] | None = None
     progress: int | None = None
+    error_type: str | None = None
     error_message: str | None = None
     requested_by: str | None = None
     started_at: datetime | None = None
@@ -68,6 +74,7 @@ class ExtractionRunResponse(BaseModel):
     raw_output_json: dict[str, Any] | None = None
     parsed_output_json: dict[str, Any] | None = None
     validation_status: str | None = None
+    error_type: str | None = None
     error_message: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -81,6 +88,8 @@ def get_extraction_service() -> ExtractionService:
 def _raise_extraction_error(error: ExtractionNotFoundError | ExtractionConflictError) -> None:
     if isinstance(error, ExtractionNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, ExtractionTargetValidationError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.to_detail())
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
 
 

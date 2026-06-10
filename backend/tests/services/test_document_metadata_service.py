@@ -49,6 +49,14 @@ class FakeMetadataAgent:
         }
 
 
+class FakeDocumentService:
+    async def invalidate_archive_tree_cache(self, uploaded_by=None):
+        return None
+
+    async def enqueue_ready_extraction_jobs(self, document_id):
+        return []
+
+
 @pytest.mark.asyncio
 async def test_process_document_metadata_extracts_and_persists_result(monkeypatch):
     document = SimpleNamespace(
@@ -75,6 +83,7 @@ async def test_process_document_metadata_extracts_and_persists_result(monkeypatc
         updated_at=None,
     )
     monkeypatch.setattr("app.services.document_metadata_service.session", FakeSession())
+    monkeypatch.setattr("app.services.document_metadata_service.DocumentService", FakeDocumentService)
 
     service = DocumentMetadataService(document_repository=MutableFakeDocumentRepository(document), agent=FakeMetadataAgent())
 

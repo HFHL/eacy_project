@@ -14,6 +14,7 @@ from app.repositories import (
 )
 from app.services.schema_service import SchemaService
 from app.services.schema_field_planner import schema_top_level_forms
+from app.services.record_instance_label import record_instance_label
 from app.services.structured_value_service import StructuredValueService
 from core.db import Transactional
 
@@ -564,8 +565,10 @@ class EhrService:
         record_instance_id: str | None,
     ) -> str | None:
         if record_instance_id is not None:
-            return (await self._resolve_record(context_id, record_instance_id)).id
-        if not self._path_has_index(field_path):
+            record = await self._resolve_record(context_id, record_instance_id)
+            if self._record_matches_field_path(record, field_path):
+                return record.id
+        if record_instance_id is None and not self._path_has_index(field_path):
             return None
         form_key = self._record_form_key_from_path(field_path)
         if not form_key:
@@ -600,7 +603,7 @@ class EhrService:
                 "form_key": form_key,
                 "form_title": form_title or form_key,
                 "repeat_index": repeat_index,
-                "instance_label": instance_label or f"{form_title or form_key} #{repeat_index + 1}",
+                "instance_label": instance_label or record_instance_label(form_title, form_key, repeat_index),
                 "review_status": "unreviewed",
             }
         )
@@ -633,22 +636,66 @@ class EhrService:
             field_path=field_path,
             record_instance_id=record_instance_id,
         )
-        for query_path in self._field_path_aliases(field_path):
-            await self.evidence_repository.delete_by_context_field(
-                context_id=context.id,
-                field_path=query_path,
-                record_instance_id=query_record_id,
-            )
+        query_path = await self._resolve_existing_field_path(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=query_record_id,
+        )
+        value_record_id = await self._resolve_field_value_record_id(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
+        if value_record_id is None:
             await self.current_repository.delete_by_context_field(
                 context_id=context.id,
                 field_path=query_path,
                 record_instance_id=query_record_id,
             )
-            await self.event_repository.delete_by_context_field(
-                context_id=context.id,
-                field_path=query_path,
-                record_instance_id=query_record_id,
+            return
+
+        await self.value_service.clear_current_value_with_fallback(
+            context_id=context.id,
+            record_instance_id=value_record_id,
+            field_path=query_path,
+        )
+
+    async def _resolve_field_value_record_id(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None,
+    ) -> str | None:
+        if record_instance_id is not None:
+            record = await self._resolve_record(context_id, record_instance_id)
+            if self._record_matches_field_path(record, field_path):
+                return record.id
+            resolved_record_id = await self._resolve_query_record_id(
+                context_id=context_id,
+                field_path=field_path,
+                record_instance_id=None,
             )
+            if resolved_record_id is not None:
+                return resolved_record_id
+        current_values = await self.current_repository.list_by_context(context_id)
+        current_record_ids = {
+            value.record_instance_id
+            for value in current_values
+            if value.field_path == field_path
+        }
+        if len(current_record_ids) == 1:
+            return next(iter(current_record_ids))
+
+        events = await self.event_repository.list_candidates_by_context_field(
+            context_id=context_id,
+            field_path=field_path,
+            record_instance_id=None,
+        )
+        event_record_ids = {event.record_instance_id for event in events}
+        if len(event_record_ids) == 1:
+            return next(iter(event_record_ids))
+        return None
 
     async def _ensure_patient_access(self, patient_id: str, *, owner_id: str | None = None):
         from app.models import Patient
@@ -685,7 +732,9 @@ class EhrService:
         field_path: str,
     ) -> RecordInstance:
         if record_instance_id is not None:
-            return await self._resolve_record(context_id, record_instance_id)
+            record = await self._resolve_record(context_id, record_instance_id)
+            if self._record_matches_field_path(record, field_path):
+                return record
 
         form_key = self._record_form_key_from_path(field_path)
         if form_key:
@@ -716,6 +765,10 @@ class EhrService:
         if len(parts) >= 2:
             return f"{parts[0]}.{parts[1]}"
         return parts[0] if parts else None
+
+    def _record_matches_field_path(self, record: RecordInstance, field_path: str) -> bool:
+        form_key = self._record_form_key_from_path(field_path)
+        return not form_key or getattr(record, "form_key", None) == form_key
 
     def _repeat_index_from_path(self, field_path: str, form_key: str) -> int:
         parts = [part for part in str(field_path or "").split(".") if part]
@@ -748,7 +801,7 @@ class EhrService:
                 "form_key": form_key,
                 "form_title": form_title,
                 "repeat_index": repeat_index,
-                "instance_label": form_title if repeat_index == 0 else f"{form_title} #{repeat_index + 1}",
+                "instance_label": record_instance_label(form_title, form_key, repeat_index),
                 "review_status": "unreviewed",
             }
         )
@@ -777,7 +830,7 @@ class EhrService:
                         "form_key": form["form_key"],
                         "form_title": form["form_title"] or form["form_key"],
                         "repeat_index": 0,
-                        "instance_label": form["form_title"] or form["form_key"],
+                        "instance_label": record_instance_label(form.get("form_title"), form.get("form_key"), 0),
                         "review_status": "unreviewed",
                     }
                 )

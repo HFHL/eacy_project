@@ -1,6 +1,4 @@
-import pytest
-
-from app.services.agent import ClaudeCodeEhrExtractor, ClaudeCodeRunResult, ClaudeCodeValidationError
+from app.services.agent import ClaudeCodeEhrExtractor, ClaudeCodeRunResult
 from app.services.schema_field_planner import SchemaField
 
 
@@ -59,6 +57,17 @@ def _drug_name_field():
         value_type="text",
         options=None,
         record_form_key="治疗情况.药物治疗",
+    )
+
+
+def _date_field():
+    return SchemaField(
+        field_key="入院日期",
+        field_path="诊断记录.诊断.入院日期",
+        field_title="入院日期",
+        value_type="date",
+        options=None,
+        record_form_key="诊断记录.诊断",
     )
 
 
@@ -156,7 +165,7 @@ def test_claude_code_ehr_extractor_canonicalizes_indexed_field_path():
     assert result["fields"][0]["value_text"] == "头孢呋辛"
 
 
-def test_claude_code_ehr_extractor_repairs_once_after_invalid_output():
+def test_claude_code_ehr_extractor_discards_invalid_field_and_keeps_valid_field():
     runner = FakeRunner(
         [
             {
@@ -166,11 +175,7 @@ def test_claude_code_ehr_extractor_repairs_once_after_invalid_output():
                         "value_type": "text",
                         "value_text": "胰腺癌",
                         "confidence": 0.9,
-                    }
-                ]
-            },
-            {
-                "fields": [
+                    },
                     {
                         "field_path": "诊断记录.诊断.诊断名称",
                         "value_type": "text",
@@ -191,26 +196,72 @@ def test_claude_code_ehr_extractor_repairs_once_after_invalid_output():
         document_id="doc-1",
     )
 
+    assert len(runner.calls) == 1
+    assert result["attempt_count"] == 1
+    assert result["validation_status"] == "valid_with_warnings"
+    assert result["discarded_fields"][0]["kind"] == "field"
+    assert result["fields"][0]["field_path"] == "诊断记录.诊断.诊断名称"
+
+
+def test_claude_code_ehr_extractor_repairs_only_failed_field_specs():
+    runner = FakeRunner(
+        [
+            {
+                "fields": [
+                    {
+                        "field_path": "诊断记录.诊断.诊断名称",
+                        "value_type": "text",
+                        "value_text": "胰腺癌",
+                        "confidence": 0.9,
+                        "quote_text": "诊断：胰腺癌",
+                    },
+                    {
+                        "field_path": "诊断记录.诊断.入院日期",
+                        "value_type": "date",
+                        "value_date": "2026/01/02",
+                        "confidence": 0.9,
+                        "quote_text": "入院日期：2026/01/02",
+                    },
+                ]
+            },
+            {
+                "fields": [
+                    {
+                        "field_path": "诊断记录.诊断.入院日期",
+                        "value_type": "date",
+                        "value_date": "2026-01-02",
+                        "confidence": 0.92,
+                        "quote_text": "入院日期：2026/01/02",
+                    }
+                ]
+            },
+        ]
+    )
+    extractor = ClaudeCodeEhrExtractor(runner=runner)
+
+    result = extractor.extract(
+        text="诊断：胰腺癌\n入院日期：2026/01/02",
+        fields=[_field(), _date_field()],
+        schema_json={"properties": {}},
+        document_id="doc-1",
+    )
+
     assert len(runner.calls) == 2
-    assert runner.calls[1]["repair_errors"]
+    assert [spec["field_path"] for spec in runner.calls[1]["field_specs"]] == ["诊断记录.诊断.入院日期"]
+    assert "date must be YYYY-MM-DD" in runner.calls[1]["repair_errors"][0]
     assert result["attempt_count"] == 2
-    assert result["validation_log"][0]["status"] == "invalid"
-    assert result["validation_log"][1]["status"] == "valid"
+    assert result["validation_status"] == "valid_with_warnings"
+    assert [field["field_path"] for field in result["fields"]] == [
+        "诊断记录.诊断.诊断名称",
+        "诊断记录.诊断.入院日期",
+    ]
+    assert result["fields"][1]["value_date"] == "2026-01-02"
 
 
-def test_claude_code_ehr_extractor_requires_confidence():
+def test_claude_code_ehr_extractor_keeps_missing_confidence_as_warning():
     extractor = ClaudeCodeEhrExtractor(
         runner=FakeRunner(
             [
-                {
-                    "fields": [
-                        {
-                            "field_path": "诊断记录.诊断.诊断名称",
-                            "value_type": "text",
-                            "value_text": "胰腺癌",
-                        }
-                    ]
-                },
                 {
                     "fields": [
                         {
@@ -224,10 +275,13 @@ def test_claude_code_ehr_extractor_requires_confidence():
         )
     )
 
-    with pytest.raises(ClaudeCodeValidationError):
-        extractor.extract(
-            text="诊断：胰腺癌",
-            fields=[_field()],
-            schema_json={"properties": {}},
-            document_id="doc-1",
-        )
+    result = extractor.extract(
+        text="诊断：胰腺癌",
+        fields=[_field()],
+        schema_json={"properties": {}},
+        document_id="doc-1",
+    )
+
+    assert result["validation_status"] == "valid"
+    assert result["fields"][0]["value_text"] == "胰腺癌"
+    assert "confidence is missing" in result["validation_warnings"][0]

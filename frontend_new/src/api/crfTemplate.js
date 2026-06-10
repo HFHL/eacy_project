@@ -95,12 +95,6 @@ const buildSchemaFromDesignerPayload = (payload = {}) => {
   }
 }
 
-const nextVersionNo = (template = {}) => {
-  const versions = Array.isArray(template.versions) ? template.versions : []
-  const maxVersion = versions.reduce((max, item) => Math.max(max, Number(item.version_no || 0)), 0)
-  return maxVersion + 1
-}
-
 export const getCRFTemplates = async (params = {}) => {
   const payload = await request.get('/schema-templates', {
     page: params.page || 1,
@@ -233,17 +227,18 @@ export const saveCrfTemplateDesigner = async (templateId, payload = {}) => {
   })
   const detail = await request.get(`/schema-templates/${templateId}`)
   const schemaJson = buildSchemaFromDesignerPayload(payload)
-  const versionNo = nextVersionNo(detail)
   const version = await request.post(`/schema-templates/${templateId}/versions`, {
-    version_no: versionNo,
-    version_name: payload.publish ? `v${versionNo} published` : `v${versionNo} draft`,
+    version_name: payload.publish ? 'published' : 'draft',
     schema_json: schemaJson,
     status: 'draft',
   })
   const finalVersion = payload.publish
     ? await request.post(`/schema-template-versions/${version.id}/publish`)
     : version
-  return emptySuccess(normalizeTemplate({ ...detail, ...updatedTemplate, versions: [finalVersion, ...(detail.versions || [])] }))
+  const refreshed = payload.publish
+    ? await request.get(`/schema-templates/${templateId}`)
+    : { ...detail, ...updatedTemplate, versions: [finalVersion, ...(detail.versions || [])] }
+  return emptySuccess(normalizeTemplate(refreshed))
 }
 
 export const publishCrfTemplate = async (templateId = '') => {
@@ -251,8 +246,9 @@ export const publishCrfTemplate = async (templateId = '') => {
   const template = normalizeTemplate(await request.get(`/schema-templates/${templateId}`))
   const version = template.active_version || pickActiveVersion(template)
   if (!version?.id) return emptySuccess(null)
-  const published = await request.post(`/schema-template-versions/${version.id}/publish`)
-  return emptySuccess(normalizeVersion(published))
+  await request.post(`/schema-template-versions/${version.id}/publish`)
+  const refreshed = await request.get(`/schema-templates/${templateId}`)
+  return emptySuccess(normalizeTemplate(refreshed))
 }
 
 export const getCrfTemplateProjectUsage = async (templateId = '') => {

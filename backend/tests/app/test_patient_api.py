@@ -43,7 +43,7 @@ class FakePatientService:
         page_statistics = {"total_documents": 0, "average_completeness": 0.0, "recently_added_today": 0}
         return patients, len(patients), stats, page_statistics
 
-    async def list_patient_projects(self, patient_id):
+    async def list_patient_projects(self, patient_id, **_kwargs):
         return []
 
     async def get_patient(self, patient_id, **kwargs):

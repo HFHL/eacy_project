@@ -86,6 +86,11 @@ class SchemaTemplateVersionRepository(BaseRepo[SchemaTemplateVersion]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
+    async def next_version_no(self, template_id: str) -> int:
+        query = select(func.max(SchemaTemplateVersion.version_no)).where(SchemaTemplateVersion.template_id == template_id)
+        result = await session.execute(query)
+        return int(result.scalar() or 0) + 1
+
     async def has_references(self, version_id: str) -> bool:
         data_context_query = select(func.count()).select_from(DataContext).where(DataContext.schema_version_id == version_id)
         binding_query = (

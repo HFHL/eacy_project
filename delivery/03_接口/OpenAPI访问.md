@@ -6,7 +6,7 @@ audience: [integrator]
 code_path:
   - backend/app/server.py
 last_verified_commit: 132a529
-last_verified_date: 2026-05-13
+last_verified_date: 2026-05-31
 owner: 后端
 ---
 
@@ -25,7 +25,7 @@ FastAPI 自带两套交互式文档，由 `app/server.py::create_app` 注册：
 | `/redoc` | ReDoc，更适合阅读 |
 | `/openapi.json` | 原始 OpenAPI v3 JSON |
 
-仅当 `ENV != "production"` 时挂载（生产环境置 `None`）：
+代码当前仅当 `config.ENV == "production"` 时关闭 UI：
 
 ```python
 docs_url=None if config.ENV == "production" else "/docs",
@@ -40,13 +40,25 @@ redoc_url=None if config.ENV == "production" else "/redoc",
 - <http://localhost:8000/redoc>
 - <http://localhost:8000/openapi.json>
 
+### 当前 Docker nginx 入口
+
+`deploy/docker/nginx/eacy.conf` 当前显式代理：
+
+- `/docs` → `api:8000/docs`
+- `/openapi.json` → `api:8000/openapi.json`
+
+`/redoc` 在 FastAPI 内部会挂载，但当前 nginx 配置没有单独代理该路径；如需经公网访问 ReDoc，需要补 nginx location 或改为离线导出。
+
 ### 鉴权交互
 
 `/docs` 右上角 "Authorize" 按钮可粘贴 `Bearer <token>`。开发环境 `ENABLE_AUTH=False` 时可省略（自动以 `dev_admin` 身份调用），见 [[接口约定#二、鉴权机制]]。
 
+> [!warning] 当前 Docker 生产配置不会触发这段关闭逻辑
+> `core.config.get_config()` 当前只支持 `local` / `test` / `prod`，而 `docker-compose.prod.yml` 设置 `ENV=prod`。因此当前 Docker 生产环境下 `/docs` 与 `/redoc` 仍会挂载；如果需要生产关闭交互式文档，应修正代码判断或在 nginx/网关层限制访问。
+
 ## 二、生产环境
 
-生产环境（`ENV=production`）**关闭** `/docs` 与 `/redoc`，但 `/openapi.json` 是否暴露取决于反向代理配置——FastAPI 侧仅关掉 UI，schema 端点的可见性由部署方决定。如果需要给对接方留 schema，可：
+当前代码意图是生产关闭 `/docs` 与 `/redoc`，但如上所述，现有 Docker 生产的 `ENV=prod` 未命中该判断。`/openapi.json` 是否暴露也取决于应用与反向代理配置。如果需要给对接方留 schema，可：
 
 - 在网关层只放行 `/openapi.json`，关闭 `/docs`、`/redoc`
 - 或离线导出后分发（推荐）

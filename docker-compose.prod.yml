@@ -13,6 +13,40 @@ services:
     networks:
       - eacy
 
+  litellm:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -lc
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE_URL: ${OPENAI_API_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES: "true"
+      LITELLM_LOG: ${LITELLM_LOG:-INFO}
+      NO_PROXY: ${NO_PROXY:-${no_proxy:-localhost,127.0.0.1,redis,api,litellm,.local}}
+      no_proxy: ${no_proxy:-${NO_PROXY:-localhost,127.0.0.1,redis,api,litellm,.local}}
+    command:
+      - |
+        cat >/tmp/litellm_config.yaml <<'EOF'
+        model_list:
+          - model_name: ${OPENAI_MODEL:-gpt-4o-mini}
+            litellm_params:
+              model: openai/${OPENAI_MODEL:-gpt-4o-mini}
+              api_base: os.environ/OPENAI_API_BASE_URL
+              api_key: os.environ/OPENAI_API_KEY
+        litellm_settings:
+          drop_params: true
+          set_verbose: false
+        EOF
+        exec litellm --config /tmp/litellm_config.yaml --host 0.0.0.0 --port 4000
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - eacy
+
   migrate:
     build:
       context: .
@@ -178,6 +212,8 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
         INSTALL_CLAUDE_CODE: "true"
+        CLAUDE_CODE_CLI_SOURCE: ${CLAUDE_CODE_CLI_SOURCE:-cc-haha}
+        CC_HAHA_ARCHIVE_URL: ${CC_HAHA_ARCHIVE_URL:-https://codeload.github.com/NanmiCoder/cc-haha/tar.gz/refs/heads/main}
     image: eacy-backend-claude-code:prod
     restart: unless-stopped
     env_file:
@@ -185,8 +221,29 @@ services:
     environment:
       ENV: prod
       DEBUG: "false"
+      CLAUDE_CODE_BIN: claude-haha
+      CC_HAHA_SKIP_DOTENV: "1"
+      DISABLE_TELEMETRY: ${DISABLE_TELEMETRY:-1}
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: ${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-${LITELLM_PROXY_KEY:-sk-eacy-local}}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-http://litellm:4000}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-${OPENAI_MODEL:-}}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${ANTHROPIC_DEFAULT_SONNET_MODEL:-${OPENAI_MODEL:-}}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-${OPENAI_MODEL:-}}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${ANTHROPIC_DEFAULT_OPUS_MODEL:-${OPENAI_MODEL:-}}
+      API_TIMEOUT_MS: ${CLAUDE_CODE_API_TIMEOUT_MS:-300000}
+      HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
+      HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
+      ALL_PROXY: ${ALL_PROXY:-${all_proxy:-}}
+      NO_PROXY: ${NO_PROXY:-${no_proxy:-localhost,127.0.0.1,redis,api,.local}}
+      http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+      https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+      all_proxy: ${all_proxy:-${ALL_PROXY:-}}
+      no_proxy: ${no_proxy:-${NO_PROXY:-localhost,127.0.0.1,redis,api,.local}}
     volumes:
-      - ${CLAUDE_CODE_CREDENTIALS_DIR:-/root/.claude}:/home/eacy/.claude:ro
+      - ${CLAUDE_CODE_CREDENTIALS_DIR:-/root/.claude}:/home/eacy/.claude
+      - ${CLAUDE_CODE_CONFIG_FILE:-/root/.claude.json}:/home/eacy/.claude.json
     command:
       - celery
       - -A
@@ -201,6 +258,8 @@ services:
       - -n
       - eacy-claude-code@%h
     depends_on:
+      litellm:
+        condition: service_started
       api:
         condition: service_healthy
     networks:

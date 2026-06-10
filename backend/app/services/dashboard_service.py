@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import copy
+import time as monotonic_clock
 from collections import Counter, defaultdict
 from datetime import datetime, time
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, or_, select
 
 from app.models import Document, ExtractionJob, FieldValueEvent, Patient, ProjectPatient, ResearchProject
 from app.services.archive_grouping_service import ArchiveGroupingService
 from core.db import session
+
+
+DASHBOARD_CACHE_TTL_SECONDS = 5.0
 
 
 def _today_start() -> datetime:
@@ -40,51 +45,73 @@ def _project_status_label(status: str | None) -> str:
 
 
 class DashboardService:
+    _dashboard_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
     async def get_dashboard(self, *, user_id: str | None = None) -> dict[str, Any]:
+        cache_key = user_id or "__all__"
+        now = monotonic_clock.monotonic()
+        cached = self._dashboard_cache.get(cache_key)
+        if cached is not None and now - cached[0] <= DASHBOARD_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached[1])
+
+        payload = await self._build_dashboard(user_id=user_id)
+        self._dashboard_cache[cache_key] = (now, payload)
+        return copy.deepcopy(payload)
+
+    async def _build_dashboard(self, *, user_id: str | None = None) -> dict[str, Any]:
         today = _today_start()
-        documents = await self._list_documents(user_id=user_id)
-        patients = await self._list_patients(user_id=user_id)
-        projects = await self._list_projects(user_id=user_id)
-        jobs = await self._list_jobs(user_id=user_id)
+        document_summary = await self._document_summary_from_db(user_id=user_id, today=today)
+        patient_summary = await self._patient_summary_from_db(user_id=user_id, today=today)
+        project_summary = await self._project_summary_from_db(user_id=user_id, today=today)
 
-        task_status_counts = Counter(_document_task_status(document) for document in documents)
-        self._apply_archive_group_statuses(task_status_counts, documents, patients)
+        task_status_counts = Counter(document_summary["task_status_counts"])
+        unarchived_documents = await self._list_unarchived_documents(user_id=user_id)
+        grouping_patients = await self._list_patients(user_id=user_id) if unarchived_documents else []
+        self._apply_archive_group_statuses(task_status_counts, unarchived_documents, grouping_patients)
 
-        project_patients = await self._list_project_patients(projects)
-        project_patient_counts = Counter(item.project_id for item in project_patients)
-        jobs_by_project = defaultdict(list)
-        for job in jobs:
-            if job.project_id:
-                jobs_by_project[job.project_id].append(job)
+        recent_documents = await self._list_documents(user_id=user_id, limit=8)
+        queue_documents = await self._list_queue_documents(user_id=user_id, limit=20)
+        recent_patients = await self._list_patients(user_id=user_id, limit=5)
+        recent_projects = await self._list_projects(user_id=user_id, limit=6)
+        recent_jobs = await self._list_jobs(user_id=user_id, limit=30)
 
         return {
             "overview": {
-                "patients_total": len(patients),
-                "documents_total": len(documents),
-                "total_projects": len(projects),
+                "patients_total": patient_summary["total"],
+                "documents_total": document_summary["total"],
+                "total_projects": project_summary["total"],
                 "pending_field_conflicts": await self._count_pending_field_conflicts(user_id=user_id),
             },
             "documents": {
-                "total": len(documents),
-                "today_added": sum(1 for document in documents if document.created_at and document.created_at >= today),
+                "total": document_summary["total"],
+                "today_added": document_summary["today_added"],
                 "task_status_counts": dict(task_status_counts),
             },
             "patients": {
-                "total": len(patients),
-                "recently_added_today": sum(1 for patient in patients if patient.created_at and patient.created_at >= today),
-                "project_distribution": self._patient_project_distribution(patients, project_patients),
-                "completeness_distribution": self._patient_completeness_distribution(patients),
-                "conflict_distribution": await self._patient_conflict_distribution(user_id=user_id, patients=patients),
+                "total": patient_summary["total"],
+                "recently_added_today": patient_summary["today_added"],
+                "project_distribution": await self._patient_project_distribution_from_db(
+                    user_id=user_id,
+                    total_patients=patient_summary["total"],
+                ),
+                "completeness_distribution": patient_summary["completeness_distribution"],
+                "conflict_distribution": await self._patient_conflict_distribution(
+                    user_id=user_id,
+                    total_patients=patient_summary["total"],
+                ),
             },
             "projects": {
-                "total": len(projects),
-                "today_added": sum(1 for project in projects if project.created_at and project.created_at >= today),
-                "status_distribution": self._project_status_distribution(projects),
-                "enrollment_progress": self._project_enrollment_progress(projects, project_patient_counts),
-                "extraction_progress": self._project_extraction_progress(projects, jobs_by_project),
+                "total": project_summary["total"],
+                "today_added": project_summary["today_added"],
+                "status_distribution": project_summary["status_distribution"],
+                "enrollment_progress": await self._project_enrollment_progress_from_db(recent_projects),
+                "extraction_progress": await self._project_extraction_progress_from_db(
+                    recent_projects,
+                    user_id=user_id,
+                ),
             },
             "tasks": {
-                "queue": self._document_queue_items(documents, task_status_counts),
+                "queue": self._document_queue_items(queue_documents, task_status_counts),
                 "recent_activities": [],
                 # KPI 必须用 DB 端 count，避免被 _list_jobs(limit=500) 截断。
                 # 旧版基于 len(jobs) 的实现会让"任务"卡片在抽取量大时卡在 500。
@@ -93,7 +120,7 @@ class DashboardService:
                 ),
             },
             "activities": {
-                "recent": self._recent_activities(documents, patients, projects, jobs),
+                "recent": self._recent_activities(recent_documents, recent_patients, recent_projects, recent_jobs),
             },
         }
 
@@ -110,21 +137,25 @@ class DashboardService:
             "summary_by_category": dict(Counter(item["task_category"] for item in tasks)),
         }
 
-    async def _list_documents(self, *, user_id: str | None) -> list[Document]:
+    async def _list_documents(self, *, user_id: str | None, limit: int | None = None) -> list[Document]:
         query = select(Document).where(Document.status != "deleted").order_by(Document.created_at.desc())
         if user_id is not None:
             query = query.where(Document.uploaded_by == user_id)
+        if limit is not None:
+            query = query.limit(limit)
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def _list_patients(self, *, user_id: str | None) -> list[Patient]:
+    async def _list_patients(self, *, user_id: str | None, limit: int | None = None) -> list[Patient]:
         query = select(Patient).where(Patient.deleted_at.is_(None)).order_by(Patient.created_at.desc())
         if user_id is not None:
             query = query.where(Patient.owner_id == user_id)
+        if limit is not None:
+            query = query.limit(limit)
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def _list_projects(self, *, user_id: str | None) -> list[ResearchProject]:
+    async def _list_projects(self, *, user_id: str | None, limit: int | None = None) -> list[ResearchProject]:
         # research_project_service.archive_project 通过把 status 置为 "deleted" 实现软删，
         # 仪表盘 KPI 必须把这部分过滤掉，否则与"科研项目"列表对不上账。
         query = (
@@ -134,6 +165,8 @@ class DashboardService:
         )
         if user_id is not None:
             query = query.where(ResearchProject.owner_id == user_id)
+        if limit is not None:
+            query = query.limit(limit)
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -143,6 +176,159 @@ class DashboardService:
             query = query.where(ExtractionJob.requested_by == user_id)
         result = await session.execute(query)
         return list(result.scalars().all())
+
+    async def _list_unarchived_documents(self, *, user_id: str | None) -> list[Document]:
+        query = (
+            select(Document)
+            .where(
+                Document.status != "deleted",
+                Document.status != "archived",
+                Document.archived_at.is_(None),
+            )
+            .order_by(Document.created_at.desc())
+        )
+        if user_id is not None:
+            query = query.where(Document.uploaded_by == user_id)
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def _list_queue_documents(self, *, user_id: str | None, limit: int = 20) -> list[Document]:
+        query = (
+            select(Document)
+            .where(
+                Document.status != "deleted",
+                or_(
+                    Document.status == "failed",
+                    Document.ocr_status == "failed",
+                    Document.status == "ocr_pending",
+                    Document.ocr_status.in_(["queued", "running"]),
+                ),
+            )
+            .order_by(Document.updated_at.desc(), Document.created_at.desc())
+            .limit(limit)
+        )
+        if user_id is not None:
+            query = query.where(Document.uploaded_by == user_id)
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def _document_summary_from_db(self, *, user_id: str | None, today: datetime) -> dict[str, Any]:
+        task_status = case(
+            (or_(Document.status == "archived", Document.archived_at.is_not(None)), "archived"),
+            (or_(Document.status == "failed", Document.ocr_status == "failed"), "parse_failed"),
+            (or_(Document.status == "ocr_pending", Document.ocr_status.in_(["queued", "running"])), "parsing"),
+            (or_(Document.status == "ocr_completed", Document.ocr_status == "completed"), "parsed"),
+            else_=func.coalesce(Document.status, "uploaded"),
+        )
+        is_today = case((Document.created_at >= today, 1), else_=0)
+        query = (
+            select(
+                task_status.label("task_status"),
+                func.count().label("total"),
+                func.coalesce(func.sum(is_today), 0).label("today"),
+            )
+            .where(Document.status != "deleted")
+            .group_by(task_status)
+        )
+        if user_id is not None:
+            query = query.where(Document.uploaded_by == user_id)
+
+        result = await session.execute(query)
+        rows = result.all()
+        status_counts: dict[str, int] = {}
+        total = 0
+        today_added = 0
+        for row in rows:
+            status = str(row.task_status or "uploaded")
+            count = int(row.total or 0)
+            total += count
+            today_added += int(row.today or 0)
+            status_counts[status] = count
+        return {
+            "total": total,
+            "today_added": today_added,
+            "task_status_counts": status_counts,
+        }
+
+    async def _patient_summary_from_db(self, *, user_id: str | None, today: datetime) -> dict[str, Any]:
+        filled_name = case((and_(Patient.name.is_not(None), Patient.name != ""), 1), else_=0)
+        filled_gender = case((and_(Patient.gender.is_not(None), Patient.gender != ""), 1), else_=0)
+        filled_birth_or_age = case((or_(Patient.birth_date.is_not(None), Patient.age.is_not(None)), 1), else_=0)
+        filled_department = case((and_(Patient.department.is_not(None), Patient.department != ""), 1), else_=0)
+        filled_diagnosis = case((and_(Patient.main_diagnosis.is_not(None), Patient.main_diagnosis != ""), 1), else_=0)
+        filled_doctor = case((and_(Patient.doctor_name.is_not(None), Patient.doctor_name != ""), 1), else_=0)
+        filled_count = (
+            filled_name
+            + filled_gender
+            + filled_birth_or_age
+            + filled_department
+            + filled_diagnosis
+            + filled_doctor
+        )
+        is_today = case((Patient.created_at >= today, 1), else_=0)
+        query = select(
+            func.count().label("total"),
+            func.coalesce(func.sum(is_today), 0).label("today"),
+            func.coalesce(func.sum(case((filled_count >= 5, 1), else_=0)), 0).label("high"),
+            func.coalesce(func.sum(case((and_(filled_count >= 3, filled_count < 5), 1), else_=0)), 0).label("medium"),
+            func.coalesce(func.sum(case((filled_count < 3, 1), else_=0)), 0).label("low"),
+        ).where(Patient.deleted_at.is_(None))
+        if user_id is not None:
+            query = query.where(Patient.owner_id == user_id)
+
+        result = await session.execute(query)
+        row = result.one()
+        high = int(row.high or 0)
+        medium = int(row.medium or 0)
+        low = int(row.low or 0)
+        return {
+            "total": int(row.total or 0),
+            "today_added": int(row.today or 0),
+            "completeness_distribution": [
+                {"key": "high", "label": "较完整", "value": high, "color": "#52c41a"},
+                {"key": "medium", "label": "部分完整", "value": medium, "color": "#faad14"},
+                {"key": "low", "label": "待补充", "value": low, "color": "#ff4d4f"},
+            ],
+        }
+
+    async def _project_summary_from_db(self, *, user_id: str | None, today: datetime) -> dict[str, Any]:
+        is_today = case((ResearchProject.created_at >= today, 1), else_=0)
+        query = (
+            select(
+                ResearchProject.status.label("status"),
+                func.count().label("total"),
+                func.coalesce(func.sum(is_today), 0).label("today"),
+            )
+            .where(ResearchProject.status != "deleted")
+            .group_by(ResearchProject.status)
+        )
+        if user_id is not None:
+            query = query.where(ResearchProject.owner_id == user_id)
+
+        result = await session.execute(query)
+        rows = result.all()
+        total = 0
+        today_added = 0
+        colors = {"planning": "#1677ff", "active": "#52c41a", "paused": "#faad14", "completed": "#722ed1", "archived": "#8c8c8c", "draft": "#d9d9d9"}
+        status_distribution = []
+        for row in rows:
+            status = row.status or "unknown"
+            count = int(row.total or 0)
+            total += count
+            today_added += int(row.today or 0)
+            status_distribution.append(
+                {
+                    "key": status,
+                    "label": _project_status_label(status),
+                    "value": count,
+                    "color": colors.get(status, "#8c8c8c"),
+                }
+            )
+        return {
+            "total": total,
+            "today_added": today_added,
+            "status_distribution": status_distribution,
+        }
 
     async def _list_project_patients(self, projects: list[ResearchProject]) -> list[ProjectPatient]:
         project_ids = [project.id for project in projects]
@@ -188,12 +374,49 @@ class DashboardService:
         result = await session.execute(query)
         return int(result.scalar_one() or 0)
 
-    async def _patient_conflict_distribution(self, *, user_id: str | None, patients: list[Patient]) -> list[dict[str, Any]]:
+    async def _patient_conflict_distribution(
+        self,
+        *,
+        user_id: str | None,
+        total_patients: int | None = None,
+        patients: list[Patient] | None = None,
+    ) -> list[dict[str, Any]]:
         with_conflict = await self._count_patients_with_field_conflicts(user_id=user_id)
-        without_conflict = max(len(patients) - with_conflict, 0)
+        total = int(total_patients if total_patients is not None else len(patients or []))
+        without_conflict = max(total - with_conflict, 0)
         return [
             {"key": "conflict", "label": "有冲突", "value": with_conflict, "color": "#faad14"},
             {"key": "normal", "label": "无冲突", "value": without_conflict, "color": "#52c41a"},
+        ]
+
+    async def _patient_project_distribution_from_db(
+        self,
+        *,
+        user_id: str | None,
+        total_patients: int,
+    ) -> list[dict[str, Any]]:
+        visible_projects = select(ResearchProject.id).where(ResearchProject.status != "deleted")
+        if user_id is not None:
+            visible_projects = visible_projects.where(ResearchProject.owner_id == user_id)
+
+        query = (
+            select(func.count(func.distinct(ProjectPatient.patient_id)))
+            .select_from(ProjectPatient)
+            .join(Patient, ProjectPatient.patient_id == Patient.id)
+            .where(
+                ProjectPatient.status != "withdrawn",
+                Patient.deleted_at.is_(None),
+                ProjectPatient.project_id.in_(visible_projects),
+            )
+        )
+        if user_id is not None:
+            query = query.where(Patient.owner_id == user_id)
+        result = await session.execute(query)
+        in_project = int(result.scalar_one() or 0)
+        not_in_project = max(total_patients - in_project, 0)
+        return [
+            {"key": "in_project", "label": "已入组", "value": in_project, "color": "#1677ff"},
+            {"key": "not_in_project", "label": "未入组", "value": not_in_project, "color": "#d9d9d9"},
         ]
 
     def _patient_project_distribution(self, patients: list[Patient], project_patients: list[ProjectPatient]) -> list[dict[str, Any]]:
@@ -245,6 +468,21 @@ class DashboardService:
             })
         return items
 
+    async def _project_enrollment_progress_from_db(self, projects: list[ResearchProject]) -> list[dict[str, Any]]:
+        project_ids = [project.id for project in projects[:6]]
+        counts: Counter = Counter()
+        if project_ids:
+            result = await session.execute(
+                select(ProjectPatient.project_id, func.count().label("total"))
+                .where(
+                    ProjectPatient.project_id.in_(project_ids),
+                    ProjectPatient.status != "withdrawn",
+                )
+                .group_by(ProjectPatient.project_id)
+            )
+            counts.update({row.project_id: int(row.total or 0) for row in result.all()})
+        return self._project_enrollment_progress(projects, counts)
+
     def _project_extraction_progress(self, projects: list[ResearchProject], jobs_by_project: dict[str, list[ExtractionJob]]) -> list[dict[str, Any]]:
         items = []
         for project in projects[:6]:
@@ -256,6 +494,48 @@ class DashboardService:
                 "id": project.id,
                 "name": project.project_name,
                 "total": len(jobs),
+                "processing": status_counts.get("pending", 0) + status_counts.get("running", 0),
+                "completed": status_counts.get("completed", 0),
+                "failed": status_counts.get("failed", 0),
+            })
+        return items
+
+    async def _project_extraction_progress_from_db(
+        self,
+        projects: list[ResearchProject],
+        *,
+        user_id: str | None,
+    ) -> list[dict[str, Any]]:
+        project_ids = [project.id for project in projects[:6]]
+        if not project_ids:
+            return []
+        query = (
+            select(
+                ExtractionJob.project_id,
+                ExtractionJob.status,
+                func.count().label("total"),
+            )
+            .where(ExtractionJob.project_id.in_(project_ids))
+            .group_by(ExtractionJob.project_id, ExtractionJob.status)
+        )
+        if user_id is not None:
+            query = query.where(ExtractionJob.requested_by == user_id)
+        result = await session.execute(query)
+        counts_by_project: dict[str, Counter] = defaultdict(Counter)
+        for row in result.all():
+            if row.project_id:
+                counts_by_project[row.project_id][row.status] = int(row.total or 0)
+
+        items = []
+        for project in projects[:6]:
+            status_counts = counts_by_project.get(project.id, Counter())
+            total = sum(status_counts.values())
+            if not total:
+                continue
+            items.append({
+                "id": project.id,
+                "name": project.project_name,
+                "total": total,
                 "processing": status_counts.get("pending", 0) + status_counts.get("running", 0),
                 "completed": status_counts.get("completed", 0),
                 "failed": status_counts.get("failed", 0),

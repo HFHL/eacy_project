@@ -25,6 +25,9 @@ class FakeUploadFile:
         self._offset += len(chunk)
         return chunk
 
+    async def seek(self, offset: int) -> None:
+        self._offset = max(0, min(int(offset), len(self._content)))
+
 
 class FakeStorage:
     async def save(self, file, *, original_filename, file_ext):

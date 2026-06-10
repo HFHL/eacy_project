@@ -29,6 +29,7 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 | `celery-beat` | eacy-backend:prod | Celery Beat，默认每天 03:00（Asia/Shanghai）清理超时 `pending` 抽取任务（标为 `failed`，可重试） |
 | `worker-metadata` | eacy-backend:prod | celery worker，队列 `metadata,maintenance`，并发 `${METADATA_CONCURRENCY:-1}` |
 | `worker-extraction` | eacy-backend:prod | celery worker，队列 `extraction`，并发 `${EXTRACTION_CONCURRENCY:-2}` |
+| `worker-claude-code` | eacy-backend-claude-code:prod | celery worker，队列 `claude-code`，并发 `${CLAUDE_CODE_CONCURRENCY:-1}`，挂载 `${CLAUDE_CODE_CREDENTIALS_DIR:-/root/.claude}` 到 `/home/eacy/.claude` |
 | `nginx` | eacy-frontend:prod | 唯一对外端口 `${HTTP_PORT:-80}:80`，反代到 `api:8000` |
 
 > 当前 compose **不启动 PostgreSQL 容器**。生产数据库由 `.env.prod` 的 `DATABASE_URL` 指向外部/远程 PostgreSQL。
@@ -46,6 +47,7 @@ http://<服务器IP>:${HTTP_PORT}/
 ### 镜像构建源
 
 - 后端镜像 `eacy-backend:prod` — `deploy/docker/backend.Dockerfile`，基础 `python:3.11.7-slim`，默认走阿里云 apt + pypi 镜像
+- Claude Code 后端镜像 `eacy-backend-claude-code:prod` — 同一 Dockerfile，构建参数 `INSTALL_CLAUDE_CODE=true`，用于 `worker-claude-code`
 - 前端镜像 `eacy-frontend:prod` — `deploy/docker/frontend.Dockerfile`，`node:20-alpine` 构建 React/Vite，`nginx:1.27-alpine` 提供 `dist/`
 
 ### 常用运维命令
@@ -59,12 +61,13 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod ps
 # 日志
 docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f api
 docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f worker-extraction
+docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f worker-claude-code
 
 # 重启单个服务
 docker compose -f docker-compose.prod.yml --env-file .env.prod restart api
 
 # 升级（参考 deploy/docker/README.md 中的 Upgrade Order）
-docker compose -f docker-compose.prod.yml --env-file .env.prod stop celery-beat worker-ocr worker-metadata worker-extraction
+docker compose -f docker-compose.prod.yml --env-file .env.prod stop celery-beat worker-ocr worker-metadata worker-extraction worker-claude-code
 docker compose -f docker-compose.prod.yml --env-file .env.prod build
 docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d

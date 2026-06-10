@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.models import (
     DataContext,
@@ -28,6 +28,7 @@ from app.repositories import (
 )
 from app.services.schema_service import SchemaService
 from app.services.schema_field_planner import schema_dataset_group_paths, schema_leaf_paths, schema_top_level_forms
+from app.services.record_instance_label import record_instance_label
 from app.services.structured_value_service import StructuredValueService
 from core.db import Transactional, session
 
@@ -483,6 +484,13 @@ class ResearchProjectService:
         values_by_context: dict[str, list[FieldCurrentValue]] = {}
         for value in current_values:
             values_by_context.setdefault(value.context_id, []).append(value)
+        records_by_context: dict[str, list[RecordInstance]] = {}
+        if context_ids:
+            record_result = await session.execute(
+                select(RecordInstance).where(RecordInstance.context_id.in_(context_ids))
+            )
+            for record in record_result.scalars().all():
+                records_by_context.setdefault(record.context_id, []).append(record)
 
         canonical_to_display: dict[str, str] = {}
         if isinstance(schema_json, dict):
@@ -498,6 +506,7 @@ class ResearchProjectService:
                     display_values = self._current_values_by_display_path(
                         values_by_context.get(context.id, []),
                         schema_json,
+                        records_by_context.get(context.id, []),
                     )
                     canonical_filled: dict[str, Any] = {}
                     for display_path, current in display_values.items():
@@ -743,6 +752,14 @@ class ResearchProjectService:
         context = await self.context_repository.get_project_crf(project_patient.id, binding.schema_version_id)
         if context is not None:
             return context
+        if isinstance(self.context_repository, DataContextRepository):
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+                {"lock_key": f"project_crf:{project_patient.id}:{binding.schema_version_id}"},
+            )
+            context = await self.context_repository.get_project_crf(project_patient.id, binding.schema_version_id)
+            if context is not None:
+                return context
 
         context = await self.context_repository.create(
             {
@@ -758,7 +775,140 @@ class ResearchProjectService:
         version = await self.schema_service.get_version(binding.schema_version_id)
         if version is not None:
             await self.initialize_default_record_instances(context_id=context.id, schema_json=version.schema_json)
+        await self._copy_latest_project_crf_values_to_context(
+            project_patient_id=project_patient.id,
+            target_context=context,
+            created_by=created_by,
+        )
         return context
+
+    async def _copy_latest_project_crf_values_to_context(
+        self,
+        *,
+        project_patient_id: str,
+        target_context: DataContext,
+        created_by: str | None,
+    ) -> None:
+        required_methods = (
+            (self.context_repository, "list_project_crfs_by_project_patients"),
+            (self.record_repository, "list_by_context"),
+            (self.current_repository, "list_by_context"),
+            (self.current_repository, "upsert_selected_value"),
+            (self.event_repository, "create"),
+            (self.evidence_repository, "list_by_event"),
+        )
+        if any(not hasattr(repository, method) for repository, method in required_methods):
+            return
+        contexts = await self.context_repository.list_project_crfs_by_project_patients([project_patient_id])
+        previous_contexts = [
+            context
+            for context in contexts
+            if context.id != target_context.id and context.schema_version_id != target_context.schema_version_id
+        ]
+        if not previous_contexts:
+            return
+        previous_contexts.sort(key=lambda item: getattr(item, "created_at", None) or datetime.min, reverse=True)
+        source_context = previous_contexts[0]
+        source_records = await self.record_repository.list_by_context(source_context.id)
+        target_records = await self.record_repository.list_by_context(target_context.id)
+        source_record_by_id = {record.id: record for record in source_records}
+        target_record_by_key = {
+            (record.form_key, int(record.repeat_index or 0)): record
+            for record in target_records
+        }
+        source_currents = await self.current_repository.list_by_context(source_context.id)
+        for current in source_currents:
+            source_record = source_record_by_id.get(current.record_instance_id)
+            if source_record is None:
+                continue
+            record_key = (source_record.form_key, int(source_record.repeat_index or 0))
+            target_record = target_record_by_key.get(record_key)
+            if target_record is None:
+                target_record = await self.record_repository.create(
+                    {
+                        "context_id": target_context.id,
+                        "group_key": getattr(source_record, "group_key", None),
+                        "group_title": getattr(source_record, "group_title", None),
+                        "form_key": source_record.form_key,
+                        "form_title": getattr(source_record, "form_title", None),
+                        "repeat_index": int(getattr(source_record, "repeat_index", 0) or 0),
+                        "instance_label": record_instance_label(
+                            getattr(source_record, "form_title", None),
+                            getattr(source_record, "form_key", None),
+                            getattr(source_record, "repeat_index", 0),
+                        ),
+                        "anchor_json": getattr(source_record, "anchor_json", None),
+                        "source_document_id": getattr(source_record, "source_document_id", None),
+                        "created_by_run_id": getattr(source_record, "created_by_run_id", None),
+                        "review_status": getattr(source_record, "review_status", None) or "unreviewed",
+                    }
+                )
+                target_record_by_key[record_key] = target_record
+            source_event = await self.event_repository.get_by_id(current.selected_event_id) if current.selected_event_id else None
+            event = await self.event_repository.create(
+                {
+                    "context_id": target_context.id,
+                    "record_instance_id": target_record.id,
+                    "field_key": current.field_key,
+                    "field_path": current.field_path,
+                    "field_title": getattr(source_event, "field_title", None),
+                    "event_type": "schema_version_migration",
+                    "value_type": current.value_type,
+                    "value_text": current.value_text,
+                    "value_number": current.value_number,
+                    "value_date": current.value_date,
+                    "value_datetime": current.value_datetime,
+                    "value_json": current.value_json,
+                    "unit": current.unit,
+                    "normalized_text": getattr(source_event, "normalized_text", None),
+                    "confidence": getattr(source_event, "confidence", None),
+                    "extraction_run_id": getattr(source_event, "extraction_run_id", None),
+                    "source_document_id": getattr(source_event, "source_document_id", None),
+                    "source_event_id": getattr(source_event, "id", None),
+                    "review_status": "accepted",
+                    "created_by": created_by,
+                    "created_at": datetime.utcnow(),
+                    "note": "Copied from previous CRF schema version context",
+                }
+            )
+            if source_event is not None:
+                for evidence in await self.evidence_repository.list_by_event(source_event.id):
+                    await self.evidence_repository.create(
+                        {
+                            "value_event_id": event.id,
+                            "document_id": evidence.document_id,
+                            "page_no": evidence.page_no,
+                            "bbox_json": evidence.bbox_json,
+                            "quote_text": evidence.quote_text,
+                            "evidence_type": evidence.evidence_type,
+                            "row_key": evidence.row_key,
+                            "cell_key": evidence.cell_key,
+                            "start_offset": evidence.start_offset,
+                            "end_offset": evidence.end_offset,
+                            "evidence_score": evidence.evidence_score,
+                            "created_at": datetime.utcnow(),
+                        }
+                    )
+            await self.current_repository.upsert_selected_value(
+                {
+                    "context_id": target_context.id,
+                    "record_instance_id": target_record.id,
+                    "field_key": current.field_key,
+                    "field_path": current.field_path,
+                    "selected_event_id": event.id,
+                    "value_type": current.value_type,
+                    "value_text": current.value_text,
+                    "value_number": current.value_number,
+                    "value_date": current.value_date,
+                    "value_datetime": current.value_datetime,
+                    "value_json": current.value_json,
+                    "unit": current.unit,
+                    "selected_by": current.selected_by,
+                    "selected_at": datetime.utcnow(),
+                    "review_status": current.review_status,
+                    "updated_at": datetime.utcnow(),
+                }
+            )
 
     async def get_project_crf(
         self,
@@ -1017,8 +1167,10 @@ class ResearchProjectService:
         record_instance_id: str | None,
     ) -> str | None:
         if record_instance_id is not None:
-            return (await self._resolve_record(context_id, record_instance_id)).id
-        if not self._path_has_index(field_path):
+            record = await self._resolve_record(context_id, record_instance_id)
+            if self._record_matches_field_path(record, field_path):
+                return record.id
+        if record_instance_id is None and not self._path_has_index(field_path):
             return None
         form_key = self._record_form_key_from_path(field_path)
         if not form_key:
@@ -1292,21 +1444,61 @@ class ResearchProjectService:
             field_path=field_path,
             record_instance_id=query_record_id,
         )
-        await self.evidence_repository.delete_by_context_field(
+        value_record_id = await self._resolve_field_value_record_id(
             context_id=context.id,
             field_path=query_path,
             record_instance_id=query_record_id,
         )
-        await self.current_repository.delete_by_context_field(
+        if value_record_id is None:
+            await self.current_repository.delete_by_context_field(
+                context_id=context.id,
+                field_path=query_path,
+                record_instance_id=query_record_id,
+            )
+            return
+
+        await self.value_service.clear_current_value_with_fallback(
             context_id=context.id,
+            record_instance_id=value_record_id,
             field_path=query_path,
-            record_instance_id=query_record_id,
         )
-        await self.event_repository.delete_by_context_field(
-            context_id=context.id,
-            field_path=query_path,
-            record_instance_id=query_record_id,
+
+    async def _resolve_field_value_record_id(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None,
+    ) -> str | None:
+        if record_instance_id is not None:
+            record = await self._resolve_record(context_id, record_instance_id)
+            if self._record_matches_field_path(record, field_path):
+                return record.id
+            resolved_record_id = await self._resolve_query_record_id(
+                context_id=context_id,
+                field_path=field_path,
+                record_instance_id=None,
+            )
+            if resolved_record_id is not None:
+                return resolved_record_id
+        current_values = await self.current_repository.list_by_context(context_id)
+        current_record_ids = {
+            value.record_instance_id
+            for value in current_values
+            if value.field_path == field_path
+        }
+        if len(current_record_ids) == 1:
+            return next(iter(current_record_ids))
+
+        events = await self.event_repository.list_candidates_by_context_field(
+            context_id=context_id,
+            field_path=field_path,
+            record_instance_id=None,
         )
+        event_record_ids = {event.record_instance_id for event in events}
+        if len(event_record_ids) == 1:
+            return next(iter(event_record_ids))
+        return None
 
     @Transactional()
     async def create_crf_record_instance(
@@ -1335,7 +1527,7 @@ class ResearchProjectService:
                 "form_key": form_key,
                 "form_title": form_title or form_key,
                 "repeat_index": repeat_index,
-                "instance_label": instance_label or f"{form_title or form_key} #{repeat_index + 1}",
+                "instance_label": instance_label or record_instance_label(form_title, form_key, repeat_index),
                 "review_status": "unreviewed",
             }
         )
@@ -1443,7 +1635,9 @@ class ResearchProjectService:
         field_path: str,
     ) -> RecordInstance:
         if record_instance_id is not None:
-            return await self._resolve_record(context_id, record_instance_id)
+            record = await self._resolve_record(context_id, record_instance_id)
+            if self._record_matches_field_path(record, field_path):
+                return record
 
         form_key = self._record_form_key_from_path(field_path)
         if form_key:
@@ -1474,6 +1668,10 @@ class ResearchProjectService:
         if len(parts) >= 2:
             return f"{parts[0]}.{parts[1]}"
         return parts[0] if parts else None
+
+    def _record_matches_field_path(self, record: RecordInstance, field_path: str) -> bool:
+        form_key = self._record_form_key_from_path(field_path)
+        return not form_key or getattr(record, "form_key", None) == form_key
 
     def _repeat_index_from_path(self, field_path: str, form_key: str) -> int:
         parts = [part for part in str(field_path or "").split(".") if part]
@@ -1506,7 +1704,7 @@ class ResearchProjectService:
                 "form_key": form_key,
                 "form_title": form_title,
                 "repeat_index": repeat_index,
-                "instance_label": form_title if repeat_index == 0 else f"{form_title} #{repeat_index + 1}",
+                "instance_label": record_instance_label(form_title, form_key, repeat_index),
                 "review_status": "unreviewed",
             }
         )
@@ -1535,7 +1733,7 @@ class ResearchProjectService:
                         "form_key": form["form_key"],
                         "form_title": form["form_title"] or form["form_key"],
                         "repeat_index": 0,
-                        "instance_label": form["form_title"] or form["form_key"],
+                        "instance_label": record_instance_label(form.get("form_title"), form.get("form_key"), 0),
                         "review_status": "unreviewed",
                     }
                 )

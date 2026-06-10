@@ -43,7 +43,7 @@ class ExtractionJobRepository(BaseRepo[ExtractionJob]):
     async def list_active_for_scheduler(self, *, limit: int = 10000) -> list[ExtractionJob]:
         query = (
             select(ExtractionJob)
-            .where(ExtractionJob.status.in_(("queued", "running")))
+            .where(ExtractionJob.status == "running")
             .order_by(ExtractionJob.created_at)
             .limit(limit)
         )
@@ -142,6 +142,31 @@ class ExtractionJobRepository(BaseRepo[ExtractionJob]):
             .where(ExtractionJob.document_id == document_id)
             .order_by(desc(ExtractionJob.created_at))
         )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_shareable_schema_jobs_for_document(
+        self,
+        *,
+        document_id: str,
+        requested_by: str | None,
+        exclude_job_id: str,
+        statuses: tuple[str, ...] = ("pending", "queued"),
+        limit: int = 20,
+    ) -> list[ExtractionJob]:
+        query = (
+            select(ExtractionJob)
+            .where(ExtractionJob.document_id == document_id)
+            .where(ExtractionJob.id != exclude_job_id)
+            .where(ExtractionJob.status.in_(statuses))
+            .order_by(ExtractionJob.created_at, ExtractionJob.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        if requested_by is None:
+            query = query.where(ExtractionJob.requested_by.is_(None))
+        else:
+            query = query.where(ExtractionJob.requested_by == requested_by)
         result = await session.execute(query)
         return list(result.scalars().all())
 

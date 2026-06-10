@@ -1,5 +1,8 @@
 import json
+import os
 import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -133,3 +136,58 @@ def test_claude_code_runner_raises_on_nonzero_exit(tmp_path):
             document_meta={},
             job_meta={"job_id": "job-1"},
         )
+
+
+@pytest.mark.asyncio
+async def test_claude_code_runner_async_cancel_terminates_process_and_cleans_workspace(tmp_path):
+    pid_file = tmp_path / "child.pid"
+
+    class LongRunningRunner(ClaudeCodeRunner):
+        def _build_command(self, prompt, *, workspace, job_meta, mcp_config_path=None):
+            script = textwrap.dedent(
+                f"""
+                import os
+                import signal
+                import sys
+                import time
+
+                with open({str(pid_file)!r}, "w", encoding="utf-8") as handle:
+                    handle.write(str(os.getpid()))
+
+                def _stop(*_args):
+                    sys.exit(0)
+
+                signal.signal(signal.SIGTERM, _stop)
+                while True:
+                    time.sleep(1)
+                """
+            )
+            return [sys.executable, "-c", script]
+
+    runner = LongRunningRunner(
+        workspace_root=tmp_path / "work",
+        skills_root=tmp_path / "missing",
+        keep_workspace=False,
+        timeout_seconds=10,
+    )
+
+    async def cancel_check():
+        if pid_file.exists():
+            raise RuntimeError("cancelled")
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        await runner.run_extraction_async(
+            ocr_text="",
+            ocr_payload={},
+            reading_units=[],
+            schema_json={},
+            field_specs=[],
+            document_meta={},
+            job_meta={"job_id": "job-1", "run_id": "run-1"},
+            cancel_check=cancel_check,
+        )
+
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    assert not any((tmp_path / "work").iterdir())

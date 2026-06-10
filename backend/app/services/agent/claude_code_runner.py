@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -10,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from core.config import config
 
@@ -143,6 +144,72 @@ class ClaudeCodeRunner:
             if not self.keep_workspace:
                 shutil.rmtree(workspace, ignore_errors=True)
 
+    async def run_extraction_async(
+        self,
+        *,
+        ocr_text: str,
+        ocr_payload: dict[str, Any] | None,
+        reading_units: list[dict[str, Any]],
+        schema_json: dict[str, Any],
+        field_specs: list[dict[str, Any]],
+        document_meta: dict[str, Any],
+        job_meta: dict[str, Any],
+        repair_errors: list[str] | None = None,
+        cancel_check: Callable[[], Awaitable[None]] | None = None,
+    ) -> ClaudeCodeRunResult:
+        workspace = self.create_workspace(job_meta=job_meta)
+        prompt = ""
+        started = time.monotonic()
+        try:
+            input_hashes = self._write_workspace_inputs(
+                workspace=workspace,
+                ocr_text=ocr_text,
+                ocr_payload=ocr_payload,
+                reading_units=reading_units,
+                schema_json=schema_json,
+                field_specs=field_specs,
+                document_meta=document_meta,
+                job_meta=job_meta,
+            )
+            self._copy_skills(workspace)
+            mcp_config_path = self._write_mcp_config(workspace) if self.enable_mcp_tools else None
+            prompt = self._build_task_prompt(
+                job_meta=job_meta,
+                document_meta=document_meta,
+                repair_errors=repair_errors,
+            )
+            (workspace / "task.md").write_text(prompt, encoding="utf-8")
+            command = self._build_command(prompt, workspace=workspace, job_meta=job_meta, mcp_config_path=mcp_config_path)
+            completed = await self._run_command_async(command, workspace=workspace, cancel_check=cancel_check)
+            duration_ms = int((time.monotonic() - started) * 1000)
+            if completed.returncode != 0:
+                details = (completed.stderr or completed.stdout or "").strip()
+                raise ClaudeCodeExitError(
+                    f"Claude Code exited with code {completed.returncode}: {details[:1000]}"
+                )
+            parsed_result, wrapper_json, source = self._parse_result(
+                workspace=workspace,
+                stdout=completed.stdout,
+            )
+            return ClaudeCodeRunResult(
+                parsed_result=parsed_result,
+                wrapper_json=wrapper_json,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                exit_code=completed.returncode,
+                duration_ms=duration_ms,
+                workspace_path=str(workspace),
+                result_source=source,
+                prompt=prompt,
+                command=command,
+                input_hashes=input_hashes,
+            )
+        except asyncio.TimeoutError as exc:
+            raise ClaudeCodeTimeoutError(f"Claude Code timed out after {self.timeout_seconds} seconds") from exc
+        finally:
+            if not self.keep_workspace:
+                shutil.rmtree(workspace, ignore_errors=True)
+
     def create_workspace(self, *, job_meta: dict[str, Any]) -> Path:
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         job_id = str(job_meta.get("job_id") or "job")
@@ -222,7 +289,7 @@ class ClaudeCodeRunner:
             "--output-format",
             "json",
             "--max-turns",
-            str(self.max_turns),
+            str(self._effective_max_turns(job_meta)),
             "--permission-mode",
             "dontAsk",
             "--json-schema",
@@ -246,6 +313,16 @@ class ClaudeCodeRunner:
         if self.disallowed_tools:
             command.extend(["--disallowedTools", self.disallowed_tools])
         return command
+
+    def _effective_max_turns(self, job_meta: dict[str, Any]) -> int:
+        try:
+            field_count = int(job_meta.get("field_count") or 0)
+        except (TypeError, ValueError):
+            field_count = 0
+        if field_count <= 20:
+            return self.max_turns
+        extra_turns = (field_count - 20 + 7) // 8
+        return min(max(self.max_turns, self.max_turns + extra_turns), 40)
 
     def _session_id(self, job_meta: dict[str, Any]) -> str:
         raw = job_meta.get("run_id") or job_meta.get("job_id")
@@ -303,6 +380,45 @@ class ClaudeCodeRunner:
             timeout=self.timeout_seconds,
             check=False,
         )
+
+    async def _run_command_async(
+        self,
+        command: list[str],
+        *,
+        workspace: Path,
+        cancel_check: Callable[[], Awaitable[None]] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(workspace),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        communicate_task = asyncio.create_task(process.communicate())
+        deadline = time.monotonic() + self.timeout_seconds
+        try:
+            while True:
+                done, _ = await asyncio.wait({communicate_task}, timeout=1.0)
+                if done:
+                    stdout_bytes, stderr_bytes = await communicate_task
+                    break
+                if time.monotonic() >= deadline:
+                    raise asyncio.TimeoutError()
+                if cancel_check is not None:
+                    await cancel_check()
+        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+            if not communicate_task.done():
+                communicate_task.cancel()
+            raise
+        stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+        return subprocess.CompletedProcess(command, process.returncode or 0, stdout, stderr)
 
     def _parse_result(self, *, workspace: Path, stdout: str) -> tuple[dict[str, Any], dict[str, Any] | None, str]:
         result_path = workspace / "output" / "result.json"

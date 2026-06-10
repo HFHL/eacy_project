@@ -36,6 +36,7 @@ import { useSchemaForm, setNestedValue, orderedPropertyEntries } from './SchemaF
 import DocumentCard from '../../pages/PatientDetail/tabs/DocumentsTab/components/DocumentCard'
 import DocumentDetailModal from '../../pages/PatientDetail/tabs/DocumentsTab/components/DocumentDetailModal'
 import { appThemeToken } from '../../styles/themeTokens'
+import { hasEffectiveValue } from '../../utils/valuePresence'
 
 const { Text } = Typography
 const HEADER_ICON_BUTTON_BASE_STYLE = {
@@ -73,12 +74,7 @@ function getNestedValue(obj, path) {
  * 检查是否有任何数据
  */
 function hasAnyData(data) {
-  if (data == null) return false
-  if (Array.isArray(data)) return data.length > 0
-  if (typeof data === 'object') {
-    return Object.values(data).some(v => hasAnyData(v))
-  }
-  return data !== '' && data !== null && data !== undefined
+  return hasEffectiveValue(data)
 }
 
 /**
@@ -96,7 +92,7 @@ function calculateFormProgress(schemaNode, data) {
         // 数组类型算一个字段
         total++
         const arr = dataObj?.[key]
-        if (Array.isArray(arr) && arr.length > 0) {
+        if (hasEffectiveValue(arr)) {
           filled++
         }
       } else if (fieldSchema.type === 'object' && fieldSchema.properties) {
@@ -106,7 +102,7 @@ function calculateFormProgress(schemaNode, data) {
         // 普通字段
         total++
         const value = dataObj?.[key]
-        if (value !== null && value !== undefined && value !== '') {
+        if (hasEffectiveValue(value)) {
           filled++
         }
       }
