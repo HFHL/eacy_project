@@ -131,7 +131,7 @@ const RepeatableFieldRenderer = ({
       clearTimeout(clickTimerRef.current)
       clickTimerRef.current = null
     }
-    onEdit(field.id, field.value)
+    onEdit(field, field.value)
   }
 
   return (

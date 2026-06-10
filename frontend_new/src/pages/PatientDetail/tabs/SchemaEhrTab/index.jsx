@@ -61,6 +61,7 @@ const SchemaEhrTab = ({
   const [localPatientData, setLocalPatientData] = useState(patientData)
   const latestRequestIdRef = useRef(0)
   const savedPatientDataRef = useRef(patientData || {})
+  const activePatientIdRef = useRef(patientId)
   
   /**
    * 判断当前异步请求是否仍为最新请求。
@@ -69,6 +70,10 @@ const SchemaEhrTab = ({
    * @returns {boolean} 是否仍为最新请求
    */
   const isLatestRequest = useCallback((requestId) => latestRequestIdRef.current === requestId, [])
+
+  useEffect(() => {
+    activePatientIdRef.current = patientId
+  }, [patientId])
   
   /**
    * 加载 Schema 与患者数据。
@@ -197,14 +202,26 @@ const SchemaEhrTab = ({
   
   // 处理保存：有 patientId 时调用后端更新接口，再同步本地与回调
   const handleSave = useCallback(async (data, type) => {
-    if (patientId && type !== 'candidate') {
+    const savePatientId = patientId
+    if (savePatientId && String(activePatientIdRef.current || '') !== String(savePatientId)) {
+      throw new Error('患者已切换，已取消本次保存')
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('表单数据未加载完成，已取消本次保存')
+    }
+
+    if (savePatientId && type !== 'candidate') {
       try {
-        await updatePatientEhrSchemaData(patientId, data, {
+        await updatePatientEhrSchemaData(savePatientId, data, {
           previousData: savedPatientDataRef.current || {},
         })
       } catch (err) {
         throw err
       }
+    }
+
+    if (savePatientId && String(activePatientIdRef.current || '') !== String(savePatientId)) {
+      throw new Error('患者已切换，已取消本次保存')
     }
 
     if (onSave) {

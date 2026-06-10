@@ -222,6 +222,9 @@ const EhrTab = ({
     }
 
     console.log('🔍 加载字段溯源历史:', { fieldId, fieldName: field.name, apiFieldId: field.apiFieldId })
+    const sourceOptions = {
+      recordInstanceId: field.recordInstanceId || field.record_instance_id || null,
+    }
     
     setSelectedField(field)
     setHistoryLoading(true)
@@ -233,8 +236,8 @@ const EhrTab = ({
     try {
       // 1. 获取字段溯源历史和 TextIn 原始坐标证据
       const [historyRes, evidenceRes] = await Promise.all([
-        getEhrFieldHistory(patientId, fieldId),
-        getEhrFieldEvidence(patientId, fieldId),
+        getEhrFieldHistory(patientId, fieldId, sourceOptions),
+        getEhrFieldEvidence(patientId, fieldId, sourceOptions),
       ])
       console.log('溯源历史响应:', historyRes)
       console.log('溯源证据响应:', evidenceRes)

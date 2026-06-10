@@ -20,6 +20,8 @@ class SimpleEhrExtractor:
                 "confidence": 0.70,
                 "quote_text": self._quote_for_value(text, value),
                 "record_form_key": field.record_form_key,
+                "record_form_title": field.record_form_title,
+                "merge_binding": field.merge_binding,
             }
             if field.value_type == "number":
                 extracted["value_number"] = value

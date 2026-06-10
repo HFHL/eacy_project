@@ -393,6 +393,7 @@ function formatDocumentUploadedAt(doc) {
 const ModificationHistory = ({
   fieldPath,
   rowUid = null,
+  recordInstanceId = null,
   patientId,
   projectId,
   refreshKey = 0,
@@ -455,6 +456,9 @@ const ModificationHistory = ({
    * @returns {string}
    */
   const toHistoryQueryPath = useCallback((path) => String(path || '').trim(), [])
+  const historyOptions = useMemo(() => (
+    recordInstanceId ? { recordInstanceId } : undefined
+  ), [recordInstanceId])
 
   useEffect(() => {
     let cancelled = false
@@ -469,8 +473,8 @@ const ModificationHistory = ({
         setLoading(true)
         try {
           const [res, candidateRes] = await Promise.all([
-            getProjectCrfFieldHistory(projectId, patientId, queryPath, rowUid),
-            getProjectCrfFieldCandidates(projectId, patientId, queryPath, rowUid),
+            getProjectCrfFieldHistory(projectId, patientId, queryPath, historyOptions),
+            getProjectCrfFieldCandidates(projectId, patientId, queryPath, historyOptions),
           ])
           const payload = res?.data || {}
           const candidatePayload = candidateRes?.data || {}
@@ -506,8 +510,8 @@ const ModificationHistory = ({
         setLoading(true)
         try {
           const [res, candidateRes] = await Promise.all([
-            getEhrFieldHistoryV3(patientId, queryPath, rowUid),
-            getEhrFieldCandidatesV3(patientId, queryPath, rowUid),
+            getEhrFieldHistoryV3(patientId, queryPath, historyOptions),
+            getEhrFieldCandidatesV3(patientId, queryPath, historyOptions),
           ])
           const payload = res?.data || {}
           const candidatePayload = candidateRes?.data || {}
@@ -551,7 +555,7 @@ const ModificationHistory = ({
     }
     fetchHistory()
     return () => { cancelled = true }
-  }, [patientId, projectId, fieldPath, rowUid, refreshKey, onHistoryLoaded, selectRefreshTick, toHistoryQueryPath])
+  }, [patientId, projectId, fieldPath, historyOptions, refreshKey, onHistoryLoaded, selectRefreshTick, toHistoryQueryPath])
   
   const extractSubFieldValues = (item) => {
     if (arrayIdx === null) return null
@@ -630,9 +634,9 @@ const ModificationHistory = ({
       const selectedCandidate = (fieldMeta.candidates || []).find((item) => item?.id === candidateId)
       const selectedValue = getCandidateDisplayValue(selectedCandidate)
       if (projectId && patientId) {
-        await selectProjectCrfFieldCandidate(projectId, patientId, queryPath, candidateId, selectedValue, rowUid)
+        await selectProjectCrfFieldCandidate(projectId, patientId, queryPath, candidateId, selectedValue, historyOptions)
       } else if (patientId) {
-        await selectEhrFieldCandidateV3(patientId, queryPath, candidateId, selectedValue, rowUid)
+        await selectEhrFieldCandidateV3(patientId, queryPath, candidateId, selectedValue, historyOptions)
       }
       if (typeof onCandidateApplied === 'function' && selectedCandidate) {
         onCandidateApplied(queryPath, selectedValue, rowUid, selectedCandidate)
@@ -1668,6 +1672,7 @@ const SourcePanel = ({
               <ModificationHistory
                 fieldPath={selectedField.path}
                 rowUid={selectedField.rowUid}
+                recordInstanceId={selectedField.recordInstanceId}
                 patientId={patientId}
                 projectId={projectId}
                 refreshKey={historyRefreshKey}
@@ -2230,8 +2235,40 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
       }
       return matchedRowUid
     }
+    const resolveRecordInstanceIdByPath = (sourceData, sourcePath) => {
+      const parts = String(sourcePath || '').split('.').filter(Boolean)
+      if (parts.length === 0) return null
+      let node = sourceData
+      let matchedRecordInstanceId = null
+      for (const part of parts) {
+        if (/^\d+$/.test(part)) {
+          const index = Number(part)
+          if (!Array.isArray(node) || node[index] == null) break
+          const rowItem = node[index]
+          if (rowItem && typeof rowItem === 'object' && rowItem._record_instance_id) {
+            matchedRecordInstanceId = String(rowItem._record_instance_id)
+          }
+          node = rowItem
+          continue
+        }
+        if (!node || typeof node !== 'object') break
+        node = node[part]
+      }
+      return matchedRecordInstanceId
+    }
     const inferredRowUid = String(options?.rowUid || '').trim() || resolveRowUidByPath(draftData, path)
-    setSelectedField({ path, schema, name, rowUid: inferredRowUid || null })
+    const inferredRecordInstanceId = (
+      String(options?.recordInstanceId || '').trim() ||
+      String(options?.record_instance_id || '').trim() ||
+      resolveRecordInstanceIdByPath(draftData, path)
+    )
+    setSelectedField({
+      path,
+      schema,
+      name,
+      rowUid: inferredRowUid || null,
+      recordInstanceId: inferredRecordInstanceId || null,
+    })
     // 溯源完全由 ehr-v2/history 接口驱动，不再使用抽取 audit 的 bbox 定位；高亮仅在用户从修改历史选择一条后由 source_location.position 提供
     setActiveCoordinates(null)
     if (options.forceOpen && rightCollapsed) setRightCollapsed(false)

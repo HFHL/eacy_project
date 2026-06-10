@@ -19,6 +19,26 @@ const normalizeFieldPath = (fieldId) => String(fieldId || '')
   .replace(/^\./, '')
   .replace(/\.$/, '')
 
+const resolveEditableField = (fieldOrId) => {
+  if (fieldOrId && typeof fieldOrId === 'object') {
+    const rawPath = fieldOrId.field_path
+      || fieldOrId.fieldPath
+      || fieldOrId.db_field
+      || fieldOrId.apiFieldId
+      || fieldOrId.id
+    return {
+      editId: fieldOrId.id || rawPath,
+      fieldPath: normalizeFieldPath(rawPath),
+      recordInstanceId: fieldOrId.record_instance_id || fieldOrId.recordInstanceId || null,
+    }
+  }
+  return {
+    editId: fieldOrId,
+    fieldPath: normalizeFieldPath(fieldOrId),
+    recordInstanceId: null,
+  }
+}
+
 export const useEhrFieldEdit = (patientId = null, onSaveSuccess = null) => {
   // 编辑状态
   const [editingEhrField, setEditingEhrField] = useState(null)
@@ -27,8 +47,9 @@ export const useEhrFieldEdit = (patientId = null, onSaveSuccess = null) => {
 
   // 开始编辑字段
   const handleEhrFieldEdit = useCallback((fieldId, currentValue) => {
-    console.log('开始编辑字段:', fieldId, '当前值:', currentValue)
-    setEditingEhrField(fieldId)
+    const fieldMeta = resolveEditableField(fieldId)
+    console.log('开始编辑字段:', fieldMeta.fieldPath, '当前值:', currentValue)
+    setEditingEhrField(fieldMeta.editId)
     setEditingEhrValue(currentValue || '')
   }, [])
 
@@ -44,8 +65,10 @@ export const useEhrFieldEdit = (patientId = null, onSaveSuccess = null) => {
     
     setSaving(true)
     try {
-      const normalizedFieldPath = normalizeFieldPath(fieldId)
-      const res = await saveEhrFieldValueV3(patientId, normalizedFieldPath, editingEhrValue)
+      const fieldMeta = resolveEditableField(fieldId)
+      const res = await saveEhrFieldValueV3(patientId, fieldMeta.fieldPath, editingEhrValue, {
+        record_instance_id: fieldMeta.recordInstanceId,
+      })
       
       if (res.success) {
         message.success('保存成功')
@@ -93,11 +116,12 @@ export const useEhrFieldEdit = (patientId = null, onSaveSuccess = null) => {
     try {
       const results = await Promise.all(
         fieldUpdates.map((fieldUpdate) => {
-          const normalizedFieldPath = normalizeFieldPath(fieldUpdate?.fieldId)
+          const fieldMeta = resolveEditableField(fieldUpdate?.field || fieldUpdate?.fieldId)
           return saveEhrFieldValueV3(
             patientId,
-            normalizedFieldPath,
+            fieldMeta.fieldPath,
             fieldUpdate?.value,
+            { record_instance_id: fieldMeta.recordInstanceId },
           )
         }),
       )

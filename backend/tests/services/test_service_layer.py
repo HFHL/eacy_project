@@ -61,12 +61,54 @@ class FakeEvidenceRepository:
 
 
 class FakeExtractionRecordRepository:
+    def __init__(self, records=None):
+        self.records = records or [
+            SimpleNamespace(
+                id="record-1",
+                context_id="context-1",
+                group_key="basic",
+                group_title="basic",
+                form_key="basic.demographics",
+                form_title="demographics",
+                repeat_index=0,
+            )
+        ]
+        self.created = []
+
     async def list_by_context(self, context_id):
-        return [SimpleNamespace(id="record-1", context_id=context_id, form_key="basic.demographics")]
+        return [record for record in self.records if record.context_id == context_id]
+
+    async def get_by_form(self, *, context_id, form_key, repeat_index=0):
+        return next(
+            (
+                record for record in self.records
+                if record.context_id == context_id
+                and record.form_key == form_key
+                and record.repeat_index == repeat_index
+            ),
+            None,
+        )
+
+    async def create(self, params):
+        record = SimpleNamespace(id=f"record-{len(self.records) + 1}", **params)
+        self.records.append(record)
+        self.created.append(record)
+        return record
+
+    async def save(self, record):
+        return record
+
+    async def next_repeat_index(self, *, context_id, form_key):
+        indexes = [
+            int(record.repeat_index or 0)
+            for record in self.records
+            if record.context_id == context_id and record.form_key == form_key
+        ]
+        return max(indexes, default=-1) + 1
 
 
 class FakeExtractionDocumentRepository:
-    async def get_visible_by_id(self, document_id):
+    async def get_visible_by_id(self, document_id, **_kwargs):
         return SimpleNamespace(
             id=document_id,
             ocr_payload_json={
@@ -94,6 +136,9 @@ class FakeExtractionValueService:
     async def record_ai_extracted_value(self, **kwargs):
         self.events.append(kwargs)
         return SimpleNamespace(id=f"event-{len(self.events)}", **kwargs)
+
+
+FakeExtractionValueService.__module__ = "tests.services.test_service_layer"
 
 
 class FakeProjectRepository:
@@ -133,7 +178,7 @@ class FakeContextRepository:
 
 
 class FakePatientRepository:
-    async def get_active_by_id(self, patient_id):
+    async def get_active_by_id(self, patient_id, **_kwargs):
         return SimpleNamespace(id=patient_id)
 
 
@@ -293,6 +338,330 @@ async def test_extraction_service_writes_mock_output_to_structured_values():
 
 
 @pytest.mark.asyncio
+async def test_extraction_service_writes_repeatable_rows_to_separate_records():
+    value_service = FakeExtractionValueService()
+    record_repository = FakeExtractionRecordRepository(
+        records=[
+            SimpleNamespace(
+                id="medication-1",
+                context_id="context-1",
+                group_key="care",
+                group_title="care",
+                form_key="care.medication",
+                form_title="Medication",
+                repeat_index=0,
+            )
+        ]
+    )
+    service = ExtractionService(
+        job_repository=SimpleNamespace(),
+        run_repository=SimpleNamespace(),
+        record_repository=record_repository,
+        document_repository=FakeExtractionDocumentRepository(),
+        value_service=value_service,
+    )
+    job = SimpleNamespace(id="job-1", context_id="context-1", document_id="document-1", requested_by=None)
+    run = SimpleNamespace(id="run-1")
+    parsed_output = {
+        "fields": [
+            {
+                "field_key": "drug_name",
+                "field_path": "care.medication.0.drug_name",
+                "field_title": "药物名称",
+                "record_form_key": "care.medication",
+                "record_form_title": "Medication",
+                "value_type": "text",
+                "value_text": "吉非替尼",
+                "confidence": 0.9,
+            },
+            {
+                "field_key": "drug_name",
+                "field_path": "care.medication.1.drug_name",
+                "field_title": "药物名称",
+                "record_form_key": "care.medication",
+                "record_form_title": "Medication",
+                "value_type": "text",
+                "value_text": "奥希替尼",
+                "confidence": 0.9,
+            },
+        ]
+    }
+
+    await service._write_extracted_values(job=job, run=run, parsed_output=parsed_output)
+
+    assert len(value_service.events) == 2
+    assert value_service.events[0]["record_instance_id"] == "medication-1"
+    assert value_service.events[1]["record_instance_id"] == "record-2"
+    assert value_service.events[1]["field_path"] == "care.medication.drug_name"
+    assert record_repository.created[0].form_key == "care.medication"
+    assert record_repository.created[0].repeat_index == 1
+
+
+def _ct_fields(*, exam_date: str, report_no: str, body_part: str) -> list[dict[str, Any]]:
+    merge_binding = "anchor=检查日期;group_key=检查编号(影像号)+检查部位;fallback=报告日期"
+    return [
+        {
+            "field_key": "检查日期",
+            "field_path": "影像检查.CT.检查日期",
+            "field_title": "检查日期",
+            "record_form_key": "影像检查.CT",
+            "record_form_title": "CT",
+            "merge_binding": merge_binding,
+            "value_type": "date",
+            "value_date": exam_date,
+            "confidence": 0.9,
+        },
+        {
+            "field_key": "检查编号(影像号)",
+            "field_path": "影像检查.CT.检查编号(影像号)",
+            "field_title": "检查编号(影像号)",
+            "record_form_key": "影像检查.CT",
+            "record_form_title": "CT",
+            "merge_binding": merge_binding,
+            "value_type": "text",
+            "value_text": report_no,
+            "confidence": 0.9,
+        },
+        {
+            "field_key": "检查部位",
+            "field_path": "影像检查.CT.检查部位",
+            "field_title": "检查部位",
+            "record_form_key": "影像检查.CT",
+            "record_form_title": "CT",
+            "merge_binding": merge_binding,
+            "value_type": "text",
+            "value_text": body_part,
+            "confidence": 0.9,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_extraction_service_creates_new_record_for_different_report_anchor():
+    value_service = FakeExtractionValueService()
+    record_repository = FakeExtractionRecordRepository(
+        records=[
+            SimpleNamespace(
+                id="ct-1",
+                context_id="context-1",
+                group_key="影像检查",
+                group_title="影像检查",
+                form_key="影像检查.CT",
+                form_title="CT",
+                repeat_index=0,
+                anchor_json=None,
+                source_document_id=None,
+                created_by_run_id=None,
+            )
+        ]
+    )
+    service = ExtractionService(
+        job_repository=SimpleNamespace(),
+        run_repository=SimpleNamespace(),
+        record_repository=record_repository,
+        document_repository=FakeExtractionDocumentRepository(),
+        value_service=value_service,
+    )
+
+    await service._write_extracted_values(
+        job=SimpleNamespace(id="job-1", context_id="context-1", document_id="document-1", requested_by=None),
+        run=SimpleNamespace(id="run-1"),
+        parsed_output={"fields": _ct_fields(exam_date="2024-01-01", report_no="CT001", body_part="胰腺")},
+    )
+    await service._write_extracted_values(
+        job=SimpleNamespace(id="job-2", context_id="context-1", document_id="document-2", requested_by=None),
+        run=SimpleNamespace(id="run-2"),
+        parsed_output={"fields": _ct_fields(exam_date="2024-01-02", report_no="CT002", body_part="肝脏")},
+    )
+
+    assert len(record_repository.created) == 1
+    assert record_repository.records[0].anchor_json["merge_key"] != record_repository.created[0].anchor_json["merge_key"]
+    assert record_repository.created[0].repeat_index == 1
+    assert record_repository.created[0].instance_label == "CT_2"
+    assert {event["record_instance_id"] for event in value_service.events[:3]} == {"ct-1"}
+    assert {event["record_instance_id"] for event in value_service.events[3:]} == {"record-2"}
+    assert {event["field_path"] for event in value_service.events} == {
+        "影像检查.CT.检查日期",
+        "影像检查.CT.检查编号(影像号)",
+        "影像检查.CT.检查部位",
+    }
+
+
+@pytest.mark.asyncio
+async def test_extraction_service_reuses_record_for_same_report_anchor():
+    value_service = FakeExtractionValueService()
+    record_repository = FakeExtractionRecordRepository(
+        records=[
+            SimpleNamespace(
+                id="ct-1",
+                context_id="context-1",
+                group_key="影像检查",
+                group_title="影像检查",
+                form_key="影像检查.CT",
+                form_title="CT",
+                repeat_index=0,
+                anchor_json=None,
+                source_document_id=None,
+                created_by_run_id=None,
+            )
+        ]
+    )
+    service = ExtractionService(
+        job_repository=SimpleNamespace(),
+        run_repository=SimpleNamespace(),
+        record_repository=record_repository,
+        document_repository=FakeExtractionDocumentRepository(),
+        value_service=value_service,
+    )
+    fields = _ct_fields(exam_date="2024-01-01", report_no="CT001", body_part="胰腺")
+
+    await service._write_extracted_values(
+        job=SimpleNamespace(id="job-1", context_id="context-1", document_id="document-1", requested_by=None),
+        run=SimpleNamespace(id="run-1"),
+        parsed_output={"fields": fields},
+    )
+    await service._write_extracted_values(
+        job=SimpleNamespace(id="job-2", context_id="context-1", document_id="document-1", requested_by=None),
+        run=SimpleNamespace(id="run-2"),
+        parsed_output={"fields": fields},
+    )
+
+    assert record_repository.created == []
+    assert record_repository.records[0].anchor_json["merge_key"]
+    assert {event["record_instance_id"] for event in value_service.events} == {"ct-1"}
+
+
+@pytest.mark.asyncio
+async def test_extraction_service_creates_first_record_when_repeatable_form_has_no_default():
+    value_service = FakeExtractionValueService()
+    record_repository = FakeExtractionRecordRepository(
+        records=[
+            SimpleNamespace(
+                id="basic-1",
+                context_id="context-1",
+                group_key="基本信息",
+                group_title="基本信息",
+                form_key="基本信息.人口学",
+                form_title="人口学",
+                repeat_index=0,
+                anchor_json=None,
+                source_document_id=None,
+                created_by_run_id=None,
+            )
+        ]
+    )
+    service = ExtractionService(
+        job_repository=SimpleNamespace(),
+        run_repository=SimpleNamespace(),
+        record_repository=record_repository,
+        document_repository=FakeExtractionDocumentRepository(),
+        value_service=value_service,
+    )
+
+    await service._write_extracted_values(
+        job=SimpleNamespace(id="job-1", context_id="context-1", document_id="document-1", requested_by=None),
+        run=SimpleNamespace(id="run-1"),
+        parsed_output={"fields": _ct_fields(exam_date="2024-01-01", report_no="CT001", body_part="胰腺")},
+    )
+
+    assert len(record_repository.created) == 1
+    assert record_repository.created[0].form_key == "影像检查.CT"
+    assert record_repository.created[0].repeat_index == 0
+    assert record_repository.created[0].instance_label == "CT"
+    assert {event["record_instance_id"] for event in value_service.events} == {"record-2"}
+
+
+@pytest.mark.asyncio
+async def test_ehr_service_resolves_indexed_field_path_to_repeat_record():
+    record_repository = FakeExtractionRecordRepository(
+        records=[
+            SimpleNamespace(
+                id="medication-1",
+                context_id="context-1",
+                group_key="care",
+                group_title="care",
+                form_key="care.medication",
+                form_title="Medication",
+                repeat_index=0,
+            )
+        ]
+    )
+    service = EhrService(record_repository=record_repository)
+
+    record = await service._resolve_record_for_field_path(
+        context_id="context-1",
+        record_instance_id=None,
+        field_path="care.medication.1.drug_name",
+    )
+
+    assert record.id == "record-2"
+    assert record.repeat_index == 1
+    assert service._storage_field_path("care.medication.1.drug_name") == "care.medication.drug_name"
+
+
+def test_ehr_service_current_values_include_record_repeat_index():
+    service = EhrService()
+    schema_json = {
+        "properties": {
+            "影像检查": {
+                "properties": {
+                    "CT": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "检查日期": {"type": "string", "format": "date"},
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    records = [
+        SimpleNamespace(id="ct-1", form_key="影像检查.CT", repeat_index=0),
+        SimpleNamespace(id="ct-2", form_key="影像检查.CT", repeat_index=1),
+    ]
+    current_values = [
+        SimpleNamespace(record_instance_id="ct-1", field_path="影像检查.CT.检查日期", value_date="2024-01-01"),
+        SimpleNamespace(record_instance_id="ct-2", field_path="影像检查.CT.检查日期", value_date="2024-01-02"),
+    ]
+
+    output = service._current_values_by_display_path(current_values, schema_json, records)
+
+    assert set(output.keys()) == {"影像检查.CT.0.检查日期", "影像检查.CT.1.检查日期"}
+    assert output["影像检查.CT.1.检查日期"].record_instance_id == "ct-2"
+
+
+@pytest.mark.asyncio
+async def test_research_service_resolves_indexed_field_path_to_repeat_record():
+    record_repository = FakeExtractionRecordRepository(
+        records=[
+            SimpleNamespace(
+                id="visit-1",
+                context_id="context-1",
+                group_key="followup",
+                group_title="followup",
+                form_key="followup.visit",
+                form_title="Visit",
+                repeat_index=0,
+            )
+        ]
+    )
+    service = ResearchProjectService(record_repository=record_repository)
+
+    record = await service._resolve_record_for_field_path(
+        context_id="context-1",
+        record_instance_id=None,
+        field_path="followup.visit.2.date",
+    )
+
+    assert record.id == "record-2"
+    assert record.repeat_index == 2
+    assert service._storage_field_path("followup.visit.2.date") == "followup.visit.date"
+
+
+@pytest.mark.asyncio
 async def test_extraction_service_reuses_sibling_location_for_derived_enum_evidence():
     service = ExtractionService(value_service=FakeExtractionValueService())
     record = SimpleNamespace(id="record-1")
@@ -441,7 +810,7 @@ async def test_extraction_service_process_existing_job_reuses_pending_job():
 
 
 class FakeMissingDocumentRepository:
-    async def get_visible_by_id(self, document_id):
+    async def get_visible_by_id(self, document_id, **_kwargs):
         return None
 
 
@@ -466,6 +835,7 @@ async def test_extraction_service_process_existing_job_marks_failed_without_rais
         run_repository=FakeExtractionRunRepository(),
         record_repository=FakeExtractionRecordRepository(),
         document_repository=FakeMissingDocumentRepository(),
+        task_progress_service=FakeTaskProgressService(),
     )
 
     processed_job = await service.process_existing_job("job-1")
@@ -476,7 +846,7 @@ async def test_extraction_service_process_existing_job_marks_failed_without_rais
     assert service.run_repository.runs[0].error_message == "Document not found"
 
 @pytest.mark.asyncio
-async def test_extraction_service_retry_marks_failed_and_creates_new_run():
+async def test_extraction_service_retry_returns_failed_job_to_scheduler():
     job = SimpleNamespace(
         id="job-1",
         job_type="patient_ehr",
@@ -498,15 +868,59 @@ async def test_extraction_service_retry_marks_failed_and_creates_new_run():
         run_repository=run_repository,
         record_repository=FakeExtractionRecordRepository(),
         document_repository=FakeMissingDocumentRepository(),
+        task_progress_service=FakeTaskProgressService(),
     )
+    async def fake_commit_pending_jobs():
+        return None
+
+    service._commit_pending_jobs_before_enqueue = fake_commit_pending_jobs
 
     processed_job = await service.retry_job("job-1")
 
-    assert processed_job.status == "failed"
-    assert processed_job.error_message == "Document not found"
-    assert len(run_repository.runs) == 2
-    assert run_repository.runs[1].run_no == 2
-    assert run_repository.runs[1].status == "failed"
+    assert processed_job.status == "pending"
+    assert processed_job.progress == 0
+    assert processed_job.error_message is None
+    assert len(run_repository.runs) == 1
+
+
+def test_extraction_scheduler_limits_each_user_before_filling_global_slots():
+    service = ExtractionService()
+    candidates = [
+        SimpleNamespace(id="a-1", requested_by="user-a", project_id="project-1", created_at=1),
+        SimpleNamespace(id="a-2", requested_by="user-a", project_id="project-1", created_at=2),
+        SimpleNamespace(id="b-1", requested_by="user-b", project_id="project-2", created_at=3),
+    ]
+
+    selected = service._choose_jobs_for_fair_dispatch(
+        candidates=candidates,
+        active_jobs=[],
+        global_limit=4,
+        user_limit=1,
+        project_limit=2,
+        max_to_dispatch=4,
+    )
+
+    assert [job.id for job in selected] == ["a-1", "b-1"]
+
+
+def test_extraction_scheduler_skips_user_that_already_has_active_slot():
+    service = ExtractionService()
+    active_jobs = [SimpleNamespace(id="active-a", requested_by="user-a", project_id="project-1")]
+    candidates = [
+        SimpleNamespace(id="a-1", requested_by="user-a", project_id="project-1", created_at=1),
+        SimpleNamespace(id="b-1", requested_by="user-b", project_id="project-2", created_at=2),
+    ]
+
+    selected = service._choose_jobs_for_fair_dispatch(
+        candidates=candidates,
+        active_jobs=active_jobs,
+        global_limit=4,
+        user_limit=1,
+        project_limit=2,
+        max_to_dispatch=4,
+    )
+
+    assert [job.id for job in selected] == ["b-1"]
 
 
 @pytest.mark.asyncio
@@ -521,7 +935,7 @@ class FakeDocumentRepository:
     def __init__(self, document):
         self.document = document
 
-    async def get_visible_by_id(self, document_id):
+    async def get_visible_by_id(self, document_id, **_kwargs):
         return self.document if self.document.id == document_id else None
 
 
@@ -710,6 +1124,7 @@ async def test_project_crf_extraction_reuses_schema_extractor_and_context():
         ehr_service=FakeEhrServiceForExtraction(context=context, schema_json=project_schema_json()),
         value_service=value_service,
         llm_ehr_extractor=extractor,
+        task_progress_service=FakeTaskProgressService(),
     )
 
     processed_job = await service.process_existing_job("job-1")
@@ -817,6 +1232,7 @@ async def test_project_crf_extraction_rejects_context_mismatch():
         record_repository=FakeExtractionRecordRepository(),
         document_repository=FakeDocumentRepository(document),
         ehr_service=FakeEhrServiceForExtraction(context=context, schema_json=project_schema_json()),
+        task_progress_service=FakeTaskProgressService(),
     )
 
     processed_job = await service.process_existing_job("job-1")
@@ -877,10 +1293,11 @@ async def test_create_planned_jobs_routes_document_subtype_to_target_forms():
         }),
         value_service=FakeExtractionValueService(),
         llm_ehr_extractor=extractor,
+        task_progress_service=FakeTaskProgressService(),
     )
 
     jobs = await service.create_planned_jobs(
-        requested_by="user-1",
+        requested_by=None,
         job_type="project_crf",
         document_id="document-1",
         patient_id="patient-1",
@@ -931,10 +1348,11 @@ async def test_create_planned_jobs_uses_explicit_current_form_target():
         ehr_service=FakeEhrServiceForExtraction(context=context, schema_json=project_schema_json()),
         value_service=FakeExtractionValueService(),
         llm_ehr_extractor=extractor,
+        task_progress_service=FakeTaskProgressService(),
     )
 
     jobs = await service.create_planned_jobs(
-        requested_by="user-1",
+        requested_by=None,
         job_type="targeted_schema",
         document_id="document-1",
         patient_id="patient-1",
@@ -952,22 +1370,26 @@ async def test_create_planned_jobs_uses_explicit_current_form_target():
 class FakePatientEhrServiceForFolderUpdate:
     def __init__(self, *, context, schema_json):
         self.context_repository = FakeContextRepositoryForExtraction(context)
+        self.patient_repository = FakePatientRepository()
         self.schema_service = FakeSchemaServiceForExtraction(schema_json)
         self.context = context
         self.schema_json = schema_json
 
-    async def get_patient_ehr(self, patient_id, created_by=None):
+    async def get_patient_ehr(self, patient_id, created_by=None, **_kwargs):
         return {"context": self.context, "schema": self.schema_json, "records": [], "current_values": {}}
 
 
 class FakePatientDocumentsRepository:
     def __init__(self, documents):
+        for document in documents:
+            if not hasattr(document, "file_name"):
+                document.file_name = getattr(document, "original_filename", None)
         self.documents = documents
 
-    async def list_by_patient(self, patient_id, *, limit=100):
+    async def list_by_patient(self, patient_id, *, limit=100, **_kwargs):
         return [document for document in self.documents if document.patient_id == patient_id]
 
-    async def get_visible_by_id(self, document_id):
+    async def get_visible_by_id(self, document_id, **_kwargs):
         return next((document for document in self.documents if document.id == document_id), None)
 
 
@@ -994,6 +1416,12 @@ class FakeTaskProgressService:
         self.batches.append(batch)
         return batch
 
+    async def persist_plan_snapshot(self, batch_id, plan_json):
+        batch = next((entry for entry in self.batches if entry.id == batch_id), None)
+        if batch is not None:
+            batch.plan_json = plan_json
+        return batch
+
     async def create_item_for_job(self, *, batch_id=None, task_type, job, **_kwargs):
         item = SimpleNamespace(
             id=f"item-{len(self.items) + 1}",
@@ -1018,6 +1446,9 @@ class FakeTaskProgressService:
         return batch
 
     async def mark_job_queued(self, job_id, **_kwargs):
+        return None
+
+    async def mark_job_waiting_for_scheduler(self, job, **_kwargs):
         return None
 
     async def update_job_progress(self, job_or_id, **_kwargs):

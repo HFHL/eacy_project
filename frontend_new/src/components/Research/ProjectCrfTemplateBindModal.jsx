@@ -89,7 +89,7 @@ const ProjectCrfTemplateBindModal = ({
         type="info"
         showIcon
         message="绑定 CRF 模板"
-        description="请选择本项目使用的 CRF 模板，用于数据集字段结构与抽取。"
+        description="请选择本项目使用的基础 CRF 模板，系统会为项目创建独立副本用于字段结构与抽取。"
         style={{ marginBottom: 16 }}
       />
       {loading ? (

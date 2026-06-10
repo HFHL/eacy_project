@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from app.core.auth import CurrentUser, get_current_user
+from app.core.auth import CurrentUser, get_current_user, uuid_user_id_or_none
 from app.services.task_progress_service import TaskProgressService
 
 router = APIRouter(prefix="/task-batches", tags=["task-batches"])
@@ -45,10 +45,12 @@ class TaskBatchResponse(BaseModel):
     running_items: int
     queued_items: int
     succeeded_items: int
+    empty_items: int = 0
     failed_items: int
     cancelled_items: int
     message: str | None = None
     error_message: str | None = None
+    plan_summary: dict[str, Any] | None = None
     patient_id: str | None = None
     document_id: str | None = None
     project_id: str | None = None
@@ -83,7 +85,10 @@ async def get_task_batch(
     current_user: CurrentUser = Depends(get_current_user),
     service: TaskProgressService = Depends(get_task_progress_service),
 ) -> TaskBatchResponse:
-    payload = await service.get_batch_payload(batch_id)
+    payload = await service.get_batch_payload(
+        batch_id,
+        requested_by=uuid_user_id_or_none(current_user),
+    )
     if payload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task batch not found")
     return TaskBatchResponse.model_validate(payload)
@@ -97,8 +102,14 @@ async def list_task_batch_events(
     current_user: CurrentUser = Depends(get_current_user),
     service: TaskProgressService = Depends(get_task_progress_service),
 ) -> list[TaskEventResponse]:
-    payload = await service.get_batch_payload(batch_id)
+    requested_by = uuid_user_id_or_none(current_user)
+    payload = await service.get_batch_payload(batch_id, requested_by=requested_by)
     if payload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task batch not found")
-    events = await service.list_batch_events(batch_id, after_id=after_id, limit=limit)
+    events = await service.list_batch_events(
+        batch_id,
+        after_id=after_id,
+        limit=limit,
+        requested_by=requested_by,
+    )
     return [TaskEventResponse.model_validate(event, from_attributes=True) for event in events]

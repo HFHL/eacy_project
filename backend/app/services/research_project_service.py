@@ -117,14 +117,22 @@ class ResearchProjectService:
         project = await self.project_repository.get_by_id(project_id)
         if project is None:
             return None
-        if owner_id is not None and project.owner_id != owner_id:
+        if owner_id is not None and str(project.owner_id) != str(owner_id):
             return None
         return project
 
     async def get_project_stats(self, project: ResearchProject) -> dict[str, Any]:
-        """单个项目的统计信息（与列表口径一致）。"""
-        stats = await self.compute_project_stats([project])
-        return stats.get(project.id, self._empty_project_stats(project))
+        """单个项目详情的轻量统计。
+
+        项目详情页会并行加载受试者分页并在前端按当前页重算完整度；这里避免同步扫描
+        全项目 CRF 字段值，防止大项目详情接口被完整度聚合拖慢。
+        """
+        patient_counts = await self.project_patient_repository.count_active_by_projects([project.id])
+        pi_names = await self._resolve_principal_investigator_names([project])
+        stats = self._empty_project_stats(project)
+        stats["actual_patient_count"] = int(patient_counts.get(project.id, 0))
+        stats["principal_investigator_name"] = pi_names.get(project.id, "")
+        return stats
 
     async def compute_project_stats(self, projects: list[ResearchProject]) -> dict[str, dict[str, Any]]:
         """对传入的项目集合批量计算 actual_patient_count / avg_completeness / PI 名等。
@@ -301,25 +309,45 @@ class ResearchProjectService:
             raise ResearchProjectNotFoundError("Research project not found")
         return await self.binding_repository.list_by_project(project_id)
 
-    async def list_project_patients(self, project_id: str, *, owner_id: str | None = None) -> list[ProjectPatient]:
+    async def list_project_patients(
+        self,
+        project_id: str,
+        *,
+        owner_id: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[ProjectPatient]:
         project = await self.get_project(project_id, owner_id=owner_id)
         if project is None:
             raise ResearchProjectNotFoundError("Research project not found")
-        return await self.project_patient_repository.list_by_project(project_id)
+        return await self.project_patient_repository.list_by_project(project_id, limit=limit, offset=offset)
+
+    async def count_project_patients(self, project_id: str, *, owner_id: str | None = None) -> int:
+        project = await self.get_project(project_id, owner_id=owner_id)
+        if project is None:
+            raise ResearchProjectNotFoundError("Research project not found")
+        return await self.project_patient_repository.count_by_project(project_id)
 
     async def list_project_patients_with_summary(
         self,
         project_id: str,
         *,
         owner_id: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """入组患者列表 + 患者摘要 + CRF 完成度（单次批量查询，供数据集列表页使用）。"""
-        project_patients = await self.list_project_patients(project_id, owner_id=owner_id)
+        project_patients = await self.list_project_patients(
+            project_id,
+            owner_id=owner_id,
+            limit=limit,
+            offset=offset,
+        )
         if not project_patients:
             return []
 
         patient_ids = [pp.patient_id for pp in project_patients]
-        patients = await self.patient_repository.list_by_ids(patient_ids)
+        patients = await self.patient_repository.list_by_ids(patient_ids, owner_id=owner_id)
         patient_by_id = {patient.id: patient for patient in patients}
         doc_counts = await self.document_repository.count_by_patients(patient_ids, uploaded_by=owner_id)
 
@@ -510,6 +538,30 @@ class ResearchProjectService:
         project.status = "deleted"
         return await self.project_repository.save(project)
 
+    async def _disable_active_template_bindings(
+        self,
+        *,
+        project_id: str,
+        binding_type: str,
+        active_bindings: list[ProjectTemplateBinding] | None = None,
+    ) -> None:
+        bindings = active_bindings if active_bindings is not None else await self.binding_repository.list_by_project(project_id)
+        now = datetime.utcnow()
+        for binding in bindings:
+            if binding.status == "active" and binding.binding_type == binding_type:
+                binding.status = "disabled"
+                binding.updated_at = now
+                await self.binding_repository.save(binding)
+
+    def _project_snapshot_meta(self, schema_json: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(schema_json, dict):
+            return {}
+        layout_config = schema_json.get("layout_config")
+        if isinstance(layout_config, dict) and isinstance(layout_config.get("project_snapshot"), dict):
+            return layout_config["project_snapshot"]
+        snapshot = schema_json.get("project_snapshot")
+        return snapshot if isinstance(snapshot, dict) else {}
+
     @Transactional()
     async def bind_crf_template(
         self,
@@ -518,25 +570,90 @@ class ResearchProjectService:
         template_id: str,
         schema_version_id: str,
         binding_type: str = "primary_crf",
+        owner_id: str | None = None,
     ) -> ProjectTemplateBinding:
-        project = await self.get_project(project_id)
+        project = await self.get_project(project_id, owner_id=owner_id)
         if project is None or project.status == "archived":
             raise ResearchProjectNotFoundError("Research project not found")
+        template = await self.schema_service.get_template(template_id, created_by=owner_id)
+        if template is None:
+            raise ResearchProjectNotFoundError("Schema template not found")
         version = await self.schema_service.get_version(schema_version_id)
         if version is None or version.template_id != template_id:
             raise ResearchProjectNotFoundError("Schema template version not found")
-        return await self.binding_repository.create(
+
+        project_bindings = await self.binding_repository.list_by_project(project_id)
+        active_same_type = [
+            binding
+            for binding in project_bindings
+            if binding.status == "active" and binding.binding_type == binding_type
+        ]
+        if self.schema_service.is_project_snapshot_template(template):
+            existing_active = next(
+                (
+                    binding
+                    for binding in active_same_type
+                    if binding.template_id == template_id and binding.schema_version_id == schema_version_id
+                ),
+                None,
+            )
+            if existing_active is not None:
+                return existing_active
+
+        binding_template = template
+        binding_version = version
+        if self.schema_service.is_project_snapshot_template(template):
+            meta = self._project_snapshot_meta(version.schema_json)
+            meta_project_id = meta.get("project_id")
+            if meta_project_id and str(meta_project_id) != str(project_id):
+                raise ResearchProjectConflictError("Project CRF snapshot belongs to another project")
+        else:
+            binding_template, binding_version = await self.schema_service.create_project_snapshot_template(
+                project_id=project.id,
+                project_name=project.project_name,
+                source_template=template,
+                source_version=version,
+                created_by=owner_id or getattr(project, "owner_id", None),
+            )
+
+        await self._disable_active_template_bindings(
+            project_id=project_id,
+            binding_type=binding_type,
+            active_bindings=active_same_type,
+        )
+        now = datetime.utcnow()
+        binding = await self.binding_repository.create(
             {
                 "project_id": project_id,
-                "template_id": template_id,
-                "schema_version_id": schema_version_id,
+                "template_id": binding_template.id,
+                "schema_version_id": binding_version.id,
                 "binding_type": binding_type,
                 "status": "active",
+                "created_at": now,
+                "updated_at": now,
             }
         )
+        await self.schema_service._set_project_template_refs(
+            project_id,
+            template_id=binding_template.id,
+            schema_version_id=binding_version.id,
+            template_name=binding_template.template_name,
+            source_template_id=None if self.schema_service.is_project_snapshot_template(template) else template.id,
+            source_schema_version_id=None if self.schema_service.is_project_snapshot_template(template) else version.id,
+        )
+        return binding
 
     @Transactional()
-    async def disable_template_binding(self, *, project_id: str, binding_id: str) -> ProjectTemplateBinding:
+    async def disable_template_binding(
+        self,
+        *,
+        project_id: str,
+        binding_id: str,
+        owner_id: str | None = None,
+    ) -> ProjectTemplateBinding:
+        project = await self.get_project(project_id, owner_id=owner_id)
+        if project is None:
+            raise ResearchProjectNotFoundError("Research project not found")
         binding = await self.binding_repository.get_by_id(binding_id)
         if binding is None or binding.project_id != project_id:
             raise ResearchProjectNotFoundError("Project template binding not found")
@@ -552,12 +669,13 @@ class ResearchProjectService:
         enroll_no: str | None = None,
         extra_json: dict[str, Any] | None = None,
         created_by: str | None = None,
+        owner_id: str | None = None,
     ) -> ProjectPatient:
-        project = await self.get_project(project_id)
+        project = await self.get_project(project_id, owner_id=owner_id)
         if project is None or project.status == "archived":
             raise ResearchProjectNotFoundError("Research project not found")
 
-        patient = await self.patient_repository.get_active_by_id(patient_id)
+        patient = await self.patient_repository.get_active_by_id(patient_id, owner_id=owner_id)
         if patient is None:
             raise ResearchProjectNotFoundError("Patient not found")
 
@@ -596,10 +714,19 @@ class ResearchProjectService:
         return project_patient
 
     @Transactional()
-    async def withdraw_project_patient(self, *, project_id: str, project_patient_id: str) -> ProjectPatient:
-        project_patient = await self.project_patient_repository.get_by_id(project_patient_id)
-        if project_patient is None or project_patient.project_id != project_id:
-            raise ResearchProjectNotFoundError("Project patient not found")
+    async def withdraw_project_patient(
+        self,
+        *,
+        project_id: str,
+        project_patient_id: str,
+        owner_id: str | None = None,
+    ) -> ProjectPatient:
+        project_patient = await self._get_project_patient_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+            include_withdrawn=True,
+        )
         now = datetime.utcnow()
         project_patient.status = "withdrawn"
         project_patient.withdrawn_at = now
@@ -639,8 +766,13 @@ class ResearchProjectService:
         project_id: str,
         project_patient_id: str,
         created_by: str | None = None,
+        owner_id: str | None = None,
     ) -> dict[str, Any]:
-        project_patient = await self._get_project_patient_or_404(project_id, project_patient_id)
+        project_patient = await self._get_project_patient_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
         binding = await self.binding_repository.get_active_primary_crf(project_id)
         if binding is None:
             return {"context": None, "schema": None, "records": [], "current_values": {}}
@@ -660,6 +792,7 @@ class ResearchProjectService:
             "current_values": self._current_values_by_display_path(
                 current_values,
                 schema_version.schema_json if schema_version is not None else None,
+                records,
             ),
         }
 
@@ -669,12 +802,31 @@ class ResearchProjectService:
         project_id: str,
         project_patient_id: str,
         field_path: str,
+        record_instance_id: str | None = None,
+        owner_id: str | None = None,
     ) -> list[FieldValueEvent]:
-        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
+        context = await self._get_project_crf_context_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
         for query_path in self._field_path_aliases(field_path):
-            events = await self.event_repository.list_by_field(context_id=context.id, field_path=query_path)
+            events = await self.event_repository.list_by_field(
+                context_id=context.id,
+                field_path=query_path,
+                record_instance_id=query_record_id,
+            )
             if events:
-                evidences = await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+                evidences = await self.evidence_repository.list_by_field(
+                    context_id=context.id,
+                    field_path=query_path,
+                    record_instance_id=query_record_id,
+                )
                 evidences_by_event_id: dict[str, list[FieldValueEvidence]] = {}
                 for evidence in evidences:
                     evidences_by_event_id.setdefault(evidence.value_event_id, []).append(evidence)
@@ -701,13 +853,43 @@ class ResearchProjectService:
         project_id: str,
         project_patient_id: str,
         field_path: str,
+        record_instance_id: str | None = None,
+        owner_id: str | None = None,
     ) -> dict[str, Any]:
-        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
-        query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
-        events = await self.event_repository.list_candidates_by_context_field(context_id=context.id, field_path=query_path)
+        context = await self._get_project_crf_context_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
+        query_path = await self._resolve_existing_field_path(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=query_record_id,
+        )
+        events = await self.event_repository.list_candidates_by_context_field(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
         current_values = await self.current_repository.list_by_context(context.id)
-        current = next((value for value in current_values if value.field_path == query_path), None)
-        evidences = await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+        current = next(
+            (
+                value for value in current_values
+                if value.field_path == query_path
+                and (query_record_id is None or value.record_instance_id == query_record_id)
+            ),
+            None,
+        )
+        evidences = await self.evidence_repository.list_by_field(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
         evidences_by_event_id: dict[str, list[FieldValueEvidence]] = {}
         for evidence in evidences:
             evidences_by_event_id.setdefault(evidence.value_event_id, []).append(evidence)
@@ -757,31 +939,97 @@ class ResearchProjectService:
         project_id: str,
         project_patient_id: str,
         field_path: str,
+        record_instance_id: str | None = None,
+        owner_id: str | None = None,
     ) -> list[FieldValueEvidence]:
-        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
-        query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
+        context = await self._get_project_crf_context_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
+        query_path = await self._resolve_existing_field_path(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=query_record_id,
+        )
         current_values = await self.current_repository.list_by_context(context.id)
-        current = next((value for value in current_values if value.field_path == query_path), None)
+        current = next(
+            (
+                value for value in current_values
+                if value.field_path == query_path
+                and (query_record_id is None or value.record_instance_id == query_record_id)
+            ),
+            None,
+        )
         if current is not None and current.selected_event_id:
             return await self.evidence_repository.list_by_event(current.selected_event_id)
-        return await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+        return await self.evidence_repository.list_by_field(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
 
     def _canonical_field_path(self, field_path: str) -> str:
         parts = [part for part in str(field_path or "").split(".") if part and not part.isdigit()]
         return ".".join(parts)
+
+    def _storage_field_path(self, field_path: str) -> str:
+        raw_path = ".".join(part for part in str(field_path or "").replace("/", ".").split(".") if part)
+        return self._canonical_field_path(raw_path)
+
+    def _field_key_from_path(self, field_path: str) -> str:
+        parts = [part for part in str(field_path or "").split(".") if part and not part.isdigit()]
+        return parts[-1] if parts else str(field_path or "")
 
     def _field_path_aliases(self, field_path: str) -> list[str]:
         raw_path = str(field_path or "").strip()
         canonical_path = self._canonical_field_path(raw_path)
         return list(dict.fromkeys(path for path in [raw_path, canonical_path] if path))
 
-    async def _resolve_existing_field_path(self, *, context_id: str, field_path: str) -> str:
+    async def _resolve_existing_field_path(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+    ) -> str:
         current_values = await self.current_repository.list_by_context(context_id)
-        existing_paths = {value.field_path for value in current_values}
+        existing_paths = {
+            value.field_path
+            for value in current_values
+            if record_instance_id is None or value.record_instance_id == record_instance_id
+        }
         for query_path in self._field_path_aliases(field_path):
             if query_path in existing_paths:
                 return query_path
         return self._canonical_field_path(field_path)
+
+    async def _resolve_query_record_id(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None,
+    ) -> str | None:
+        if record_instance_id is not None:
+            return (await self._resolve_record(context_id, record_instance_id)).id
+        if not self._path_has_index(field_path):
+            return None
+        form_key = self._record_form_key_from_path(field_path)
+        if not form_key:
+            return None
+        repeat_index = self._repeat_index_from_path(field_path, form_key)
+        record = await self.record_repository.get_by_form(
+            context_id=context_id,
+            form_key=form_key,
+            repeat_index=repeat_index,
+        )
+        return record.id if record is not None else None
 
     def _source_location_from_evidence(self, evidence: FieldValueEvidence) -> dict[str, Any] | list[Any] | None:
         location = evidence.bbox_json
@@ -863,17 +1111,50 @@ class ResearchProjectService:
         self,
         current_values: list[FieldCurrentValue],
         schema_json: dict[str, Any] | None,
+        records: list[RecordInstance] | None = None,
     ) -> dict[str, FieldCurrentValue]:
         output: dict[str, FieldCurrentValue] = {}
         original_paths: dict[str, str] = {}
+        records_by_id = {record.id: record for record in records or []}
         for value in current_values:
-            display_path = self._schema_display_path(value.field_path, schema_json)
+            display_path = self._display_path_for_current_value(value, schema_json, records_by_id)
             existing_path = original_paths.get(display_path)
             if existing_path is not None and self._path_has_index(existing_path) and not self._path_has_index(value.field_path):
                 continue
             output[display_path] = value
             original_paths[display_path] = value.field_path
         return output
+
+    def _display_path_for_current_value(
+        self,
+        value: FieldCurrentValue,
+        schema_json: dict[str, Any] | None,
+        records_by_id: dict[str, RecordInstance],
+    ) -> str:
+        display_path = self._schema_display_path(value.field_path, schema_json)
+        record = records_by_id.get(value.record_instance_id)
+        if record is None:
+            return display_path
+        repeat_index = int(record.repeat_index or 0)
+        if repeat_index <= 0:
+            return display_path
+        return self._replace_display_repeat_index(
+            display_path=display_path,
+            form_key=record.form_key,
+            repeat_index=repeat_index,
+        )
+
+    def _replace_display_repeat_index(self, *, display_path: str, form_key: str, repeat_index: int) -> str:
+        parts = [part for part in str(display_path or "").split(".") if part]
+        form_parts = [part for part in str(form_key or "").split(".") if part]
+        if not form_parts or parts[: len(form_parts)] != form_parts:
+            return display_path
+        index_position = len(form_parts)
+        if index_position < len(parts) and parts[index_position].isdigit():
+            parts[index_position] = str(repeat_index)
+        else:
+            parts.insert(index_position, str(repeat_index))
+        return ".".join(parts)
 
     def _schema_display_path(self, field_path: str, schema_json: dict[str, Any] | None) -> str:
         if not isinstance(schema_json, dict):
@@ -928,14 +1209,25 @@ class ResearchProjectService:
         edited_by: str | None = None,
         note: str | None = None,
         values: dict[str, Any],
+        owner_id: str | None = None,
     ) -> FieldCurrentValue:
-        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
-        record = await self._resolve_record(context.id, record_instance_id)
+        context = await self._get_project_crf_context_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
+        raw_field_path = ".".join(part for part in str(field_path or "").replace("/", ".").split(".") if part)
+        record = await self._resolve_record_for_field_path(
+            context_id=context.id,
+            record_instance_id=record_instance_id,
+            field_path=raw_field_path,
+        )
+        normalized_field_path = self._storage_field_path(raw_field_path)
         return await self.value_service.manual_edit(
             context_id=context.id,
             record_instance_id=record.id,
-            field_key=field_key or field_path.split(".")[-1],
-            field_path=field_path,
+            field_key=field_key or self._field_key_from_path(normalized_field_path),
+            field_path=normalized_field_path,
             value_type=value_type,
             edited_by=edited_by,
             note=note,
@@ -950,22 +1242,71 @@ class ResearchProjectService:
         project_patient_id: str,
         field_path: str,
         event_id: str,
+        record_instance_id: str | None = None,
         selected_by: str | None = None,
+        owner_id: str | None = None,
     ) -> FieldCurrentValue:
-        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
+        context = await self._get_project_crf_context_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
         event = await self.event_repository.get_by_id(event_id)
         allowed_paths = set(self._field_path_aliases(field_path))
-        if event is None or event.context_id != context.id or event.field_path not in allowed_paths:
+        if (
+            event is None
+            or event.context_id != context.id
+            or event.field_path not in allowed_paths
+            or (query_record_id is not None and event.record_instance_id != query_record_id)
+        ):
             raise ResearchProjectNotFoundError("CRF field event not found")
         return await self.value_service.select_current_value(event=event, selected_by=selected_by)
 
     @Transactional()
-    async def delete_crf_field_value(self, *, project_id: str, project_patient_id: str, field_path: str) -> None:
-        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
-        query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
-        await self.evidence_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
-        await self.current_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
-        await self.event_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
+    async def delete_crf_field_value(
+        self,
+        *,
+        project_id: str,
+        project_patient_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> None:
+        context = await self._get_project_crf_context_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
+        query_path = await self._resolve_existing_field_path(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=query_record_id,
+        )
+        await self.evidence_repository.delete_by_context_field(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
+        await self.current_repository.delete_by_context_field(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
+        await self.event_repository.delete_by_context_field(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
 
     @Transactional()
     async def create_crf_record_instance(
@@ -978,8 +1319,13 @@ class ResearchProjectService:
         group_key: str | None = None,
         group_title: str | None = None,
         instance_label: str | None = None,
+        owner_id: str | None = None,
     ) -> RecordInstance:
-        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
+        context = await self._get_project_crf_context_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
         repeat_index = await self.record_repository.next_repeat_index(context_id=context.id, form_key=form_key)
         return await self.record_repository.create(
             {
@@ -995,8 +1341,19 @@ class ResearchProjectService:
         )
 
     @Transactional()
-    async def delete_crf_record_instance(self, *, project_id: str, project_patient_id: str, record_instance_id: str) -> None:
-        context = await self._get_project_crf_context_or_404(project_id, project_patient_id)
+    async def delete_crf_record_instance(
+        self,
+        *,
+        project_id: str,
+        project_patient_id: str,
+        record_instance_id: str,
+        owner_id: str | None = None,
+    ) -> None:
+        context = await self._get_project_crf_context_or_404(
+            project_id,
+            project_patient_id,
+            owner_id=owner_id,
+        )
         record = await self.record_repository.get_by_id(record_instance_id)
         if record is None or record.context_id != context.id:
             raise ResearchProjectNotFoundError("CRF record instance not found")
@@ -1029,14 +1386,38 @@ class ResearchProjectService:
             return current.value_datetime.isoformat()
         return current.value_text
 
-    async def _get_project_patient_or_404(self, project_id: str, project_patient_id: str) -> ProjectPatient:
+    async def _get_project_patient_or_404(
+        self,
+        project_id: str,
+        project_patient_id: str,
+        *,
+        owner_id: str | None = None,
+        include_withdrawn: bool = False,
+    ) -> ProjectPatient:
+        project = await self.get_project(project_id, owner_id=owner_id)
+        if project is None:
+            raise ResearchProjectNotFoundError("Research project not found")
         project_patient = await self.project_patient_repository.get_by_id(project_patient_id)
-        if project_patient is None or project_patient.project_id != project_id or project_patient.status == "withdrawn":
+        if (
+            project_patient is None
+            or project_patient.project_id != project_id
+            or (project_patient.status == "withdrawn" and not include_withdrawn)
+        ):
             raise ResearchProjectNotFoundError("Project patient not found")
         return project_patient
 
-    async def _get_project_crf_context_or_404(self, project_id: str, project_patient_id: str) -> DataContext:
-        crf = await self.get_project_crf(project_id=project_id, project_patient_id=project_patient_id)
+    async def _get_project_crf_context_or_404(
+        self,
+        project_id: str,
+        project_patient_id: str,
+        *,
+        owner_id: str | None = None,
+    ) -> DataContext:
+        crf = await self.get_project_crf(
+            project_id=project_id,
+            project_patient_id=project_patient_id,
+            owner_id=owner_id,
+        )
         context = crf["context"]
         if context is None:
             raise ResearchProjectNotFoundError("Project CRF context not found")
@@ -1053,6 +1434,82 @@ class ResearchProjectService:
         if not records:
             raise ResearchProjectNotFoundError("Record instance not found")
         return records[0]
+
+    async def _resolve_record_for_field_path(
+        self,
+        *,
+        context_id: str,
+        record_instance_id: str | None,
+        field_path: str,
+    ) -> RecordInstance:
+        if record_instance_id is not None:
+            return await self._resolve_record(context_id, record_instance_id)
+
+        form_key = self._record_form_key_from_path(field_path)
+        if form_key:
+            repeat_index = self._repeat_index_from_path(field_path, form_key)
+            record = await self.record_repository.get_by_form(
+                context_id=context_id,
+                form_key=form_key,
+                repeat_index=repeat_index,
+            )
+            if record is not None:
+                return record
+            base_record = await self.record_repository.get_by_form(
+                context_id=context_id,
+                form_key=form_key,
+                repeat_index=0,
+            )
+            return await self._create_record_for_repeat_index(
+                context_id=context_id,
+                form_key=form_key,
+                repeat_index=repeat_index,
+                base_record=base_record,
+            )
+
+        return await self._resolve_record(context_id, None)
+
+    def _record_form_key_from_path(self, field_path: str) -> str | None:
+        parts = [part for part in str(field_path or "").split(".") if part]
+        if len(parts) >= 2:
+            return f"{parts[0]}.{parts[1]}"
+        return parts[0] if parts else None
+
+    def _repeat_index_from_path(self, field_path: str, form_key: str) -> int:
+        parts = [part for part in str(field_path or "").split(".") if part]
+        form_parts = [part for part in str(form_key or "").split(".") if part]
+        if form_parts and parts[: len(form_parts)] == form_parts:
+            candidates = parts[len(form_parts):]
+        else:
+            candidates = parts[2:]
+        for part in candidates:
+            if part.isdigit():
+                return int(part)
+        return 0
+
+    async def _create_record_for_repeat_index(
+        self,
+        *,
+        context_id: str,
+        form_key: str,
+        repeat_index: int,
+        base_record: RecordInstance | None = None,
+    ) -> RecordInstance:
+        form_title = getattr(base_record, "form_title", None) or form_key.split(".")[-1]
+        group_key = getattr(base_record, "group_key", None) or (form_key.split(".")[0] if "." in form_key else None)
+        group_title = getattr(base_record, "group_title", None) or group_key
+        return await self.record_repository.create(
+            {
+                "context_id": context_id,
+                "group_key": group_key,
+                "group_title": group_title,
+                "form_key": form_key,
+                "form_title": form_title,
+                "repeat_index": repeat_index,
+                "instance_label": form_title if repeat_index == 0 else f"{form_title} #{repeat_index + 1}",
+                "review_status": "unreviewed",
+            }
+        )
 
     async def initialize_default_record_instances(
         self,

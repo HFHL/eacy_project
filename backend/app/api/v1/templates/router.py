@@ -88,6 +88,10 @@ def get_schema_service() -> SchemaService:
     return SchemaService()
 
 
+def template_scope_id(current_user: CurrentUser) -> str | None:
+    return None if is_admin_user(current_user) else uuid_user_id_or_none(current_user)
+
+
 def _raise_schema_error(error: SchemaNotFoundError | SchemaConflictError) -> None:
     if isinstance(error, SchemaNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
@@ -104,7 +108,7 @@ async def list_schema_templates(
     current_user: CurrentUser = Depends(get_current_user),
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateListResponse:
-    created_by = None if is_admin_user(current_user) else uuid_user_id_or_none(current_user)
+    created_by = template_scope_id(current_user)
     templates, total = await service.list_templates(
         page=page,
         page_size=page_size,
@@ -141,7 +145,10 @@ async def get_schema_template_project_usage(
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateProjectUsageResponse:
     try:
-        items = await service.list_active_project_usages(template_id)
+        items = await service.list_active_project_usages(
+            template_id,
+            accessible_by=template_scope_id(current_user),
+        )
     except SchemaNotFoundError as error:
         _raise_schema_error(error)
     return SchemaTemplateProjectUsageResponse(
@@ -156,7 +163,7 @@ async def get_schema_template(
     current_user: CurrentUser = Depends(get_current_user),
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateDetailResponse:
-    created_by = None if is_admin_user(current_user) else uuid_user_id_or_none(current_user)
+    created_by = template_scope_id(current_user)
     template = await service.get_template(template_id, created_by=created_by)
     if template is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schema template not found")
@@ -178,6 +185,7 @@ async def update_schema_template(
     try:
         template = await service.update_template(
             template_id=template_id,
+            editable_by=template_scope_id(current_user),
             **payload.model_dump(exclude_none=True),
         )
     except (SchemaNotFoundError, SchemaConflictError) as error:
@@ -191,7 +199,10 @@ async def archive_schema_template(
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateResponse:
     try:
-        template = await service.archive_template(template_id)
+        template = await service.archive_template(
+            template_id,
+            editable_by=template_scope_id(current_user),
+        )
     except (SchemaNotFoundError, SchemaConflictError) as error:
         _raise_schema_error(error)
     return SchemaTemplateResponse.model_validate(template)
@@ -212,6 +223,7 @@ async def create_schema_template_version(
         version = await service.create_version(
             template_id=template_id,
             created_by=uuid_user_id_or_none(current_user),
+            editable_by=template_scope_id(current_user),
             **payload.model_dump(by_alias=True, exclude_none=True),
         )
     except (SchemaNotFoundError, SchemaConflictError) as error:
@@ -226,7 +238,10 @@ async def publish_schema_template_version(
     service: SchemaService = Depends(get_schema_service),
 ) -> SchemaTemplateVersionResponse:
     try:
-        version = await service.publish_version(version_id)
+        version = await service.publish_version(
+            version_id,
+            editable_by=template_scope_id(current_user),
+        )
     except (SchemaNotFoundError, SchemaConflictError) as error:
         _raise_schema_error(error)
     return SchemaTemplateVersionResponse.model_validate(version)
@@ -239,7 +254,10 @@ async def delete_schema_template_version(
     service: SchemaService = Depends(get_schema_service),
 ) -> Response:
     try:
-        await service.delete_version(version_id)
+        await service.delete_version(
+            version_id,
+            editable_by=template_scope_id(current_user),
+        )
     except (SchemaNotFoundError, SchemaConflictError) as error:
         _raise_schema_error(error)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

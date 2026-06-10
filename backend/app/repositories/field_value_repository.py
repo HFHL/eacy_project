@@ -30,13 +30,16 @@ class FieldValueEventRepository(BaseRepo[FieldValueEvent]):
         *,
         context_id: str,
         field_path: str,
+        record_instance_id: str | None = None,
     ) -> list[FieldValueEvent]:
         query = (
             select(FieldValueEvent)
             .where(FieldValueEvent.context_id == context_id)
             .where(FieldValueEvent.field_path == field_path)
-            .order_by(FieldValueEvent.created_at.desc())
         )
+        if record_instance_id is not None:
+            query = query.where(FieldValueEvent.record_instance_id == record_instance_id)
+        query = query.order_by(FieldValueEvent.created_at.desc())
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -45,8 +48,16 @@ class FieldValueEventRepository(BaseRepo[FieldValueEvent]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def delete_by_context_field(self, *, context_id: str, field_path: str) -> None:
+    async def delete_by_context_field(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+    ) -> None:
         query = delete(FieldValueEvent).where(FieldValueEvent.context_id == context_id).where(FieldValueEvent.field_path == field_path)
+        if record_instance_id is not None:
+            query = query.where(FieldValueEvent.record_instance_id == record_instance_id)
         await session.execute(query)
 
     async def delete_by_record(self, record_instance_id: str) -> None:
@@ -58,14 +69,17 @@ class FieldValueEventRepository(BaseRepo[FieldValueEvent]):
         *,
         context_id: str,
         field_path: str,
+        record_instance_id: str | None = None,
     ) -> list[FieldValueEvent]:
         query = (
             select(FieldValueEvent)
             .where(FieldValueEvent.context_id == context_id)
             .where(FieldValueEvent.field_path == field_path)
             .where(FieldValueEvent.review_status.in_(["candidate", "accepted"]))
-            .order_by(FieldValueEvent.created_at.desc())
         )
+        if record_instance_id is not None:
+            query = query.where(FieldValueEvent.record_instance_id == record_instance_id)
+        query = query.order_by(FieldValueEvent.created_at.desc())
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -133,8 +147,16 @@ class FieldCurrentValueRepository(BaseRepo[FieldCurrentValue]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def delete_by_context_field(self, *, context_id: str, field_path: str) -> None:
+    async def delete_by_context_field(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+    ) -> None:
         query = delete(FieldCurrentValue).where(FieldCurrentValue.context_id == context_id).where(FieldCurrentValue.field_path == field_path)
+        if record_instance_id is not None:
+            query = query.where(FieldCurrentValue.record_instance_id == record_instance_id)
         await session.execute(query)
 
     async def delete_by_record(self, record_instance_id: str) -> None:
@@ -156,14 +178,17 @@ class FieldValueEvidenceRepository(BaseRepo[FieldValueEvidence]):
         *,
         context_id: str,
         field_path: str,
+        record_instance_id: str | None = None,
     ) -> list[FieldValueEvidence]:
         query = (
             select(FieldValueEvidence)
             .join(FieldValueEvent, FieldValueEvent.id == FieldValueEvidence.value_event_id)
             .where(FieldValueEvent.context_id == context_id)
             .where(FieldValueEvent.field_path == field_path)
-            .order_by(FieldValueEvidence.created_at.desc())
         )
+        if record_instance_id is not None:
+            query = query.where(FieldValueEvent.record_instance_id == record_instance_id)
+        query = query.order_by(FieldValueEvidence.created_at.desc())
         result = await session.execute(query)
         return list(result.scalars().all())
 
@@ -173,8 +198,16 @@ class FieldValueEvidenceRepository(BaseRepo[FieldValueEvidence]):
         query = delete(FieldValueEvidence).where(FieldValueEvidence.value_event_id.in_(event_ids))
         await session.execute(query)
 
-    async def delete_by_context_field(self, *, context_id: str, field_path: str) -> None:
+    async def delete_by_context_field(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+    ) -> None:
         event_ids_query = select(FieldValueEvent.id).where(FieldValueEvent.context_id == context_id).where(FieldValueEvent.field_path == field_path)
+        if record_instance_id is not None:
+            event_ids_query = event_ids_query.where(FieldValueEvent.record_instance_id == record_instance_id)
         query = delete(FieldValueEvidence).where(FieldValueEvidence.value_event_id.in_(event_ids_query))
         await session.execute(query)
 

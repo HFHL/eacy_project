@@ -412,8 +412,13 @@ class LlmEhrExtractor:
             "field_title": field.field_title,
             "value_type": field.value_type,
             "record_form_key": field.record_form_key,
+            "record_form_title": field.record_form_title,
             "options": field.options,
             "prompt": field.extraction_prompt,
+            "display_type": getattr(field, "display_type", None),
+            "schema_type": getattr(field, "schema_type", None),
+            "schema_format": getattr(field, "schema_format", None),
+            "merge_binding": getattr(field, "merge_binding", None),
         }
 
     def _normalize_field_item(
@@ -594,6 +599,8 @@ class LlmEhrExtractor:
             "field_path": field_path,
             "field_title": spec.get("field_title"),
             "record_form_key": spec.get("record_form_key"),
+            "record_form_title": spec.get("record_form_title"),
+            "merge_binding": spec.get("merge_binding"),
             "value_type": normalized_value_type,
             slot: value,
             "confidence": self._coerce_confidence(confidence),
@@ -628,6 +635,8 @@ class LlmEhrExtractor:
     def _normalize_enum_value(self, value: Any, options: Any) -> Any:
         if self._is_empty(value) or not isinstance(options, list) or not options:
             return value
+        if isinstance(value, list):
+            return [self._normalize_enum_value(item, options) for item in value if not self._is_empty(item)]
         text = str(value).strip()
         option_texts = [str(option).strip() for option in options]
         if text in option_texts:
@@ -761,8 +770,14 @@ class LlmEhrExtractor:
         errors: list[str] = []
         normalized_value = self._normalize_enum_value(value, spec.get("options"))
         options = spec.get("options")
-        if isinstance(options, list) and options and str(normalized_value) not in {str(option) for option in options}:
-            errors.append(f"{label} enum value must be one of {options}: {value}")
+        if isinstance(options, list) and options:
+            allowed = {str(option) for option in options}
+            if isinstance(normalized_value, list):
+                invalid_values = [item for item in normalized_value if str(item) not in allowed]
+                if invalid_values:
+                    errors.append(f"{label} enum values must be from {options}: {invalid_values}")
+            elif str(normalized_value) not in allowed:
+                errors.append(f"{label} enum value must be one of {options}: {value}")
         if value_type == "date" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value).strip()):
             errors.append(f"{label} date must be YYYY-MM-DD: {value}")
         if value_type == "datetime":

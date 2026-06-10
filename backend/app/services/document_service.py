@@ -18,6 +18,7 @@ from app.services.document_preview_utils import (
     first_persisted_ocr_page_path,
     get_ocr_page_count,
 )
+from app.services.extraction_strategy import extraction_queue_for_job, with_default_extraction_strategy
 from app.services.ocr_page_asset_service import OcrPageAssetService
 from app.services.ocr_payload_normalizer import normalize_textin_ocr_payload
 from app.services.archive_grouping_service import ArchiveGroupingService, extract_id_card_from_result, get_metadata_result, is_pending_process_document, parse_document_identity
@@ -139,7 +140,10 @@ class DocumentService:
             raise
 
         if should_enqueue_ocr:
-            self._enqueue_ocr_task(document.id)
+            try:
+                self._enqueue_ocr_task(document.id)
+            except Exception as exc:
+                document = await self._mark_ocr_enqueue_failed(document.id, exc, uploaded_by=uploaded_by)
         return document
 
     async def get_document(self, document_id: str, *, uploaded_by: str | None = None) -> Document | None:
@@ -363,8 +367,49 @@ class DocumentService:
             await session.rollback()
             raise
 
-        self._enqueue_ocr_task(document.id)
+        try:
+            self._enqueue_ocr_task(document.id)
+        except Exception as exc:
+            document = await self._mark_ocr_enqueue_failed(document.id, exc, uploaded_by=requested_by)
         return document
+
+    async def _mark_ocr_enqueue_failed(self, document_id: str, exc: Exception, *, uploaded_by: str | None = None) -> Document:
+        document = await self.get_document(document_id, uploaded_by=uploaded_by)
+        if document is None:
+            raise exc
+        payload = {
+            "provider": "textin",
+            "request": {"document_id": document_id},
+            "errors": [{"message": str(exc), "type": "EnqueueFailed"}],
+        }
+        return await self.update_document(
+            document_id,
+            uploaded_by=uploaded_by,
+            ocr_status="failed",
+            status="archived" if getattr(document, "patient_id", None) else "failed",
+            ocr_payload_json=payload,
+        )
+
+    async def _record_ocr_postprocess_warning(self, document_id: str, stage: str, exc: Exception) -> Document | None:
+        document = await self.get_document(document_id)
+        if document is None:
+            return None
+        payload = dict(document.ocr_payload_json or {}) if isinstance(document.ocr_payload_json, dict) else {}
+        warnings = list(payload.get("postprocess_warnings") or [])
+        warnings.append(
+            {
+                "stage": stage,
+                "type": exc.__class__.__name__,
+                "message": str(exc),
+                "created_at": datetime.utcnow().isoformat(),
+            }
+        )
+        payload["postprocess_warnings"] = warnings[-10:]
+        return await self.update_document(
+            document_id,
+            uploaded_by=getattr(document, "uploaded_by", None),
+            ocr_payload_json=payload,
+        )
 
     async def process_document_ocr(self, document_id: str) -> Document:
         existing_document = await self.get_document(document_id)
@@ -418,17 +463,24 @@ class DocumentService:
             await self.invalidate_archive_tree_cache(getattr(completed_document, "uploaded_by", None))
             try:
                 self._enqueue_metadata_task(completed_document.id)
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    await self._record_ocr_postprocess_warning(completed_document.id, "metadata_enqueue", exc)
+                except Exception:
+                    pass
             try:
                 enqueued_count = await self.enqueue_ready_extraction_jobs(completed_document.id)
                 if enqueued_count == 0 and getattr(completed_document, "patient_id", None):
                     await self.create_and_enqueue_patient_ehr_extraction(
                         document=completed_document,
                         source="document_upload_patient_bound",
+                        requested_by=getattr(completed_document, "uploaded_by", None),
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    await self._record_ocr_postprocess_warning(completed_document.id, "extraction_enqueue", exc)
+                except Exception:
+                    pass
             return completed_document
         except Exception as exc:
             failed_payload = {
@@ -461,15 +513,49 @@ class DocumentService:
             routing_key=METADATA_QUEUE,
         )
 
-    def _enqueue_extraction_task(self, job_id: str) -> None:
+    async def _enqueue_extraction_task(self, job_id: str) -> None:
         from app.workers.celery_app import EXTRACTION_QUEUE, EXTRACTION_TASK_NAME, celery_app
 
-        celery_app.send_task(
-            EXTRACTION_TASK_NAME,
-            args=[job_id],
-            queue=EXTRACTION_QUEUE,
-            routing_key=EXTRACTION_QUEUE,
-        )
+        job = await self.extraction_job_repository.get_by_id(job_id)
+        queue = extraction_queue_for_job(job) if job is not None else EXTRACTION_QUEUE
+        if config.EXTRACTION_SCHEDULER_ENABLED:
+            if job is not None:
+                job.status = "pending"
+                await self.extraction_job_repository.save(job)
+                from app.services.task_progress_service import TaskProgressService
+
+                await TaskProgressService().mark_job_waiting_for_scheduler(
+                    job,
+                    message="任务正在等待公平调度",
+                    commit=True,
+                )
+            return
+
+        try:
+            celery_app.send_task(
+                EXTRACTION_TASK_NAME,
+                args=[job_id],
+                queue=queue,
+                routing_key=queue,
+            )
+        except Exception as exc:
+            if job is not None:
+                job.status = "failed"
+                job.error_type = "enqueue_failed"
+                job.error_message = f"Extraction task could not be queued: {exc}"
+                job.finished_at = datetime.utcnow()
+                await self.extraction_job_repository.save(job)
+                from app.services.task_progress_service import TaskProgressService
+
+                await TaskProgressService().mark_job_failed(job, error_message=job.error_message)
+                await session.commit()
+            raise
+        job = await self.extraction_job_repository.get_by_id(job_id)
+        if job is not None:
+            job.status = "queued"
+            job.progress = max(int(job.progress or 0), 5)
+            await self.extraction_job_repository.save(job)
+            await session.commit()
 
     async def enqueue_ready_extraction_jobs(self, document_id: str) -> int:
         jobs = await self.extraction_job_repository.list_pending_waiting_for_document(document_id)
@@ -484,7 +570,7 @@ class DocumentService:
         await session.commit()
 
         for job in jobs:
-            self._enqueue_extraction_task(job.id)
+            await self._enqueue_extraction_task(job.id)
         return len(jobs)
 
     async def create_and_enqueue_patient_ehr_extraction(
@@ -515,13 +601,16 @@ class DocumentService:
                 "document_id": document.id,
                 "context_id": context.id,
                 "schema_version_id": schema_version.id,
-                "input_json": {"source": source},
+                "input_json": with_default_extraction_strategy(
+                    job_type="patient_ehr",
+                    input_json={"source": source},
+                ),
                 "progress": 0,
                 "requested_by": requested_by,
             }
         )
         await session.commit()
-        self._enqueue_extraction_task(job.id)
+        await self._enqueue_extraction_task(job.id)
         return job.id
 
 
@@ -818,7 +907,7 @@ class DocumentService:
         if document is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-        patient = await self.patient_repository.get_active_by_id(patient_id)
+        patient = await self.patient_repository.get_active_by_id(patient_id, owner_id=requested_by)
         if patient is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
@@ -846,13 +935,16 @@ class DocumentService:
                         "document_id": document.id,
                         "context_id": context.id,
                         "schema_version_id": schema_version.id,
-                        "input_json": {"source": "document_archive"},
+                        "input_json": with_default_extraction_strategy(
+                            job_type="patient_ehr",
+                            input_json={"source": "document_archive"},
+                        ),
                         "progress": 0,
                         "requested_by": requested_by,
                     }
                 )
                 await session.commit()
-                self._enqueue_extraction_task(job.id)
+                await self._enqueue_extraction_task(job.id)
 
         return document
 
@@ -868,7 +960,7 @@ class DocumentService:
         if len(set(document_ids)) != len(document_ids):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate document ids are not allowed")
 
-        patient = await self.patient_repository.get_active_by_id(patient_id)
+        patient = await self.patient_repository.get_active_by_id(patient_id, owner_id=requested_by)
         if patient is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
@@ -909,7 +1001,10 @@ class DocumentService:
                         "document_id": document.id,
                         "context_id": context.id,
                         "schema_version_id": schema_version.id,
-                        "input_json": {"source": "document_batch_archive"},
+                        "input_json": with_default_extraction_strategy(
+                            job_type="patient_ehr",
+                            input_json={"source": "document_batch_archive"},
+                        ),
                         "progress": 0,
                         "requested_by": requested_by,
                     }
@@ -919,7 +1014,7 @@ class DocumentService:
         if extraction_job_ids:
             await session.commit()
             for job_id in extraction_job_ids:
-                self._enqueue_extraction_task(job_id)
+                await self._enqueue_extraction_task(job_id)
 
         await self.invalidate_archive_tree_cache(requested_by)
 

@@ -1699,7 +1699,7 @@ const MainLayout = () => {
           try {
             await deleteCrfTemplate(deleteId, { _silent: true })
             if (affectedProjectCount > 0) {
-              message.success(`模板已删除，已解除 ${affectedProjectCount} 个项目的模板关联`)
+              message.success(`模板已删除，已保留 ${affectedProjectCount} 个项目的 CRF 副本`)
             } else {
               message.success('模板已删除')
             }

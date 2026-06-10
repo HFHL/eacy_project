@@ -2,7 +2,6 @@ import asyncio
 import uuid
 
 from app.services.extraction_service import (
-    TRANSIENT_EXTRACTION_ERRORS,
     ExtractionConflictError,
     ExtractionNotFoundError,
     ExtractionService,
@@ -14,11 +13,10 @@ from core.db.session import reset_session_context, session, set_session_context
 
 @celery_app.task(
     name=EXTRACTION_TASK_NAME,
-    autoretry_for=TRANSIENT_EXTRACTION_ERRORS,
-    retry_backoff=True,
-    retry_kwargs={"max_retries": 3},
+    bind=True,
+    max_retries=3,
 )
-def process_extraction_job(job_id: str) -> dict[str, str | int | None]:
+def process_extraction_job(self, job_id: str) -> dict[str, str | int | None]:
     async def _run() -> dict[str, str | int | None]:
         token = set_session_context(str(uuid.uuid4()))
         try:
@@ -54,4 +52,31 @@ def process_extraction_job(job_id: str) -> dict[str, str | int | None]:
             await reset_worker_db_connections()
             reset_session_context(token)
 
-    return asyncio.run(_run())
+    async def _handle_transient_failure(error: Exception) -> dict[str, str | int | None]:
+        token = set_session_context(str(uuid.uuid4()))
+        try:
+            await reset_worker_db_connections()
+            job = await ExtractionService().handle_worker_transient_failure(
+                job_id,
+                error=error,
+                max_retries=int(self.max_retries or 0),
+            )
+            return {
+                "task": EXTRACTION_TASK_NAME,
+                "job_id": job_id,
+                "status": getattr(job, "status", "not_found") if job is not None else "not_found",
+                "progress": getattr(job, "progress", 0) if job is not None else 0,
+                "error_message": getattr(job, "error_message", None) if job is not None else "Extraction job not found",
+            }
+        finally:
+            await session.remove()
+            await reset_worker_db_connections()
+            reset_session_context(token)
+
+    try:
+        return asyncio.run(_run())
+    except Exception as error:
+        service = ExtractionService()
+        if not service._is_transient_error(error):
+            raise
+        return asyncio.run(_handle_transient_failure(error))

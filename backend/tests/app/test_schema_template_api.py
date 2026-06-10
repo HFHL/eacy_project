@@ -55,12 +55,13 @@ class FakeSchemaService:
         template = self.templates.get(template_id)
         if template is None:
             raise SchemaNotFoundError("Schema template not found")
+        params.pop("editable_by", None)
         for key, value in params.items():
             setattr(template, key, value)
         template.updated_at = datetime(2026, 1, 2)
         return template
 
-    async def archive_template(self, template_id):
+    async def archive_template(self, template_id, **kwargs):
         template = self.templates.get(template_id)
         if template is None:
             raise SchemaNotFoundError("Schema template not found")
@@ -69,6 +70,7 @@ class FakeSchemaService:
         return template
 
     async def create_version(self, **params):
+        params.pop("editable_by", None)
         if params["template_id"] not in self.templates:
             raise SchemaNotFoundError("Schema template not found")
         version = SimpleNamespace(
@@ -81,7 +83,7 @@ class FakeSchemaService:
         self.versions[version.id] = version
         return version
 
-    async def publish_version(self, version_id):
+    async def publish_version(self, version_id, **kwargs):
         version = self.versions.get(version_id)
         if version is None:
             raise SchemaNotFoundError("Schema template version not found")
@@ -89,7 +91,7 @@ class FakeSchemaService:
         version.published_at = datetime(2026, 1, 2)
         return version
 
-    async def delete_version(self, version_id):
+    async def delete_version(self, version_id, **kwargs):
         version = self.versions.get(version_id)
         if version is None:
             raise SchemaNotFoundError("Schema template version not found")

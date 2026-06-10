@@ -1,4 +1,5 @@
 import json
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -16,6 +17,12 @@ from app.services.evidence_location_resolver import (
     flatten_reading_unit_corpus,
     resolve_evidence_locations,
 )
+from app.services.agent import ClaudeCodeEhrExtractor
+from app.services.extraction_strategy import (
+    extraction_queue_for_job,
+    job_uses_claude_code,
+    with_default_extraction_strategy,
+)
 from app.services.extraction_plan_trace import (
     build_folder_plan_json,
     build_single_job_plan_json,
@@ -24,6 +31,7 @@ from app.services.extraction_plan_trace import (
 from app.services.extraction_planner import ExtractionPlanner
 from app.services.llm_call_logger import ERROR_TIMEOUT, classify_exception, flush_llm_call_logs
 from app.services.llm_ehr_extractor import LlmEhrExtractor
+from app.services.record_instance_merge import RecordInstanceMergeResolver
 from app.services.schema_field_planner import plan_schema_fields
 from app.services.simple_ehr_extractor import SimpleEhrExtractor
 from app.services.structured_value_service import StructuredValueService
@@ -48,6 +56,10 @@ class ExtractionNotFoundError(ExtractionServiceError):
 
 
 class ExtractionConflictError(ExtractionServiceError):
+    pass
+
+
+class ExtractionCancelledError(ExtractionConflictError):
     pass
 
 
@@ -117,6 +129,7 @@ class ExtractionService:
         extractor: MockExtractor | None = None,
         ehr_extractor: SimpleEhrExtractor | None = None,
         llm_ehr_extractor: LlmEhrExtractor | None = None,
+        claude_code_ehr_extractor: ClaudeCodeEhrExtractor | None = None,
         extraction_planner: ExtractionPlanner | None = None,
         task_progress_service: TaskProgressService | None = None,
     ):
@@ -128,13 +141,96 @@ class ExtractionService:
         self.value_service = value_service or StructuredValueService()
         self.extractor = extractor or MockExtractor()
         self.ehr_extractor = ehr_extractor or SimpleEhrExtractor()
+        self._llm_ehr_extractor_injected = llm_ehr_extractor is not None
         self.llm_ehr_extractor = llm_ehr_extractor or LlmEhrExtractor()
+        self.claude_code_ehr_extractor = claude_code_ehr_extractor or ClaudeCodeEhrExtractor()
         self.extraction_planner = extraction_planner or ExtractionPlanner()
         self.task_progress_service = task_progress_service or TaskProgressService()
 
     def _normalize_folder_update_mode(self, mode: str | None) -> str:
         normalized = str(mode or "incremental").strip().lower()
         return normalized if normalized in {"incremental", "full"} else "incremental"
+
+    async def _ensure_document_access(self, document_id: str, requested_by: str | None) -> Document:
+        document = await self.document_repository.get_visible_by_id(
+            document_id,
+            uploaded_by=requested_by,
+        )
+        if document is None:
+            raise ExtractionNotFoundError("Document not found")
+        return document
+
+    async def _ensure_patient_access(self, patient_id: str, requested_by: str | None) -> None:
+        patient = await self.ehr_service.patient_repository.get_active_by_id(
+            patient_id,
+            owner_id=requested_by,
+        )
+        if patient is None:
+            raise ExtractionNotFoundError("Patient not found")
+
+    async def _ensure_project_access(self, project_id: str, requested_by: str | None) -> None:
+        from app.services.research_project_service import ResearchProjectService
+
+        project = await ResearchProjectService().get_project(project_id, owner_id=requested_by)
+        if project is None:
+            raise ExtractionNotFoundError("Research project not found")
+
+    async def _ensure_context_access(self, context_id: str, requested_by: str | None) -> DataContext:
+        context = await self.ehr_service.context_repository.get_by_id(context_id)
+        if context is None:
+            raise ExtractionNotFoundError("Data context not found")
+        if requested_by is None:
+            return context
+        if context.project_id is not None:
+            await self._ensure_project_access(context.project_id, requested_by)
+        elif context.patient_id is not None:
+            await self._ensure_patient_access(context.patient_id, requested_by)
+        else:
+            raise ExtractionNotFoundError("Data context not found")
+        return context
+
+    async def _ensure_scope_access(self, params: dict[str, Any], requested_by: str | None) -> None:
+        if requested_by is None:
+            return
+        document_id = params.get("document_id")
+        patient_id = params.get("patient_id")
+        project_id = params.get("project_id")
+        context_id = params.get("context_id")
+        if document_id is not None:
+            await self._ensure_document_access(document_id, requested_by)
+        if patient_id is not None:
+            await self._ensure_patient_access(patient_id, requested_by)
+        if project_id is not None:
+            await self._ensure_project_access(project_id, requested_by)
+        if context_id is not None:
+            await self._ensure_context_access(context_id, requested_by)
+
+    async def _job_visible_to(self, job: ExtractionJob, requested_by: str | None) -> bool:
+        if requested_by is None:
+            return True
+        if str(getattr(job, "requested_by", "") or "") == str(requested_by):
+            return True
+        if job.document_id is not None:
+            document = await self.document_repository.get_visible_by_id(
+                job.document_id,
+                uploaded_by=requested_by,
+            )
+            if document is not None:
+                return True
+        if job.patient_id is not None:
+            patient = await self.ehr_service.patient_repository.get_active_by_id(
+                job.patient_id,
+                owner_id=requested_by,
+            )
+            if patient is not None:
+                return True
+        if job.project_id is not None:
+            from app.services.research_project_service import ResearchProjectService
+
+            project = await ResearchProjectService().get_project(job.project_id, owner_id=requested_by)
+            if project is not None:
+                return True
+        return False
 
     def _normalize_folder_update_options(
         self,
@@ -168,7 +264,9 @@ class ExtractionService:
     ) -> dict[str, set[str]]:
         forms_by_document: dict[str, set[str]] = {}
         for job in existing_jobs:
-            if job.document_id is None or not job.target_form_key:
+            document_id = getattr(job, "document_id", None)
+            target_form_key = getattr(job, "target_form_key", None)
+            if document_id is None or not target_form_key:
                 continue
             if job.job_type not in job_types:
                 continue
@@ -178,7 +276,7 @@ class ExtractionService:
                 continue
             if project_patient_id is not None and job.project_patient_id != project_patient_id:
                 continue
-            forms_by_document.setdefault(str(job.document_id), set()).add(job.target_form_key)
+            forms_by_document.setdefault(str(document_id), set()).add(target_form_key)
         return forms_by_document
 
     def _pending_plan_items_for_document(
@@ -248,7 +346,14 @@ class ExtractionService:
             task_type=self._task_type_for_job(job),
             job=job,
         )
-        document = await self.document_repository.get_visible_by_id(job.document_id) if job.document_id else None
+        document = (
+            await self.document_repository.get_visible_by_id(
+                job.document_id,
+                uploaded_by=requested_by,
+            )
+            if job.document_id
+            else None
+        )
         await self.task_progress_service.persist_plan_snapshot(
             batch.id,
             build_single_job_plan_json(job=job, document=document),
@@ -288,11 +393,17 @@ class ExtractionService:
         await self.task_progress_service.persist_plan_snapshot(batch_id, plan_json)
 
     async def create_job(self, *, job_type: str, **params: Any) -> ExtractionJob:
+        params["input_json"] = with_default_extraction_strategy(
+            job_type=job_type,
+            input_json=params.get("input_json"),
+        )
         return await self.job_repository.create({"job_type": job_type, "status": "pending", **params})
 
     async def list_active_ehr_status_by_patients(
         self,
         patient_ids: list[str],
+        *,
+        requested_by: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         """批量返回若干患者当前 patient_ehr 任务的活跃状态。
 
@@ -313,7 +424,9 @@ class ExtractionService:
         if not patient_ids:
             return result
         jobs = await self.job_repository.list_active_by_patient_ids(
-            patient_ids, job_type="patient_ehr"
+            patient_ids,
+            job_type="patient_ehr",
+            requested_by=requested_by,
         )
         for job in jobs:
             pid = str(job.patient_id) if job.patient_id is not None else None
@@ -343,17 +456,23 @@ class ExtractionService:
             }
         )
 
-    async def get_job(self, job_id: str) -> ExtractionJob | None:
-        return await self.job_repository.get_by_id(job_id)
+    async def get_job(self, job_id: str, *, requested_by: str | None = None) -> ExtractionJob | None:
+        job = await self.job_repository.get_by_id(job_id)
+        if job is None:
+            return None
+        if not await self._job_visible_to(job, requested_by):
+            return None
+        return job
 
-    async def list_runs(self, job_id: str) -> list[ExtractionRun]:
-        job = await self.get_job(job_id)
+    async def list_runs(self, job_id: str, *, requested_by: str | None = None) -> list[ExtractionRun]:
+        job = await self.get_job(job_id, requested_by=requested_by)
         if job is None:
             raise ExtractionNotFoundError("Extraction job not found")
         return await self.run_repository.list_by_job(job_id)
 
     @Transactional()
     async def create_and_process_job(self, *, job_type: str, requested_by: str | None = None, **params: Any) -> ExtractionJob:
+        await self._ensure_scope_access(params, requested_by)
         if job_type == "patient_ehr" and params.get("target_form_key"):
             job_type = "targeted_schema"
         job = await self.create_job(
@@ -374,24 +493,28 @@ class ExtractionService:
         if await self._should_wait_for_document_ready(job):
             await self.job_repository.save(job)
             # 同上：避免路由层访问 updated_at 时触发懒加载导致 MissingGreenlet。
-            await session.refresh(job)
+            if hasattr(job, "_sa_instance_state"):
+                await session.refresh(job)
             return job
         if isinstance(job.input_json, dict) and job.input_json.get("enqueue_async") is True:
             await self.job_repository.save(job)
             await self._commit_pending_jobs_before_enqueue()
-            await session.refresh(job)
-            await self._enqueue_extraction_task(job.id)
+            if hasattr(job, "_sa_instance_state"):
+                await session.refresh(job)
+            await self._schedule_or_enqueue_extraction_task(job.id)
             # _enqueue_extraction_task 内部又会触发一次 UPDATE+commit（progress=5、mark_job_queued），
             # 之后 job.updated_at（server-side onupdate）被标记为 expired。
             # 必须再 refresh 一次，否则路由层 ExtractionJobResponse.model_validate(job)
             # 在 @Transactional 收尾后访问 updated_at 会触发懒加载，
             # 此时 greenlet 上下文已结束 → MissingGreenlet → 500。
-            await session.refresh(job)
+            if hasattr(job, "_sa_instance_state"):
+                await session.refresh(job)
             return job
         job = await self._process_job(job=job, input_snapshot_extra={}, raise_on_failure=True)
         # 同样的原因：_process_job 内部多次 commit=True 后 updated_at 被 expire，
         # 在事务收尾前刷新一下，保证返回给路由的 ORM 对象所有属性都已加载。
-        await session.refresh(job)
+        if hasattr(job, "_sa_instance_state"):
+            await session.refresh(job)
         return job
 
     async def create_planned_jobs(self, *, requested_by: str | None = None, **params: Any) -> list[ExtractionJob]:
@@ -403,12 +526,8 @@ class ExtractionService:
         if context_id is None:
             raise ExtractionConflictError("Planned extraction requires context_id")
 
-        document = await self.document_repository.get_visible_by_id(document_id)
-        if document is None:
-            raise ExtractionNotFoundError("Document not found")
-        context = await self.ehr_service.context_repository.get_by_id(context_id)
-        if context is None:
-            raise ExtractionNotFoundError("Data context not found")
+        document = await self._ensure_document_access(document_id, requested_by)
+        context = await self._ensure_context_access(context_id, requested_by)
         if schema_version_id is None:
             schema_version_id = context.schema_version_id
             params["schema_version_id"] = schema_version_id
@@ -453,6 +572,7 @@ class ExtractionService:
         mode: str | None = None,
     ) -> dict[str, Any]:
         options = self._normalize_folder_update_options(target_form_keys=target_form_keys, mode=mode)
+        await self._ensure_patient_access(patient_id, requested_by)
         batch = await self.task_progress_service.create_batch(
             task_type=self._folder_batch_task_type(
                 folder_task_type="patient_ehr_folder_extract",
@@ -463,7 +583,11 @@ class ExtractionService:
             patient_id=patient_id,
             requested_by=requested_by,
         )
-        ehr = await self.ehr_service.get_patient_ehr(patient_id, created_by=requested_by)
+        ehr = await self.ehr_service.get_patient_ehr(
+            patient_id,
+            created_by=requested_by,
+            owner_id=requested_by,
+        )
         context = ehr.get("context")
         schema_json = ehr.get("schema")
         if context is None or not isinstance(schema_json, dict):
@@ -474,7 +598,11 @@ class ExtractionService:
                 )
             raise ExtractionNotFoundError("无法初始化患者电子病历上下文，请刷新页面后重试")
 
-        documents = await self.document_repository.list_by_patient(patient_id, limit=1000)
+        documents = await self.document_repository.list_by_patient(
+            patient_id,
+            limit=1000,
+            uploaded_by=requested_by,
+        )
         eligible_documents = [document for document in documents if self._document_ready_for_extraction(document)]
         existing_jobs = await self.job_repository.list_by_patient_documents(
             patient_id=patient_id,
@@ -492,7 +620,7 @@ class ExtractionService:
             extracted_document_ids = {
                 job.document_id
                 for job in existing_jobs
-                if job.job_type in {"patient_ehr", "targeted_schema"} and job.status in {"pending", "running", "completed"}
+                if job.job_type in {"patient_ehr", "targeted_schema"} and job.status in {"pending", "queued", "running", "completed"}
             }
             pending_documents = [document for document in eligible_documents if document.id not in extracted_document_ids]
             already_extracted_documents = len(extracted_document_ids)
@@ -554,7 +682,7 @@ class ExtractionService:
                 )
             await self._commit_pending_jobs_before_enqueue()
             for job in jobs:
-                await self._enqueue_extraction_task(job.id)
+                await self._schedule_or_enqueue_extraction_task(job.id)
         else:
             await self.task_progress_service.aggregate_batch(batch.id)
             await session.commit()
@@ -586,17 +714,6 @@ class ExtractionService:
         mode: str | None = None,
     ) -> dict[str, Any]:
         options = self._normalize_folder_update_options(target_form_keys=target_form_keys, mode=mode)
-        batch = await self.task_progress_service.create_batch(
-            task_type=self._folder_batch_task_type(
-                folder_task_type="project_crf_folder_extract",
-                options=options,
-            ),
-            title=self._folder_batch_title(base_title="更新项目 CRF", options=options),
-            scope_type="project_patient",
-            project_id=project_id,
-            project_patient_id=project_patient_id,
-            requested_by=requested_by,
-        )
         from app.services.research_project_service import ResearchProjectConflictError, ResearchProjectNotFoundError, ResearchProjectService
 
         try:
@@ -604,6 +721,7 @@ class ExtractionService:
                 project_id=project_id,
                 project_patient_id=project_patient_id,
                 created_by=requested_by,
+                owner_id=requested_by,
             )
         except ResearchProjectNotFoundError as error:
             raise ExtractionNotFoundError(str(error)) from error
@@ -616,7 +734,23 @@ class ExtractionService:
             raise ExtractionNotFoundError("Project CRF schema context not found")
 
         patient_id = context.patient_id
-        documents = await self.document_repository.list_by_patient(patient_id, limit=1000)
+        batch = await self.task_progress_service.create_batch(
+            task_type=self._folder_batch_task_type(
+                folder_task_type="project_crf_folder_extract",
+                options=options,
+            ),
+            title=self._folder_batch_title(base_title="更新项目 CRF", options=options),
+            scope_type="project_patient",
+            project_id=project_id,
+            project_patient_id=project_patient_id,
+            patient_id=patient_id,
+            requested_by=requested_by,
+        )
+        documents = await self.document_repository.list_by_patient(
+            patient_id,
+            limit=1000,
+            uploaded_by=requested_by,
+        )
         eligible_documents = [document for document in documents if self._document_ready_for_extraction(document)]
         existing_jobs = await self.job_repository.list_by_patient_documents(
             patient_id=patient_id,
@@ -639,7 +773,7 @@ class ExtractionService:
                 if job.job_type == "project_crf"
                 and job.project_id == project_id
                 and job.project_patient_id == project_patient_id
-                and job.status in {"pending", "running", "completed"}
+                and job.status in {"pending", "queued", "running", "completed"}
                 and job.document_id is not None
             }
             pending_documents = [document for document in eligible_documents if str(document.id) not in extracted_document_ids]
@@ -711,7 +845,7 @@ class ExtractionService:
                 )
             await self._commit_pending_jobs_before_enqueue()
             for job in jobs:
-                await self._enqueue_extraction_task(job.id)
+                await self._schedule_or_enqueue_extraction_task(job.id)
         else:
             if batch.patient_id is None:
                 batch.patient_id = patient_id
@@ -752,6 +886,9 @@ class ExtractionService:
         )
 
         research_service = ResearchProjectService()
+        project = await research_service.get_project(project_id, owner_id=requested_by)
+        if project is None:
+            raise ExtractionNotFoundError("Research project not found")
 
         if project_patient_ids:
             target_ids = [pid for pid in project_patient_ids if pid]
@@ -795,6 +932,7 @@ class ExtractionService:
                     project_id=project_id,
                     project_patient_id=project_patient_id,
                     created_by=requested_by,
+                    owner_id=requested_by,
                 )
             except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
                 skipped_patients.append(
@@ -814,7 +952,11 @@ class ExtractionService:
                 continue
 
             patient_id = context.patient_id
-            documents = await self.document_repository.list_by_patient(patient_id, limit=1000)
+            documents = await self.document_repository.list_by_patient(
+                patient_id,
+                limit=1000,
+                uploaded_by=requested_by,
+            )
             eligible_documents = [d for d in documents if self._document_ready_for_extraction(d)]
             existing_jobs = await self.job_repository.list_by_patient_documents(
                 patient_id=patient_id,
@@ -837,7 +979,7 @@ class ExtractionService:
                     if job.job_type == "project_crf"
                     and job.project_id == project_id
                     and job.project_patient_id == project_patient_id
-                    and job.status in {"pending", "running", "completed"}
+                    and job.status in {"pending", "queued", "running", "completed"}
                     and job.document_id is not None
                 }
                 pending_documents = [d for d in eligible_documents if str(d.id) not in extracted_document_ids]
@@ -945,7 +1087,7 @@ class ExtractionService:
                 )
             await self._commit_pending_jobs_before_enqueue()
             for job in all_jobs:
-                await self._enqueue_extraction_task(job.id)
+                await self._schedule_or_enqueue_extraction_task(job.id)
         else:
             await self.task_progress_service.aggregate_batch(batch.id)
             await session.commit()
@@ -979,20 +1121,207 @@ class ExtractionService:
         await self.job_repository.save(job)
         return job
 
-    async def _enqueue_extraction_task(self, job_id: str) -> None:
+    def _scheduler_user_key(self, job: ExtractionJob) -> str:
+        return str(getattr(job, "requested_by", None) or "__system__")
+
+    def _scheduler_project_key(self, job: ExtractionJob) -> str | None:
+        project_id = getattr(job, "project_id", None)
+        return str(project_id) if project_id else None
+
+    def _choose_jobs_for_fair_dispatch(
+        self,
+        *,
+        candidates: list[ExtractionJob],
+        active_jobs: list[ExtractionJob],
+        global_limit: int,
+        user_limit: int,
+        project_limit: int,
+        max_to_dispatch: int,
+    ) -> list[ExtractionJob]:
+        if global_limit <= 0 or max_to_dispatch <= 0:
+            return []
+        active_total = len(active_jobs)
+        global_slots = max(0, min(max_to_dispatch, global_limit - active_total))
+        if global_slots <= 0:
+            return []
+
+        user_counts = Counter(self._scheduler_user_key(job) for job in active_jobs)
+        project_counts = Counter(
+            project_key
+            for job in active_jobs
+            if (project_key := self._scheduler_project_key(job)) is not None
+        )
+        grouped: dict[str, list[ExtractionJob]] = defaultdict(list)
+        for job in candidates:
+            grouped[self._scheduler_user_key(job)].append(job)
+
+        selected: list[ExtractionJob] = []
+        user_order = sorted(
+            grouped,
+            key=lambda user_key: (
+                user_counts[user_key],
+                getattr(grouped[user_key][0], "created_at", None) or datetime.min,
+                user_key,
+            ),
+        )
+        while global_slots > 0 and user_order:
+            made_progress = False
+            for user_key in list(user_order):
+                if global_slots <= 0:
+                    break
+                if user_limit > 0 and user_counts[user_key] >= user_limit:
+                    continue
+                queue = grouped.get(user_key) or []
+                chosen_index: int | None = None
+                for index, job in enumerate(queue):
+                    project_key = self._scheduler_project_key(job)
+                    if project_key is not None and project_limit > 0 and project_counts[project_key] >= project_limit:
+                        continue
+                    chosen_index = index
+                    break
+                if chosen_index is None:
+                    continue
+                job = queue.pop(chosen_index)
+                selected.append(job)
+                user_counts[user_key] += 1
+                project_key = self._scheduler_project_key(job)
+                if project_key is not None:
+                    project_counts[project_key] += 1
+                global_slots -= 1
+                made_progress = True
+                if not queue:
+                    user_order.remove(user_key)
+            if not made_progress:
+                break
+        return selected
+
+    async def _schedule_or_enqueue_extraction_task(
+        self,
+        job_id: str,
+        *,
+        reset_progress: bool = False,
+        waiting_message: str | None = None,
+        queued_message: str | None = None,
+    ) -> None:
+        if not config.EXTRACTION_SCHEDULER_ENABLED:
+            await self._enqueue_extraction_task(
+                job_id,
+                reset_progress=reset_progress,
+                queued_message=queued_message,
+            )
+            return
+        job = await self.get_job(job_id)
+        if job is None:
+            raise ExtractionNotFoundError("Extraction job not found")
+        job.status = "pending"
+        if reset_progress:
+            job.progress = 0
+        await self.job_repository.save(job)
+        await self.task_progress_service.mark_job_waiting_for_scheduler(
+            job,
+            message=waiting_message,
+            reset_progress=reset_progress,
+            commit=True,
+        )
+
+    @Transactional()
+    async def schedule_pending_extraction_jobs(
+        self,
+        *,
+        global_limit: int | None = None,
+        user_limit: int | None = None,
+        project_limit: int | None = None,
+        batch_size: int | None = None,
+    ) -> dict[str, Any]:
+        if not config.EXTRACTION_SCHEDULER_ENABLED:
+            return {
+                "skipped": True,
+                "reason": "EXTRACTION_SCHEDULER_ENABLED is false",
+                "dispatched_jobs": 0,
+                "job_ids": [],
+            }
+        effective_global_limit = global_limit if global_limit is not None else config.EXTRACTION_GLOBAL_CONCURRENCY
+        effective_user_limit = user_limit if user_limit is not None else config.EXTRACTION_USER_CONCURRENCY
+        effective_project_limit = project_limit if project_limit is not None else config.EXTRACTION_PROJECT_CONCURRENCY
+        effective_batch_size = max(1, batch_size if batch_size is not None else config.EXTRACTION_SCHEDULER_BATCH_SIZE)
+        active_jobs = await self.job_repository.list_active_for_scheduler()
+        candidate_limit = max(effective_batch_size * 5, effective_batch_size)
+        candidates = [
+            job
+            for job in await self.job_repository.list_pending_for_scheduler(limit=candidate_limit)
+            if not (isinstance(job.input_json, dict) and job.input_json.get("wait_for_document_ready") is True)
+        ]
+        selected = self._choose_jobs_for_fair_dispatch(
+            candidates=candidates,
+            active_jobs=active_jobs,
+            global_limit=effective_global_limit,
+            user_limit=effective_user_limit,
+            project_limit=effective_project_limit,
+            max_to_dispatch=effective_batch_size,
+        )
+        dispatched: list[str] = []
+        for job in selected:
+            await self._enqueue_extraction_task(
+                job.id,
+                queued_message="任务已由公平调度器进入后台队列",
+                commit_progress=False,
+            )
+            dispatched.append(job.id)
+        return {
+            "skipped": False,
+            "global_limit": effective_global_limit,
+            "user_limit": effective_user_limit,
+            "project_limit": effective_project_limit,
+            "active_jobs": len(active_jobs),
+            "candidate_jobs": len(candidates),
+            "dispatched_jobs": len(dispatched),
+            "job_ids": dispatched,
+        }
+
+    async def _enqueue_extraction_task(
+        self,
+        job_id: str,
+        *,
+        reset_progress: bool = False,
+        queued_message: str | None = None,
+        commit_progress: bool = True,
+    ) -> None:
         from app.workers.celery_app import EXTRACTION_QUEUE, EXTRACTION_TASK_NAME, celery_app
 
-        result = celery_app.send_task(
-            EXTRACTION_TASK_NAME,
-            args=[job_id],
-            queue=EXTRACTION_QUEUE,
-            routing_key=EXTRACTION_QUEUE,
-        )
         job = await self.get_job(job_id)
+        queue = extraction_queue_for_job(job) if job is not None else EXTRACTION_QUEUE
+        try:
+            result = celery_app.send_task(
+                EXTRACTION_TASK_NAME,
+                args=[job_id],
+                queue=queue,
+                routing_key=queue,
+            )
+        except Exception as error:
+            error_message = f"Extraction task could not be queued: {error}"
+            if job is not None:
+                job.status = "failed"
+                job.error_type = "enqueue_failed"
+                job.error_message = error_message
+                job.finished_at = datetime.utcnow()
+                await self.job_repository.save(job)
+                await self.task_progress_service.mark_job_failed(job, error_message=error_message)
+            await session.commit()
+            raise ExtractionConflictError(error_message) from error
         if job is not None:
+            job.status = "queued"
             job.progress = max(int(job.progress or 0), 5)
+            if job.error_type == "enqueue_failed":
+                job.error_type = None
+                job.error_message = None
             await self.job_repository.save(job)
-        await self.task_progress_service.mark_job_queued(job_id, celery_task_id=getattr(result, "id", None), commit=True)
+        await self.task_progress_service.mark_job_queued(
+            job_id,
+            celery_task_id=getattr(result, "id", None),
+            message=queued_message,
+            reset_progress=reset_progress,
+            commit=commit_progress,
+        )
 
     async def _commit_pending_jobs_before_enqueue(self) -> None:
         try:
@@ -1009,23 +1338,118 @@ class ExtractionService:
         return await self._process_job(job=job, input_snapshot_extra={"worker": True}, raise_on_failure=False)
 
     @Transactional()
-    async def retry_job(self, job_id: str) -> ExtractionJob:
-        job = await self.get_job(job_id)
+    async def retry_job(self, job_id: str, *, requested_by: str | None = None) -> ExtractionJob:
+        job = await self.get_job(job_id, requested_by=requested_by)
         if job is None:
             raise ExtractionNotFoundError("Extraction job not found")
         self._ensure_can_retry(job)
-        return await self._process_job(job=job, input_snapshot_extra={"retry": True}, raise_on_failure=False)
+        job.status = "pending"
+        job.progress = 0
+        job.error_message = None
+        job.error_type = None
+        job.timeout_at = None
+        job.started_at = None
+        job.finished_at = None
+        if isinstance(job.input_json, dict):
+            input_json = dict(job.input_json)
+            input_json.pop("worker_retry_count", None)
+            input_json.pop("last_retry_scheduled_at", None)
+            job.input_json = input_json
+        await self.job_repository.save(job)
+        await self._commit_pending_jobs_before_enqueue()
+        await self._schedule_or_enqueue_extraction_task(
+            job.id,
+            reset_progress=True,
+            waiting_message="任务已重新提交，正在等待公平调度",
+            queued_message="任务已重新提交到后台队列",
+        )
+        try:
+            await session.refresh(job)
+        except Exception:
+            pass
+        return job
 
     @Transactional()
-    async def cancel_job(self, job_id: str) -> ExtractionJob:
-        job = await self.get_job(job_id)
+    async def cancel_job(self, job_id: str, *, requested_by: str | None = None) -> ExtractionJob:
+        job = await self.get_job(job_id, requested_by=requested_by)
         if job is None:
             raise ExtractionNotFoundError("Extraction job not found")
         if job.status == "completed":
             raise ExtractionConflictError("Completed extraction job cannot be cancelled")
         job.status = "cancelled"
+        job.error_type = "cancelled"
+        job.error_message = "任务已取消"
         job.finished_at = datetime.utcnow()
         await self.job_repository.save(job)
+        await self.task_progress_service.mark_job_cancelled(job, message=job.error_message)
+        return job
+
+    @Transactional()
+    async def handle_worker_transient_failure(
+        self,
+        job_id: str,
+        *,
+        error: Exception,
+        max_retries: int,
+    ) -> ExtractionJob | None:
+        job = await self.get_job(job_id)
+        if job is None or job.status in {"cancelled", "completed"}:
+            return job
+        input_json = dict(job.input_json or {}) if isinstance(job.input_json, dict) else {}
+        retry_count = int(input_json.get("worker_retry_count") or 0)
+        if retry_count >= max(0, max_retries):
+            await self.mark_worker_retry_exhausted(job_id, error=error)
+            return await self.get_job(job_id)
+        return await self.mark_worker_retry_scheduled(
+            job_id,
+            error=error,
+            retry_number=retry_count + 1,
+        )
+
+    @Transactional()
+    async def mark_worker_retry_scheduled(self, job_id: str, *, error: Exception, retry_number: int) -> ExtractionJob | None:
+        job = await self.get_job(job_id)
+        if job is None or job.status in {"cancelled", "completed"}:
+            return job
+        input_json = dict(job.input_json or {}) if isinstance(job.input_json, dict) else {}
+        input_json["worker_retry_count"] = max(int(input_json.get("worker_retry_count") or 0), retry_number)
+        input_json["last_retry_scheduled_at"] = datetime.utcnow().isoformat()
+        job.status = "pending"
+        job.error_type = "retry_scheduled"
+        job.error_message = f"临时错误，已安排第 {retry_number} 次重试：{str(error) or error.__class__.__name__}"
+        job.input_json = input_json
+        job.started_at = None
+        job.finished_at = None
+        await self.job_repository.save(job)
+        runs = await self.run_repository.list_by_job(job.id)
+        if runs:
+            run = runs[-1]
+            run.status = "failed"
+            run.finished_at = datetime.utcnow()
+            run.error_type = "retry_scheduled"
+            run.error_message = job.error_message
+            await self.run_repository.save(run)
+        await self.task_progress_service.mark_job_waiting_for_scheduler(
+            job,
+            message=job.error_message,
+            reset_progress=True,
+        )
+        await session.commit()
+        return job
+
+    @Transactional()
+    async def mark_worker_retry_exhausted(self, job_id: str, *, error: Exception) -> ExtractionJob | None:
+        job = await self.get_job(job_id)
+        if job is None or job.status in {"cancelled", "completed"}:
+            return job
+        runs = await self.run_repository.list_by_job(job.id)
+        run = runs[-1] if runs else await self.start_run(
+            job_id=job.id,
+            run_no=1,
+            model_name=self._model_name_for_job(job),
+            prompt_version="worker-retry-exhausted",
+        )
+        await self._mark_failed(job=job, run=run, error=error)
         return job
 
     STALE_PENDING_DEFAULT_HOURS = 24
@@ -1046,7 +1470,12 @@ class ExtractionService:
         if older_than_hours < 0:
             raise ExtractionServiceError("older_than_hours must be non-negative")
         cutoff = datetime.utcnow() - timedelta(hours=older_than_hours)
-        jobs = await self.job_repository.list_stale_pending(older_than=cutoff, limit=limit)
+        stale_statuses = ("queued",) if config.EXTRACTION_SCHEDULER_ENABLED else ("pending", "queued")
+        jobs = await self.job_repository.list_stale_pending(
+            older_than=cutoff,
+            limit=limit,
+            statuses=stale_statuses,
+        )
         if dry_run:
             return {
                 "dry_run": True,
@@ -1076,8 +1505,8 @@ class ExtractionService:
         }
 
     @Transactional()
-    async def delete_job(self, job_id: str) -> None:
-        job = await self.get_job(job_id)
+    async def delete_job(self, job_id: str, *, requested_by: str | None = None) -> None:
+        job = await self.get_job(job_id, requested_by=requested_by)
         if job is None:
             raise ExtractionNotFoundError("Extraction job not found")
         runs = await self.run_repository.list_by_job(job_id)
@@ -1092,7 +1521,11 @@ class ExtractionService:
             return
 
         if job.job_type in {"patient_ehr", "targeted_schema"} and job.patient_id is not None:
-            ehr = await self.ehr_service.get_patient_ehr(job.patient_id, created_by=created_by)
+            ehr = await self.ehr_service.get_patient_ehr(
+                job.patient_id,
+                created_by=created_by,
+                owner_id=created_by,
+            )
             context = ehr.get("context")
             if context is not None:
                 job.context_id = context.id
@@ -1107,6 +1540,7 @@ class ExtractionService:
                     project_id=job.project_id,
                     project_patient_id=job.project_patient_id,
                     created_by=created_by,
+                    owner_id=created_by,
                 )
             except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
                 raise ExtractionConflictError(str(error)) from error
@@ -1164,7 +1598,7 @@ class ExtractionService:
 
         all_fields = plan_schema_fields(schema_version.schema_json)
         filtered_fields = self._filter_schema_fields(all_fields, job)
-        field_specs = [self.llm_ehr_extractor._field_spec(field) for field in filtered_fields]
+        field_specs = [self._schema_field_spec(field) for field in filtered_fields]
         text = extract_document_text(document)
         reading_units = build_ocr_reading_units(document)
         reading_corpus = flatten_reading_unit_corpus(reading_units)
@@ -1173,20 +1607,38 @@ class ExtractionService:
         text_source = "ocr_reading_units" if reading_units else ("ocr_text" if getattr(document, "ocr_text", None) else "parsed_content")
         snapshot["document"] = {
             "id": document.id,
-            "doc_type": document.doc_type or document.document_type,
-            "doc_subtype": document.doc_subtype or document.document_sub_type,
-            "doc_title": document.doc_title,
-            "metadata_json": document.metadata_json if isinstance(document.metadata_json, dict) else None,
+            "doc_type": getattr(document, "doc_type", None) or getattr(document, "document_type", None),
+            "doc_subtype": getattr(document, "doc_subtype", None) or getattr(document, "document_sub_type", None),
+            "doc_title": getattr(document, "doc_title", None),
+            "metadata_json": getattr(document, "metadata_json", None)
+            if isinstance(getattr(document, "metadata_json", None), dict)
+            else None,
             "doc_terms": document_trace_terms(document),
             "text_length": len(text or ""),
             "text_source": text_source,
             "reading_unit_count": len(reading_units),
-            "ocr_status": document.ocr_status,
+            "ocr_status": getattr(document, "ocr_status", None),
         }
         snapshot["field_filter"]["matched_count"] = len(filtered_fields)
         snapshot["field_filter"]["total_schema_fields"] = len(all_fields)
         snapshot["field_specs"] = field_specs
-        if text or reading_units:
+        if extractor == "ClaudeCodeEhrExtractor":
+            snapshot["claude_code"] = {
+                "bin": config.CLAUDE_CODE_BIN,
+                "workspace_root": config.CLAUDE_CODE_WORKSPACE_ROOT,
+                "timeout_seconds": config.CLAUDE_CODE_TIMEOUT_SECONDS,
+                "max_turns": config.CLAUDE_CODE_MAX_TURNS,
+                "allowed_tools": config.CLAUDE_CODE_ALLOWED_TOOLS,
+                "disallowed_tools": config.CLAUDE_CODE_DISALLOWED_TOOLS,
+                "enable_mcp_tools": config.CLAUDE_CODE_ENABLE_MCP_TOOLS,
+                "mcp_server_name": config.CLAUDE_CODE_MCP_SERVER_NAME,
+            }
+        if (
+            (text or reading_units)
+            and hasattr(self.llm_ehr_extractor, "_build_user_prompt")
+            and hasattr(self.llm_ehr_extractor, "_build_system_prompt")
+            and hasattr(self.llm_ehr_extractor, "_document_meta")
+        ):
             user_preview = self.llm_ehr_extractor._build_user_prompt(
                 state={
                     "text": text,
@@ -1204,6 +1656,23 @@ class ExtractionService:
             }
         return snapshot
 
+    def _schema_field_spec(self, field: Any) -> dict[str, Any]:
+        return {
+            "field_key": getattr(field, "field_key", None),
+            "field_path": getattr(field, "field_path", None),
+            "field_title": getattr(field, "field_title", None),
+            "value_type": getattr(field, "value_type", None),
+            "options": getattr(field, "options", None),
+            "record_form_key": getattr(field, "record_form_key", None),
+            "record_form_title": getattr(field, "record_form_title", None),
+            "group_key": getattr(field, "group_key", None),
+            "group_title": getattr(field, "group_title", None),
+            "display_type": getattr(field, "display_type", None),
+            "schema_type": getattr(field, "schema_type", None),
+            "schema_format": getattr(field, "schema_format", None),
+            "merge_binding": getattr(field, "merge_binding", None),
+        }
+
     async def _process_job(
         self,
         *,
@@ -1217,6 +1686,8 @@ class ExtractionService:
         prompt_version = "json-schema-rule-v1" if model_name == "SimpleEhrExtractor" else "mock-v1"
         if model_name == "LlmEhrExtractor":
             prompt_version = "langgraph-ehr-json-v1"
+        if model_name == "ClaudeCodeEhrExtractor":
+            prompt_version = "claude-code-cli-ehr-v1"
 
         job.status = "running"
         job.progress = 10
@@ -1276,7 +1747,14 @@ class ExtractionService:
         try:
             job.progress = 30
             await self.job_repository.save(job)
-            document_for_progress = await self.document_repository.get_visible_by_id(job.document_id) if job.document_id else None
+            document_for_progress = (
+                await self.document_repository.get_visible_by_id(
+                    job.document_id,
+                    uploaded_by=getattr(job, "requested_by", None),
+                )
+                if job.document_id
+                else None
+            )
             await self.task_progress_service.update_job_progress(
                 job,
                 progress=30,
@@ -1290,6 +1768,7 @@ class ExtractionService:
                 },
                 commit=True,
             )
+            await self._raise_if_cancelled(job.id)
             snapshot = await self._build_run_input_snapshot(
                 job=job,
                 run_no=next_run_no,
@@ -1317,11 +1796,13 @@ class ExtractionService:
                 },
                 commit=True,
             )
+            await self._raise_if_cancelled(job.id)
             output = await self._extract(
                 job=job,
                 llm_call_buffer=llm_call_buffer,
                 llm_call_context=llm_call_context,
             )
+            await self._raise_if_cancelled(job.id)
             job.progress = 65
             await self.job_repository.save(job)
             await self.task_progress_service.update_job_progress(
@@ -1337,11 +1818,14 @@ class ExtractionService:
                 },
                 commit=True,
             )
+            await self._raise_if_cancelled(job.id)
             # `llm_call_logs.raw_response` is the source of truth for LLM I/O.
             # `parsed_output_json` is reduced to {fields, attempt_count}; validation_log
             # moves to its own column so the admin UI doesn't need to crack JSON.
             parsed = self._build_parsed_output(output) if isinstance(output, dict) else {}
             run.parsed_output_json = parsed
+            if model_name == "ClaudeCodeEhrExtractor":
+                run.raw_output_json = output.get("raw_output") if isinstance(output, dict) else None
             run.validation_log = output.get("validation_log") if isinstance(output, dict) else None
             run.validation_status = (
                 output.get("validation_status") if isinstance(output, dict) else None
@@ -1360,6 +1844,7 @@ class ExtractionService:
                 },
                 commit=True,
             )
+            await self._raise_if_cancelled(job.id)
             await self._write_extracted_values(job=job, run=run, parsed_output=output)
             await self.task_progress_service.update_job_progress(
                 job,
@@ -1373,7 +1858,7 @@ class ExtractionService:
             empty_result_message = self._empty_result_message(
                 parsed=parsed,
                 validation_status=run.validation_status,
-                target_form_key=job.target_form_key,
+                target_form_key=getattr(job, "target_form_key", None),
             )
             if empty_result_message:
                 # The job did not fail technically, but the LLM returned zero usable
@@ -1405,6 +1890,9 @@ class ExtractionService:
             await session.rollback()
             # Re-flush LLM call logs in a fresh transaction; rollback above wiped them.
             await flush_llm_call_logs(llm_call_buffer, commit=True)
+            if isinstance(error, ExtractionCancelledError):
+                await self._mark_cancelled(job=job, run=run, message=str(error))
+                return job
             if not raise_on_failure and self._is_transient_error(error):
                 await release_db_connection()
                 raise
@@ -1412,6 +1900,32 @@ class ExtractionService:
             if raise_on_failure:
                 raise
             return job
+
+    async def _raise_if_cancelled(self, job_id: str) -> None:
+        latest_job = await self.get_job(job_id)
+        if latest_job is not None:
+            try:
+                await session.refresh(latest_job)
+            except Exception:
+                pass
+        if latest_job is not None and latest_job.status == "cancelled":
+            raise ExtractionCancelledError("任务已取消")
+
+    async def _mark_cancelled(self, *, job: ExtractionJob, run: ExtractionRun, message: str) -> None:
+        finished_at = datetime.utcnow()
+        run.status = "cancelled"
+        run.finished_at = finished_at
+        run.error_type = "cancelled"
+        run.error_message = message
+        await self.run_repository.save(run)
+
+        job.status = "cancelled"
+        job.error_type = "cancelled"
+        job.error_message = message
+        job.finished_at = finished_at
+        await self.job_repository.save(job)
+        await self.task_progress_service.mark_job_cancelled(job, message=message)
+        await session.commit()
 
     async def _mark_failed(self, *, job: ExtractionJob, run: ExtractionRun, error: Exception) -> None:
         finished_at = datetime.utcnow()
@@ -1442,6 +1956,9 @@ class ExtractionService:
     def _classify_extraction_error(self, error: BaseException) -> str:
         current: BaseException | None = error
         while current is not None:
+            explicit_error_type = getattr(current, "error_type", None)
+            if isinstance(explicit_error_type, str) and explicit_error_type:
+                return explicit_error_type
             tag = classify_exception(current)
             if tag != "unknown":
                 return tag
@@ -1488,14 +2005,14 @@ class ExtractionService:
             raise ExtractionConflictError("Cancelled extraction job cannot be processed")
         if job.status == "completed":
             raise ExtractionConflictError("Completed extraction job cannot be processed")
-        if job.status == "failed":
+        if job.status in {"failed", "timeout"}:
             raise ExtractionConflictError("Failed extraction job must be retried")
+        if job.status == "running":
+            raise ExtractionConflictError("Running extraction job cannot be processed twice")
 
     def _ensure_can_retry(self, job: ExtractionJob) -> None:
-        if job.status == "cancelled":
-            raise ExtractionConflictError("Cancelled extraction job cannot be retried")
-        if job.status == "running":
-            raise ExtractionConflictError("Running extraction job cannot be retried")
+        if job.status not in {"failed", "timeout"}:
+            raise ExtractionConflictError("Only failed or timed out extraction jobs can be retried")
 
     def _is_transient_error(self, error: Exception) -> bool:
         if TRANSIENT_EXTRACTION_ERRORS and isinstance(error, TRANSIENT_EXTRACTION_ERRORS):
@@ -1521,7 +2038,10 @@ class ExtractionService:
             return False
         if job.document_id is None:
             return False
-        document = await self.document_repository.get_visible_by_id(job.document_id)
+        document = await self.document_repository.get_visible_by_id(
+            job.document_id,
+            uploaded_by=getattr(job, "requested_by", None),
+        )
         if document is None:
             raise ExtractionNotFoundError("Document not found")
         return not self._document_ready_for_extraction(document)
@@ -1541,6 +2061,18 @@ class ExtractionService:
             fields = self._filter_schema_fields(plan_schema_fields(schema_version.schema_json), job)
             if not fields:
                 raise ExtractionConflictError("No schema fields matched extraction target")
+            if self._use_claude_code_extractor(job):
+                await release_db_connection()
+                return self.claude_code_ehr_extractor.extract(
+                    text=extract_document_text(document),
+                    fields=fields,
+                    schema_json=schema_version.schema_json,
+                    document_id=document.id,
+                    document=document,
+                    job=job,
+                    llm_call_buffer=llm_call_buffer,
+                    llm_call_context=llm_call_context,
+                )
             if self._use_llm_ehr_extractor():
                 await release_db_connection()
                 return self.llm_ehr_extractor.extract(
@@ -1601,6 +2133,8 @@ class ExtractionService:
 
     def _model_name_for_job(self, job: ExtractionJob) -> str:
         if self._uses_schema_extractor(job):
+            if self._use_claude_code_extractor(job):
+                return "ClaudeCodeEhrExtractor"
             return "LlmEhrExtractor" if self._use_llm_ehr_extractor() else "SimpleEhrExtractor"
         return "MockExtractor"
 
@@ -1608,15 +2142,19 @@ class ExtractionService:
         return job.job_type in {"patient_ehr", "project_crf", "targeted_schema"} and job.document_id is not None
 
     async def _resolve_schema_extraction_scope(self, job: ExtractionJob) -> tuple[Document, DataContext | None]:
-        document = await self.document_repository.get_visible_by_id(job.document_id)
+        document = await self.document_repository.get_visible_by_id(
+            job.document_id,
+            uploaded_by=getattr(job, "requested_by", None),
+        )
         if document is None:
             raise ExtractionNotFoundError("Document not found")
 
         context: DataContext | None = None
         if job.context_id is not None:
-            context = await self.ehr_service.context_repository.get_by_id(job.context_id)
-            if context is None:
-                raise ExtractionNotFoundError("Data context not found")
+            context = await self._ensure_context_access(
+                job.context_id,
+                getattr(job, "requested_by", None),
+            )
             self._validate_job_context(job=job, context=context, document=document)
             if job.schema_version_id is None:
                 job.schema_version_id = context.schema_version_id
@@ -1628,6 +2166,10 @@ class ExtractionService:
 
         if job.patient_id is not None and document.patient_id not in (None, job.patient_id):
             raise ExtractionConflictError("Document does not belong to patient")
+        if getattr(job, "requested_by", None) is not None and job.patient_id is not None:
+            await self._ensure_patient_access(job.patient_id, job.requested_by)
+        if getattr(job, "requested_by", None) is not None and job.project_id is not None:
+            await self._ensure_project_access(job.project_id, job.requested_by)
         if job.schema_version_id is None:
             raise ExtractionNotFoundError("Schema version not found")
         return document, context
@@ -1635,8 +2177,10 @@ class ExtractionService:
     def _validate_job_context(self, *, job: ExtractionJob, context: DataContext, document: Document) -> None:
         if job.job_type == "project_crf" and context.context_type != "project_crf":
             raise ExtractionConflictError("project_crf extraction requires project CRF context")
-        if job.job_type in {"patient_ehr", "targeted_schema"} and context.context_type != "patient_ehr":
+        if job.job_type == "patient_ehr" and context.context_type != "patient_ehr":
             raise ExtractionConflictError(f"{job.job_type} extraction requires patient EHR context")
+        if job.job_type == "targeted_schema" and context.context_type not in {"patient_ehr", "project_crf"}:
+            raise ExtractionConflictError("targeted_schema extraction requires patient EHR or project CRF context")
         if getattr(job, "project_id", None) is not None and context.project_id != job.project_id:
             raise ExtractionConflictError("Data context does not belong to project")
         if getattr(job, "project_patient_id", None) is not None and context.project_patient_id != job.project_patient_id:
@@ -1690,7 +2234,12 @@ class ExtractionService:
         return "patient_ehr_targeted_extract" if job.target_form_key else "patient_ehr_folder_extract"
 
     def _use_llm_ehr_extractor(self) -> bool:
+        if self._llm_ehr_extractor_injected:
+            return True
         return str(config.EACY_EXTRACTION_STRATEGY).lower() in {"llm", "langgraph", "multi_agent"}
+
+    def _use_claude_code_extractor(self, job: ExtractionJob) -> bool:
+        return job_uses_claude_code(job_type=job.job_type, input_json=job.input_json)
 
     async def _write_extracted_values(
         self,
@@ -1708,29 +2257,58 @@ class ExtractionService:
         records = await self.record_repository.list_by_context(job.context_id)
         if not records:
             return
-        records_by_form = {record.form_key: record for record in records}
+        records_by_form = self._records_by_form_repeat_index(records)
         default_record = records[0]
+        merge_resolver = RecordInstanceMergeResolver(
+            record_repository=self.record_repository,
+            records_by_form=records_by_form,
+            default_record=default_record,
+            context_id=job.context_id,
+            source_document_id=job.document_id,
+            extraction_run_id=run.id,
+        )
         source_document = None
         if job.document_id is not None:
-            source_document = await self.document_repository.get_visible_by_id(job.document_id)
+            source_document = await self.document_repository.get_visible_by_id(
+                job.document_id,
+                uploaded_by=getattr(job, "requested_by", None),
+            )
+
+        output_fields = [field for field in parsed_output.get("fields", []) if isinstance(field, dict)]
+        fields_by_group: dict[Any, list[dict[str, Any]]] = defaultdict(list)
+        for field in output_fields:
+            if not field.get("field_path"):
+                continue
+            fields_by_group[merge_resolver.group_key_for_field(field)].append(field)
+
+        records_by_output_group: dict[Any, RecordInstance] = {}
+        for group_key, grouped_fields in fields_by_group.items():
+            records_by_output_group[group_key] = await merge_resolver.resolve_record_for_group(grouped_fields)
 
         field_entries: list[dict[str, Any]] = []
-        for field in parsed_output.get("fields", []):
-            field_path = field["field_path"]
-            field_key = field.get("field_key") or field_path.split(".")[-1]
-            record = self._resolve_output_record(
-                field=field,
-                records_by_form=records_by_form,
-                default_record=default_record,
-            )
+        for field in output_fields:
+            if not field.get("field_path"):
+                continue
+            group_key = merge_resolver.group_key_for_field(field)
+            canonical_field_path = RecordInstanceMergeResolver.canonical_field_path(field.get("field_path"))
+            if not canonical_field_path:
+                continue
+            normalized_field = {
+                **field,
+                "field_path": canonical_field_path,
+                "record_form_key": field.get("record_form_key")
+                or RecordInstanceMergeResolver.record_form_key_from_field_path(canonical_field_path),
+            }
+            field_key = normalized_field.get("field_key") or canonical_field_path.split(".")[-1]
+            record = records_by_output_group.get(group_key) or default_record
             evidences = self._build_field_evidences(
-                field=field,
+                field=normalized_field,
                 document_id=job.document_id,
                 source_document=source_document,
             )
             field_entries.append(
                 {
-                    "field": field,
+                    "field": normalized_field,
                     "field_key": field_key,
                     "record": record,
                     "evidences": evidences,
@@ -1744,7 +2322,7 @@ class ExtractionService:
             record = entry["record"]
             await self.value_service.record_ai_extracted_value(
                 context_id=job.context_id,
-                record_instance_id=field.get("record_instance_id") or record.id,
+                record_instance_id=record.id,
                 field_key=entry["field_key"],
                 field_path=field["field_path"],
                 field_title=field.get("field_title"),
@@ -1946,22 +2524,122 @@ class ExtractionService:
         text = str(value).strip()
         return text if text else None
 
-    def _resolve_output_record(
+    def _records_by_form_repeat_index(self, records: list[RecordInstance]) -> dict[str, dict[int, RecordInstance]]:
+        records_by_form: dict[str, dict[int, RecordInstance]] = {}
+        for record in records:
+            records_by_form.setdefault(record.form_key, {})[int(record.repeat_index or 0)] = record
+        return records_by_form
+
+    async def _resolve_output_record(
         self,
         *,
         field: dict[str, Any],
-        records_by_form: dict[str, RecordInstance],
+        records_by_form: dict[str, dict[int, RecordInstance]],
         default_record: RecordInstance,
+        context_id: str,
+        source_document_id: str | None,
+        extraction_run_id: str | None,
     ) -> RecordInstance:
-        record_form_key = field.get("record_form_key")
+        explicit_record_id = field.get("record_instance_id")
+        if explicit_record_id:
+            for records_for_form in records_by_form.values():
+                for record in records_for_form.values():
+                    if str(record.id) == str(explicit_record_id):
+                        return record
+
+        record_form_key = field.get("record_form_key") or self._record_form_key_from_field_path(field.get("field_path"))
+        repeat_index = self._repeat_index_from_output_field(field=field, record_form_key=record_form_key)
         if record_form_key and record_form_key in records_by_form:
-            return records_by_form[record_form_key]
+            records_for_form = records_by_form[record_form_key]
+            if repeat_index in records_for_form:
+                return records_for_form[repeat_index]
+            base_record = records_for_form.get(0) or next(iter(records_for_form.values()), None)
+            record = await self._create_output_record(
+                context_id=context_id,
+                form_key=record_form_key,
+                repeat_index=repeat_index,
+                base_record=base_record,
+                form_title=field.get("record_form_title"),
+                source_document_id=source_document_id,
+                extraction_run_id=extraction_run_id,
+            )
+            records_for_form[repeat_index] = record
+            return record
+
         parts = str(field.get("field_path") or "").split(".")
         if len(parts) >= 2:
             form_key = f"{parts[0]}.{parts[1]}"
             if form_key in records_by_form:
-                return records_by_form[form_key]
+                records_for_form = records_by_form[form_key]
+                if repeat_index in records_for_form:
+                    return records_for_form[repeat_index]
+                base_record = records_for_form.get(0) or next(iter(records_for_form.values()), None)
+                record = await self._create_output_record(
+                    context_id=context_id,
+                    form_key=form_key,
+                    repeat_index=repeat_index,
+                    base_record=base_record,
+                    form_title=field.get("record_form_title"),
+                    source_document_id=source_document_id,
+                    extraction_run_id=extraction_run_id,
+                )
+                records_for_form[repeat_index] = record
+                return record
         return default_record
+
+    def _record_form_key_from_field_path(self, field_path: Any) -> str | None:
+        parts = [part for part in str(field_path or "").split(".") if part]
+        if len(parts) >= 2:
+            return f"{parts[0]}.{parts[1]}"
+        return parts[0] if parts else None
+
+    def _repeat_index_from_output_field(self, *, field: dict[str, Any], record_form_key: str | None) -> int:
+        raw_repeat_index = field.get("repeat_index")
+        if raw_repeat_index is not None:
+            try:
+                return max(0, int(raw_repeat_index))
+            except (TypeError, ValueError):
+                pass
+
+        parts = [part for part in str(field.get("field_path") or "").split(".") if part]
+        form_parts = [part for part in str(record_form_key or "").split(".") if part]
+        if form_parts and parts[: len(form_parts)] == form_parts:
+            candidates = parts[len(form_parts):]
+        else:
+            candidates = parts[2:]
+        for part in candidates:
+            if part.isdigit():
+                return int(part)
+        return 0
+
+    async def _create_output_record(
+        self,
+        *,
+        context_id: str,
+        form_key: str,
+        repeat_index: int,
+        base_record: RecordInstance | None,
+        form_title: str | None = None,
+        source_document_id: str | None,
+        extraction_run_id: str | None,
+    ) -> RecordInstance:
+        form_title = getattr(base_record, "form_title", None) or form_title or form_key.split(".")[-1]
+        group_key = getattr(base_record, "group_key", None) or (form_key.split(".")[0] if "." in form_key else None)
+        group_title = getattr(base_record, "group_title", None) or group_key
+        return await self.record_repository.create(
+            {
+                "context_id": context_id,
+                "group_key": group_key,
+                "group_title": group_title,
+                "form_key": form_key,
+                "form_title": form_title,
+                "repeat_index": repeat_index,
+                "instance_label": form_title if repeat_index == 0 else f"{form_title} #{repeat_index + 1}",
+                "source_document_id": source_document_id,
+                "created_by_run_id": extraction_run_id,
+                "review_status": "unreviewed",
+            }
+        )
 
     def _uses_fake_value_service(self) -> bool:
         return self.value_service.__class__.__module__.startswith("tests.")

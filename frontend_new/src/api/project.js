@@ -40,6 +40,12 @@ const crfFieldUrl = (projectId, projectPatientId, fieldPath, suffix = '') => (
   `${PROJECTS_ENDPOINT}/${projectId}/patients/${projectPatientId}/crf/fields/${encodeURIComponent(normalizeFieldPath(fieldPath))}${suffix}`
 )
 
+const recordInstanceParams = (options = {}) => {
+  if (!options || typeof options !== 'object') return undefined
+  const recordInstanceId = options.record_instance_id || options.recordInstanceId
+  return recordInstanceId ? { record_instance_id: recordInstanceId } : undefined
+}
+
 const extractCurrentValue = (current = {}) => {
   if (current.value_json !== undefined && current.value_json !== null) return current.value_json
   if (current.value_number !== undefined && current.value_number !== null) return Number(current.value_number)
@@ -133,10 +139,51 @@ const setNestedValue = (target, path, value, schema = null) => {
   setBySchemaPath(target, schema, parts, value)
 }
 
+const setRowRecordInstanceBySchemaPath = (target, schemaNode, parts, recordInstanceId) => {
+  if (!recordInstanceId || !parts.length) return
+
+  if (isSchemaArrayRecord(schemaNode)) {
+    const [firstPart, ...restParts] = parts
+    const hasExplicitIndex = isIndexedPathPart(firstPart)
+    const rowIndex = hasExplicitIndex ? Number(firstPart) : 0
+    const nextParts = hasExplicitIndex ? restParts : parts
+    while (target.length <= rowIndex) target.push({})
+    if (target[rowIndex] == null || typeof target[rowIndex] !== 'object' || Array.isArray(target[rowIndex])) {
+      target[rowIndex] = {}
+    }
+    target[rowIndex]._record_instance_id = recordInstanceId
+    target[rowIndex]._row_uid = target[rowIndex]._row_uid || recordInstanceId
+    if (nextParts.length > 0) {
+      setRowRecordInstanceBySchemaPath(target[rowIndex], schemaNode.items, nextParts, recordInstanceId)
+    }
+    return
+  }
+
+  const [part, ...restParts] = parts
+  const childSchema = isSchemaObject(schemaNode) ? schemaNode.properties[part] : null
+  if (isSchemaArrayRecord(childSchema)) {
+    if (!Array.isArray(target[part])) target[part] = []
+    setRowRecordInstanceBySchemaPath(target[part], childSchema, restParts, recordInstanceId)
+    return
+  }
+  if (restParts.length === 0) return
+  if (target[part] == null || typeof target[part] !== 'object' || Array.isArray(target[part])) {
+    target[part] = {}
+  }
+  setRowRecordInstanceBySchemaPath(target[part], childSchema, restParts, recordInstanceId)
+}
+
+const setRowRecordInstanceByPath = (target, path, recordInstanceId, schema = null) => {
+  const parts = normalizeFieldPath(path).split('.').filter(Boolean)
+  if (parts.length === 0) return
+  setRowRecordInstanceBySchemaPath(target, schema, parts, recordInstanceId)
+}
+
 const currentValuesToData = (currentValues = {}, schema = null) => {
   const data = {}
   Object.entries(currentValues || {}).forEach(([fieldPath, current]) => {
     setNestedValue(data, fieldPath, extractCurrentValue(current), schema)
+    setRowRecordInstanceByPath(data, fieldPath, current?.record_instance_id, schema)
   })
   return data
 }
@@ -185,14 +232,45 @@ const buildCrfGroupsFromSchema = (schema, currentValues = {}) => {
   if (!rootProps || typeof rootProps !== 'object' || Array.isArray(rootProps)) return {}
 
   const filledByCanonical = {}
+  const filledByPath = {}
   Object.entries(currentValues || {}).forEach(([fieldPath, current]) => {
-    const canonical = canonicalDotPath(normalizeFieldPath(fieldPath))
+    const normalizedPath = normalizeFieldPath(fieldPath)
+    const canonical = canonicalDotPath(normalizedPath)
     if (!canonical) return
     const value = extractCurrentValue(current || {})
+    filledByPath[normalizedPath] = value
     if (filledByCanonical[canonical] === undefined || hasMeaningfulValue(value)) {
       filledByCanonical[canonical] = value
     }
   })
+
+  const buildRepeatableRecords = (pathSegments, leafDotPaths) => {
+    const prefix = pathSegments.join('.')
+    const leafSet = new Set(leafDotPaths.map((dotPath) => canonicalDotPath(dotPath)))
+    const rows = {}
+
+    Object.entries(filledByPath).forEach(([dotPath, value]) => {
+      const parts = dotPath.split('.').filter(Boolean)
+      if (parts.slice(0, pathSegments.length).join('.') !== prefix) return
+      const restParts = parts.slice(pathSegments.length)
+      const indexPart = restParts.find((part) => isIndexedPathPart(part))
+      const rowIndex = indexPart == null ? 0 : Number(indexPart)
+      const canonical = canonicalDotPath(dotPath)
+      if (!leafSet.has(canonical)) return
+
+      const row = rows[rowIndex] || {
+        id: `${prefix}.${rowIndex}`,
+        repeat_index: rowIndex,
+        fields: {},
+      }
+      row.fields[canonical.split('.').filter(Boolean).join('/')] = { value }
+      rows[rowIndex] = row
+    })
+
+    return Object.keys(rows)
+      .map((index) => rows[index])
+      .sort((a, b) => Number(a.repeat_index || 0) - Number(b.repeat_index || 0))
+  }
 
   const buildGroupEntry = (groupSchema, groupId, groupName, pathSegments) => {
     const leafDotPaths = collectSchemaLeafPaths(groupSchema, pathSegments)
@@ -208,7 +286,7 @@ const buildCrfGroupsFromSchema = (schema, currentValues = {}) => {
       group_name: groupName,
       is_repeatable: groupSchema?.type === 'array',
       fields,
-      records: [],
+      records: groupSchema?.type === 'array' ? buildRepeatableRecords(pathSegments, leafDotPaths) : [],
     }
   }
 
@@ -492,8 +570,9 @@ const mergePatientProfile = async (projectPatient = {}, crf = null) => {
 
 const resolveProjectPatient = async (projectId = '', patientOrProjectPatientId = '') => {
   if (!projectId || !patientOrProjectPatientId) return null
-  const patients = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients`)
-  return (Array.isArray(patients) ? patients : []).find((item) => (
+  const payload = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients`)
+  const patients = unwrapProjectPatientList(payload)
+  return patients.find((item) => (
     String(item.id) === String(patientOrProjectPatientId) ||
     String(item.patient_id) === String(patientOrProjectPatientId) ||
     String(item.enroll_no || '') === String(patientOrProjectPatientId)
@@ -508,7 +587,7 @@ export const getProject = async (projectId = '') => {
   if (!projectId) return emptySuccess(null)
   const project = await request.get(`${PROJECTS_ENDPOINT}/${projectId}`)
   const aliased = withProjectAliases(project)
-  // 以 template-bindings 的 active 绑定为准；删除模板后会解除绑定并清空 extra_json 中的模板引用。
+  // 以 template-bindings 的 active 绑定为准；删除基础模板后项目会继续使用项目内 CRF 副本。
   try {
     const bindings = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings`)
     const list = Array.isArray(bindings) ? bindings : []
@@ -568,15 +647,21 @@ export const toggleProjectStatus = async (projectId = '', status = 'active') => 
 export const getProjectMembers = async () => emptyList()
 export const addProjectMember = async () => emptySuccess(null)
 export const removeProjectMember = async () => emptySuccess(null)
+const unwrapProjectPatientList = (payload) => {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.items)) return payload.items
+  return []
+}
 export const getProjectPatients = async (projectId = '', params = {}) => {
   if (!projectId) return wrapList([])
-  const patients = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients`, params)
-  const list = Array.isArray(patients) ? patients : []
+  const payload = await request.get(`${PROJECTS_ENDPOINT}/${projectId}/patients`, params)
+  const list = unwrapProjectPatientList(payload)
   const enriched = list.map((patient) => projectPatientToDetail(patient, null))
+  const serverPagination = payload && !Array.isArray(payload) ? payload : {}
   return wrapList(enriched, {
-    page: params.page,
-    page_size: params.page_size,
-    total: list.length,
+    page: serverPagination.page ?? params.page,
+    page_size: serverPagination.page_size ?? params.page_size,
+    total: typeof serverPagination.total === 'number' ? serverPagination.total : list.length,
   })
 }
 
@@ -619,9 +704,12 @@ export const updateProjectPatientCrfFields = async (projectId, projectPatientId,
 export const getProjectPatientCrfConflicts = async () => emptyList()
 export const resolveProjectPatientCrfConflict = async () => emptySuccess(null)
 export const resolveAllProjectPatientCrfConflicts = async () => emptySuccess(null)
-export const getProjectCrfFieldHistory = async (projectId = '', projectPatientId = '', fieldPath = '') => {
+export const getProjectCrfFieldHistory = async (projectId = '', projectPatientId = '', fieldPath = '', options = {}) => {
   if (!projectId || !projectPatientId || !fieldPath) return emptySuccess({ history: [] })
-  const events = await request.get(crfFieldUrl(projectId, projectPatientId, fieldPath, '/events'))
+  const events = await request.get(
+    crfFieldUrl(projectId, projectPatientId, fieldPath, '/events'),
+    recordInstanceParams(options)
+  )
   const history = (Array.isArray(events) ? events : []).map((event) => ({
     id: event.id,
     field_path: event.field_path,
@@ -651,13 +739,16 @@ export const getProjectCrfFieldHistory = async (projectId = '', projectPatientId
  * 与 getEhrFieldEvidence 对齐：返回经过 normalizeFieldEvidence 处理的 evidence 数组，
  * 每条都带有 source_location（polygon / page_width / page_height / page）。
  */
-export const getCrfFieldEvidence = async (projectId = '', projectPatientId = '', fieldPath = '') => {
+export const getCrfFieldEvidence = async (projectId = '', projectPatientId = '', fieldPath = '', options = {}) => {
   if (!projectId || !projectPatientId || !fieldPath) return emptySuccess([])
-  const evidences = await request.get(crfFieldUrl(projectId, projectPatientId, fieldPath, '/evidence'))
+  const evidences = await request.get(
+    crfFieldUrl(projectId, projectPatientId, fieldPath, '/evidence'),
+    recordInstanceParams(options)
+  )
   return emptySuccess((Array.isArray(evidences) ? evidences : []).map(normalizeFieldEvidence))
 }
 
-export const getProjectCrfFieldCandidates = async (projectId = '', projectPatientId = '', fieldPath = '') => {
+export const getProjectCrfFieldCandidates = async (projectId = '', projectPatientId = '', fieldPath = '', options = {}) => {
   if (!projectId || !projectPatientId || !fieldPath) return emptySuccess({
     candidates: [],
     selected_candidate_id: null,
@@ -665,22 +756,28 @@ export const getProjectCrfFieldCandidates = async (projectId = '', projectPatien
     has_value_conflict: false,
     distinct_value_count: 0,
   })
-  const payload = await request.get(crfFieldUrl(projectId, projectPatientId, fieldPath, '/candidates'))
+  const payload = await request.get(
+    crfFieldUrl(projectId, projectPatientId, fieldPath, '/candidates'),
+    recordInstanceParams(options)
+  )
   return emptySuccess(payload)
 }
 export const saveProjectCrfFieldValue = async (projectId = '', projectPatientId = '', fieldPath = '', value, options = {}) => {
   if (!projectId || !projectPatientId || !fieldPath) return emptySuccess(null)
   const payload = {
     ...inferCrfValuePayload(fieldPath, value),
-    ...(options.record_instance_id ? { record_instance_id: options.record_instance_id } : {}),
+    ...recordInstanceParams(options),
     ...(options.note ? { note: options.note } : {}),
   }
   const current = await request.patch(crfFieldUrl(projectId, projectPatientId, fieldPath), payload)
   return emptySuccess(current)
 }
-export const deleteProjectCrfFieldValue = async (projectId = '', projectPatientId = '', fieldPath = '') => {
+export const deleteProjectCrfFieldValue = async (projectId = '', projectPatientId = '', fieldPath = '', options = {}) => {
   if (!projectId || !projectPatientId || !fieldPath) return emptySuccess(null)
-  await request.delete(crfFieldUrl(projectId, projectPatientId, fieldPath))
+  await request.delete(
+    crfFieldUrl(projectId, projectPatientId, fieldPath),
+    recordInstanceParams(options)
+  )
   return emptySuccess(null)
 }
 export const createProjectCrfRecordInstance = async (projectId = '', projectPatientId = '', data = {}) => {
@@ -693,10 +790,16 @@ export const deleteProjectCrfRecordInstance = async (projectId = '', projectPati
   await request.delete(`${PROJECTS_ENDPOINT}/${projectId}/patients/${projectPatientId}/crf/records/${recordInstanceId}`)
   return emptySuccess(null)
 }
-export const selectProjectCrfFieldCandidate = async (projectId = '', projectPatientId = '', fieldPath = '', candidateId = '', selectedValue) => {
+export const selectProjectCrfFieldCandidate = async (projectId = '', projectPatientId = '', fieldPath = '', candidateId = '', selectedValue, options = {}) => {
   if (!projectId || !projectPatientId || !fieldPath) return emptySuccess(null)
-  if (!candidateId) return saveProjectCrfFieldValue(projectId, projectPatientId, fieldPath, selectedValue)
-  const payload = await request.post(crfFieldUrl(projectId, projectPatientId, fieldPath, '/select-candidate'), { candidate_id: candidateId })
+  if (!candidateId) return saveProjectCrfFieldValue(projectId, projectPatientId, fieldPath, selectedValue, options)
+  const payload = await request.post(
+    crfFieldUrl(projectId, projectPatientId, fieldPath, '/select-candidate'),
+    {
+      candidate_id: candidateId,
+      ...recordInstanceParams(options),
+    }
+  )
   return emptySuccess(payload)
 }
 export const updateProjectCrfFolder = async (projectId = '', projectPatientId = '', options = {}) => {
@@ -844,6 +947,20 @@ const fetchActiveProjectBinding = async (projectId = '') => {
   }
 }
 
+const ensureProjectScopedBinding = async (projectId = '', binding = null) => {
+  if (!projectId || !binding?.template_id || !binding?.schema_version_id) return binding
+  try {
+    return await request.post(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings`, {
+      template_id: binding.template_id,
+      schema_version_id: binding.schema_version_id,
+      binding_type: binding.binding_type || 'primary_crf',
+    })
+  } catch (error) {
+    console.warn('[project] 确保项目 CRF 副本失败:', error)
+    return binding
+  }
+}
+
 const pickSchemaVersionFromTemplate = (template = {}, schemaVersionId = '') => {
   const versions = Array.isArray(template?.versions) ? template.versions : []
   if (schemaVersionId) {
@@ -895,6 +1012,7 @@ export const getProjectTemplateDesigner = async (projectId = '') => {
   }
   try {
     const template = await request.get(`/schema-templates/${templateRef.template_id}`)
+    const versions = Array.isArray(template?.versions) ? template.versions : []
     const version = pickSchemaVersionFromTemplate(template, templateRef.schema_version_id)
     const schemaJson = version?.schema_json || version?.schema || template?.schema_json || {}
     const layoutConfig = (schemaJson && typeof schemaJson === 'object' && schemaJson.layout_config) || {}
@@ -910,6 +1028,7 @@ export const getProjectTemplateDesigner = async (projectId = '') => {
       schema: schemaJson,
       designer,
       field_groups: fieldGroups,
+      versions,
     })
   } catch (error) {
     console.error('[project] 加载项目模板失败:', error)
@@ -924,9 +1043,13 @@ export const saveProjectTemplateDesigner = async (projectId = '', payload = {}) 
     ? designer.fieldGroups
     : (Array.isArray(payload.field_groups) ? payload.field_groups : [])
 
-  const binding = await fetchActiveProjectBinding(projectId)
+  let binding = await fetchActiveProjectBinding(projectId)
   if (!binding?.template_id) {
     return { success: false, message: '项目尚未关联 CRF 模板，无法保存', data: null }
+  }
+  binding = await ensureProjectScopedBinding(projectId, binding)
+  if (!binding?.template_id) {
+    return { success: false, message: '项目 CRF 副本初始化失败，无法保存', data: null }
   }
 
   // 1) 在原模板上创建新版本（草稿）并发布，使其成为最新活动版本
@@ -995,7 +1118,19 @@ export const saveProjectTemplateDesigner = async (projectId = '', payload = {}) 
     skipped: 0,
   })
 }
-export const applyTemplateVersion = async () => emptySuccess(null)
+export const applyTemplateVersion = async (projectId = '', schemaVersionId = '', options = {}) => {
+  if (!projectId || !schemaVersionId) return emptySuccess(null)
+  const binding = await fetchActiveProjectBinding(projectId)
+  if (!binding?.template_id) {
+    return { success: false, message: '项目尚未关联 CRF 模板，无法切换版本', data: null }
+  }
+  const nextBinding = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/template-bindings`, {
+    template_id: binding.template_id,
+    schema_version_id: schemaVersionId,
+    binding_type: options.binding_type || binding.binding_type || 'primary_crf',
+  })
+  return emptySuccess(nextBinding)
+}
 export const exportProjectCrfFile = async (projectId = '', payload = {}) => {
   if (!projectId) return new Blob([])
   const apiBase = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/+$/, '')

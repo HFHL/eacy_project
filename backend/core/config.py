@@ -34,12 +34,19 @@ class Config(BaseSettings):
         validation_alias=AliasChoices("CELERY_BACKEND_URL", "CELERY_RESULT_BACKEND"),
     )
     CELERY_TASK_ALWAYS_EAGER: bool = False
+    CELERY_WORKER_PREFETCH_MULTIPLIER: int = 1
     # Celery Beat: mark idle pending extraction jobs as failed (retryable).
     STALE_PENDING_ABANDON_ENABLED: bool = True
     STALE_PENDING_ABANDON_HOURS: int = 24
     STALE_PENDING_ABANDON_LIMIT: int = 500
     STALE_PENDING_ABANDON_CRON_HOUR: int = 3
     STALE_PENDING_ABANDON_CRON_MINUTE: int = 0
+    EXTRACTION_SCHEDULER_ENABLED: bool = True
+    EXTRACTION_GLOBAL_CONCURRENCY: int = 4
+    EXTRACTION_USER_CONCURRENCY: int = 1
+    EXTRACTION_PROJECT_CONCURRENCY: int = 2
+    EXTRACTION_SCHEDULER_BATCH_SIZE: int = 20
+    EXTRACTION_SCHEDULER_INTERVAL_SECONDS: int = 15
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     DOCUMENT_STORAGE_PROVIDER: str = "oss"
@@ -69,6 +76,19 @@ class Config(BaseSettings):
     EXTRACTION_LLM_TEMPERATURE: float = 0.0
     EXTRACTION_FIELD_BATCH_SIZE: int = 35
     EXTRACTION_OCR_EVIDENCE_UNIT_LIMIT: int = 400
+    CLAUDE_CODE_BIN: str = "claude"
+    CLAUDE_CODE_WORKSPACE_ROOT: str = "/tmp/eacy-claude-code"
+    CLAUDE_CODE_TIMEOUT_SECONDS: float = 300.0
+    CLAUDE_CODE_MAX_TURNS: int = 14
+    CLAUDE_CODE_KEEP_WORKSPACE: bool = False
+    CLAUDE_CODE_ALLOWED_TOOLS: str = "Read,LS,Grep"
+    CLAUDE_CODE_DISALLOWED_TOOLS: str = "Bash,Edit,Write,WebFetch,WebSearch"
+    CLAUDE_CODE_ENABLE_MCP_TOOLS: bool = True
+    CLAUDE_CODE_MCP_SERVER_NAME: str = "eacy_extraction"
+    CLAUDE_CODE_BARE: bool = False
+    CLAUDE_CODE_NO_SESSION_PERSISTENCE: bool = True
+    CLAUDE_CODE_SESSION_NAME_PREFIX: str = "eacy-extract"
+    CLAUDE_CODE_CONCURRENCY: int = 1
 
     # SMTP（用于注册/找回密码邮箱验证码）
     SMTP_HOST: str | None = None

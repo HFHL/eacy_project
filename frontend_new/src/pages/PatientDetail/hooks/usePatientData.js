@@ -63,6 +63,7 @@ export const usePatientData = (patientId = null) => {
   const detailAbortRef = useRef(null)
   const documentsAbortRef = useRef(null)
   const aiSummaryAbortRef = useRef(null)
+  const currentPatientIdRef = useRef(patientId)
 
   const isAbortError = (error) => (
     error?.name === 'AbortError' || error?.code === 20 || error?.code === 'ERR_CANCELED'
@@ -72,14 +73,15 @@ export const usePatientData = (patientId = null) => {
   const fetchPatientDetail = useCallback(async () => {
     if (!patientId) return
 
+    const requestPatientId = patientId
     detailAbortRef.current?.abort()
     const controller = new AbortController()
     detailAbortRef.current = controller
 
     setLoading(true)
     try {
-      const res = await getPatientDetail(patientId, { signal: controller.signal })
-      if (controller.signal.aborted) return
+      const res = await getPatientDetail(requestPatientId, { signal: controller.signal })
+      if (controller.signal.aborted || String(currentPatientIdRef.current || '') !== String(requestPatientId)) return
       if (res.success && res.data) {
         const data = res.data
         const mergedData = data.merged_data || {}
@@ -121,7 +123,7 @@ export const usePatientData = (patientId = null) => {
       console.error('获取患者详情失败:', error)
       message.error('获取患者详情失败')
     } finally {
-      if (detailAbortRef.current === controller) {
+      if (detailAbortRef.current === controller && String(currentPatientIdRef.current || '') === String(requestPatientId)) {
         detailAbortRef.current = null
         setLoading(false)
       }
@@ -142,14 +144,15 @@ export const usePatientData = (patientId = null) => {
   const fetchPatientDocuments = useCallback(async () => {
     if (!patientId) return
 
+    const requestPatientId = patientId
     documentsAbortRef.current?.abort()
     const controller = new AbortController()
     documentsAbortRef.current = controller
 
     setDocumentsLoading(true)
     try {
-      const res = await getPatientDocuments(patientId, { signal: controller.signal })
-      if (controller.signal.aborted) return
+      const res = await getPatientDocuments(requestPatientId, { signal: controller.signal })
+      if (controller.signal.aborted || String(currentPatientIdRef.current || '') !== String(requestPatientId)) return
       if (res.success && res.data) {
         setPatientDocuments(res.data)
         console.log('患者关联文档:', res.data)
@@ -161,7 +164,7 @@ export const usePatientData = (patientId = null) => {
       console.error('获取患者文档失败:', error)
       message.error('获取患者文档失败')
     } finally {
-      if (documentsAbortRef.current === controller) {
+      if (documentsAbortRef.current === controller && String(currentPatientIdRef.current || '') === String(requestPatientId)) {
         documentsAbortRef.current = null
         setDocumentsLoading(false)
       }
@@ -276,8 +279,15 @@ export const usePatientData = (patientId = null) => {
   // 获取已有的 AI 综述
   const fetchAiSummary = useCallback(async () => {
     if (!patientId) return
+    const requestPatientId = patientId
+
+    aiSummaryAbortRef.current?.abort()
+    const controller = new AbortController()
+    aiSummaryAbortRef.current = controller
+
     try {
-      const res = await getAiSummary(patientId)
+      const res = await getAiSummary(requestPatientId, { signal: controller.signal })
+      if (controller.signal.aborted || String(currentPatientIdRef.current || '') !== String(requestPatientId)) return
       if (res.success && res.data && res.data.content) {
         setAiSummary({
           content: res.data.content || '',
@@ -294,12 +304,33 @@ export const usePatientData = (patientId = null) => {
         })
       }
     } catch (error) {
+      if (isAbortError(error)) return
       console.log('获取 AI 综述失败（可能尚未生成）:', error)
+    } finally {
+      if (aiSummaryAbortRef.current === controller) {
+        aiSummaryAbortRef.current = null
+      }
     }
   }, [patientId])
 
   // 首屏仅拉患者详情；文档列表与 AI 综述由 PatientDetail 按 Tab 按需触发
   useEffect(() => {
+    currentPatientIdRef.current = patientId
+    detailAbortRef.current?.abort()
+    documentsAbortRef.current?.abort()
+    aiSummaryAbortRef.current?.abort()
+
+    setPatientInfo({ ...emptyPatientInfo })
+    setAiSummary({ ...emptyAiSummary })
+    setSummaryContent('')
+    setSummaryEditMode(false)
+    setSummaryGenerating(false)
+    setEhrData(null)
+    setPatientDocuments([])
+    setLoading(false)
+    setEhrLoading(false)
+    setDocumentsLoading(false)
+
     if (patientId) {
       fetchPatientDetail()
     }

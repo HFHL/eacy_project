@@ -84,15 +84,33 @@ class ProjectPatientRepository(BaseRepo[ProjectPatient]):
         result = await session.execute(query)
         return result.scalars().first()
 
-    async def list_by_project(self, project_id: str) -> list[ProjectPatient]:
+    async def list_by_project(
+        self,
+        project_id: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[ProjectPatient]:
         query = (
             select(ProjectPatient)
             .where(ProjectPatient.project_id == project_id)
             .where(ProjectPatient.status != "withdrawn")
             .order_by(ProjectPatient.created_at.desc())
         )
+        if limit is not None:
+            query = query.limit(limit).offset(max(offset, 0))
         result = await session.execute(query)
         return list(result.scalars().all())
+
+    async def count_by_project(self, project_id: str) -> int:
+        query = (
+            select(func.count())
+            .select_from(ProjectPatient)
+            .where(ProjectPatient.project_id == project_id)
+            .where(ProjectPatient.status != "withdrawn")
+        )
+        result = await session.execute(query)
+        return int(result.scalar_one())
 
     async def list_by_ids(self, project_patient_ids: list[str]) -> list[ProjectPatient]:
         if not project_patient_ids:
@@ -127,7 +145,12 @@ class ProjectPatientRepository(BaseRepo[ProjectPatient]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def list_projects_by_patient(self, patient_id: str) -> list[tuple[ProjectPatient, ResearchProject]]:
+    async def list_projects_by_patient(
+        self,
+        patient_id: str,
+        *,
+        owner_id: str | None = None,
+    ) -> list[tuple[ProjectPatient, ResearchProject]]:
         """返回某个患者参与的所有项目（含项目元信息），排除已撤回的入组记录。"""
         query = (
             select(ProjectPatient, ResearchProject)
@@ -137,16 +160,27 @@ class ProjectPatientRepository(BaseRepo[ProjectPatient]):
             .where(ResearchProject.status != "deleted")
             .order_by(ProjectPatient.created_at.desc())
         )
+        if owner_id is not None:
+            query = query.where(ResearchProject.owner_id == owner_id)
         result = await session.execute(query)
         return [(pp, rp) for pp, rp in result.all()]
 
-    async def withdraw_by_patient(self, patient_id: str) -> int:
-        query = (
-            update(ProjectPatient)
-            .where(ProjectPatient.patient_id == patient_id)
-            .where(ProjectPatient.status != "withdrawn")
-            .values(status="withdrawn", withdrawn_at=datetime.utcnow())
-        )
+    async def withdraw_by_patient(self, patient_id: str, *, owner_id: str | None = None) -> int:
+        query = update(ProjectPatient).where(ProjectPatient.patient_id == patient_id).where(ProjectPatient.status != "withdrawn")
+        if owner_id is not None:
+            id_query = (
+                select(ProjectPatient.id)
+                .join(ResearchProject, ResearchProject.id == ProjectPatient.project_id)
+                .where(ProjectPatient.patient_id == patient_id)
+                .where(ProjectPatient.status != "withdrawn")
+                .where(ResearchProject.owner_id == owner_id)
+            )
+            id_result = await session.execute(id_query)
+            project_patient_ids = [row_id for row_id in id_result.scalars().all()]
+            if not project_patient_ids:
+                return 0
+            query = update(ProjectPatient).where(ProjectPatient.id.in_(project_patient_ids))
+        query = query.values(status="withdrawn", withdrawn_at=datetime.utcnow())
         result = await session.execute(query)
         return int(result.rowcount or 0)
 
@@ -188,17 +222,30 @@ class ProjectTemplateBindingRepository(BaseRepo[ProjectTemplateBinding]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def list_active_bindings_by_template(self, template_id: str) -> list[ProjectTemplateBinding]:
+    async def list_active_bindings_by_template(
+        self,
+        template_id: str,
+        *,
+        owner_id: str | None = None,
+    ) -> list[ProjectTemplateBinding]:
         query = (
             select(ProjectTemplateBinding)
+            .join(ResearchProject, ResearchProject.id == ProjectTemplateBinding.project_id)
             .where(ProjectTemplateBinding.template_id == template_id)
             .where(ProjectTemplateBinding.status == "active")
             .order_by(ProjectTemplateBinding.created_at.desc())
         )
+        if owner_id is not None:
+            query = query.where(ResearchProject.owner_id == owner_id)
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def list_active_projects_by_template(self, template_id: str) -> list[dict[str, str]]:
+    async def list_active_projects_by_template(
+        self,
+        template_id: str,
+        *,
+        owner_id: str | None = None,
+    ) -> list[dict[str, str]]:
         """返回仍激活绑定指定模板的项目（去重）。"""
         query = (
             select(ResearchProject.id, ResearchProject.project_name)
@@ -211,6 +258,8 @@ class ProjectTemplateBindingRepository(BaseRepo[ProjectTemplateBinding]):
             .distinct()
             .order_by(ResearchProject.project_name.asc())
         )
+        if owner_id is not None:
+            query = query.where(ResearchProject.owner_id == owner_id)
         result = await session.execute(query)
         return [
             {"id": str(row.id), "project_name": row.project_name or "未命名项目"}

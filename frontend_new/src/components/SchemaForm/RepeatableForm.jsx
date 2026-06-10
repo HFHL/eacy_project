@@ -56,6 +56,21 @@ function ensureRecordRowUid(record) {
   return target
 }
 
+function stripRecordIdentity(value) {
+  if (Array.isArray(value)) return value.map((item) => stripRecordIdentity(item))
+  if (!value || typeof value !== 'object') return value
+  const output = {}
+  for (const [key, child] of Object.entries(value)) {
+    if (['_row_uid', '_record_instance_id', '_rowKey', '_key'].includes(key)) continue
+    output[key] = stripRecordIdentity(child)
+  }
+  return output
+}
+
+function cloneRecordForInsert(record) {
+  return { ...stripRecordIdentity(record), _row_uid: createRowUid() }
+}
+
 const scrollbarStyle = `
   .schema-modal-scrollable::-webkit-scrollbar,
   .schema-table-wrapper .ant-table-body::-webkit-scrollbar {
@@ -110,7 +125,16 @@ function createEmptyRecord(itemSchema) {
 }
 
 
-const CellWithSource = ({ value, fieldSchema, fieldName, onSourceClick, path, rowUid = null, showIcon = true }) => {
+const CellWithSource = ({
+  value,
+  fieldSchema,
+  fieldName,
+  onSourceClick,
+  path,
+  rowUid = null,
+  recordInstanceId = null,
+  showIcon = true,
+}) => {
   const displayValue = useMemo(() => {
     if (value === null || value === undefined || value === '') return <Text type="secondary">-</Text>
     if (typeof value === 'boolean') return value ? '是' : '否'
@@ -119,9 +143,14 @@ const CellWithSource = ({ value, fieldSchema, fieldName, onSourceClick, path, ro
   const handleTrace = useCallback((e) => {
     e.stopPropagation()
     if (onSourceClick) {
-      onSourceClick(path, fieldSchema, fieldName, { forceOpen: true, trigger: 'source-icon', rowUid })
+      onSourceClick(path, fieldSchema, fieldName, {
+        forceOpen: true,
+        trigger: 'source-icon',
+        rowUid,
+        recordInstanceId,
+      })
     }
-  }, [path, fieldSchema, fieldName, onSourceClick, rowUid])
+  }, [path, fieldSchema, fieldName, onSourceClick, rowUid, recordInstanceId])
   if (!showIcon) return <span>{displayValue}</span>
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -157,6 +186,7 @@ function getTableColumns(itemSchema, onEdit, onDelete, onCopy, onRowSource, disa
             fieldName={fieldName}
             path={`${basePath}.${index}.${fieldName}`}
             rowUid={record?._row_uid || null}
+            recordInstanceId={record?._record_instance_id || null}
             onSourceClick={onRowSource}
             showIcon={showCellIcons}
           />
@@ -326,6 +356,7 @@ const NestedTableViewer = ({ title, arraySchema, path, data = [], onDataChange, 
               fieldName={fieldName}
               path={`${path}.${index}.${fieldName}`}
               rowUid={_record?._row_uid || null}
+              recordInstanceId={_record?._record_instance_id || null}
               onSourceClick={onSourceClick}
               showIcon={true}
             />
@@ -453,7 +484,7 @@ const RepeatableForm = ({ title, arraySchema, path, data = [], onDataChange, onS
   const normalizedData = useMemo(() => (Array.isArray(data) ? data : []), [data])
   // 路径中含有 .数字. 说明这是第二层（或更深）嵌套数组，icon 放标题，单元格不显示
   const isNested = useMemo(() => /\.\d+\./.test(path), [path])
-  const { columns } = useMemo(() => getTableColumns(itemSchema, (index, record) => { setEditingIndex(index); setEditingRecord({ ...ensureRecordRowUid(record) }); setEditModalVisible(true); }, (index) => { if (normalizedData.length <= minItems) return; const newData = [...normalizedData]; newData.splice(index, 1); onDataChange ? onDataChange(newData) : actions.updateFieldValue(path, newData); }, (index) => { if (normalizedData.length >= maxItems) return; const copiedRecord = ensureRecordRowUid(JSON.parse(JSON.stringify(normalizedData[index]))); const newData = [...normalizedData]; newData.splice(index + 1, 0, copiedRecord); onDataChange ? onDataChange(newData) : actions.updateFieldValue(path, newData); }, onSourceClick, disabled, path, !isNested), [itemSchema, normalizedData, disabled, minItems, maxItems, onDataChange, actions, path, onSourceClick, isNested])
+  const { columns } = useMemo(() => getTableColumns(itemSchema, (index, record) => { setEditingIndex(index); setEditingRecord({ ...ensureRecordRowUid(record) }); setEditModalVisible(true); }, (index) => { if (normalizedData.length <= minItems) return; const newData = [...normalizedData]; newData.splice(index, 1); onDataChange ? onDataChange(newData) : actions.updateFieldValue(path, newData); }, (index) => { if (normalizedData.length >= maxItems) return; const copiedRecord = cloneRecordForInsert(JSON.parse(JSON.stringify(normalizedData[index] || {}))); const newData = [...normalizedData]; newData.splice(index + 1, 0, copiedRecord); onDataChange ? onDataChange(newData) : actions.updateFieldValue(path, newData); }, onSourceClick, disabled, path, !isNested), [itemSchema, normalizedData, disabled, minItems, maxItems, onDataChange, actions, path, onSourceClick, isNested])
   const handleAdd = useCallback(() => { if (normalizedData.length >= maxItems) return; const newRecord = ensureRecordRowUid(createEmptyRecord(itemSchema)); setEditingIndex(normalizedData.length); setEditingRecord(newRecord); setEditModalVisible(true); }, [normalizedData.length, maxItems, itemSchema])
   const handleSaveEdit = useCallback((index, record) => { const newData = [...normalizedData]; const normalizedRecord = ensureRecordRowUid(record); if (index >= normalizedData.length) newData.push(normalizedRecord); else newData[index] = normalizedRecord; onDataChange ? onDataChange(newData) : actions.updateFieldValue(path, newData); setEditModalVisible(false); setEditingRecord(null); }, [normalizedData, path, onDataChange, actions])
   const tableData = useMemo(() => normalizedData.map((item, index) => ({ ...ensureRecordRowUid(item), _rowKey: index })), [normalizedData])

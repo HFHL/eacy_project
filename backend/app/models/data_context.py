@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import ForeignKey, String, Uuid
+from sqlalchemy import ForeignKey, Index, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.db import Base
@@ -9,6 +9,11 @@ from core.db.mixins.timestamp_mixin import TimestampMixin
 
 class DataContext(TimestampMixin, Base):
     __tablename__ = "data_contexts"
+    __table_args__ = (
+        Index("idx_data_contexts_project_patient_crf", "context_type", "project_patient_id", "schema_version_id"),
+        Index("idx_data_contexts_project_crf", "context_type", "project_id", "schema_version_id"),
+        Index("idx_data_contexts_patient_schema", "context_type", "patient_id", "schema_version_id"),
+    )
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     context_type: Mapped[str] = mapped_column(String(50), nullable=False)

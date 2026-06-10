@@ -543,7 +543,7 @@ const ProjectCreateWizardModal = ({ open, onCancel, onSuccess }) => {
         <div>
           <Alert
             message="选择 CRF 模板"
-            description="请选择一个模板作为项目默认抽取模板，模板为必选项。"
+            description="请选择一个基础模板作为项目默认抽取模板，创建后系统会生成项目内 CRF 副本。"
             type="info"
             showIcon
             style={{ marginBottom: 16 }}

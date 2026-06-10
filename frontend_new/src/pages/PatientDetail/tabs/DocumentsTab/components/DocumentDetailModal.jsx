@@ -1038,7 +1038,8 @@ const DocumentDetailModal = forwardRef(({
     // 弹确认前先查证据影响，若 evidence_count>0 把字段清单放进 content
     const impact = await fetchEvidenceImpactSafe(document.id)
     const fileName = document.fileName || document.file_name || document.id
-    Modal.confirm({
+    let confirmRef = null
+    confirmRef = Modal.confirm({
       title: '确认删除文档',
       icon: <DeleteOutlined style={{ color: appThemeToken.colorError }} />,
       content: buildDeleteContent(fileName, impact, { errorColor: appThemeToken.colorError }),
@@ -1052,16 +1053,19 @@ const DocumentDetailModal = forwardRef(({
           const response = await deleteDocument(document.id, true)
           if (response.success) {
             message.success('文档删除成功')
-            onClose?.()
             onDeleteSuccess?.()
+            onClose?.()
+            confirmRef?.destroy?.()
+            return true
           } else {
-            message.error(response.message || '删除失败')
+            throw new Error(response.message || '删除失败')
           }
         } catch (error) {
           console.error('删除文档失败:', error)
           // request.js 抛 ApiRequestError：.message 已是后端 detail，.data 是原始 body
-          // 注意不要写成 error.response?.data?.message（那是 axios 的结构，本项目用 fetch）
-          message.error(error?.data?.detail || error?.message || '删除文档失败')
+          const detail = error?.data?.detail || error?.message || '删除文档失败'
+          message.error(detail)
+          throw error
         } finally {
           setDeleting(false)
         }

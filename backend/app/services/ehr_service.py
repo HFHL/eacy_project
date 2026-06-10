@@ -101,15 +101,35 @@ class EhrService:
             "context": context,
             "schema": schema_version.schema_json,
             "records": records,
-            "current_values": self._current_values_by_display_path(current_values, schema_version.schema_json),
+            "current_values": self._current_values_by_display_path(current_values, schema_version.schema_json, records),
         }
 
-    async def list_field_events(self, *, patient_id: str, field_path: str, owner_id: str | None = None) -> list[FieldValueEvent]:
+    async def list_field_events(
+        self,
+        *,
+        patient_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> list[FieldValueEvent]:
         context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
         for query_path in self._field_path_aliases(field_path):
-            events = await self.event_repository.list_by_field(context_id=context.id, field_path=query_path)
+            events = await self.event_repository.list_by_field(
+                context_id=context.id,
+                field_path=query_path,
+                record_instance_id=query_record_id,
+            )
             if events:
-                evidences = await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+                evidences = await self.evidence_repository.list_by_field(
+                    context_id=context.id,
+                    field_path=query_path,
+                    record_instance_id=query_record_id,
+                )
                 evidences_by_event_id: dict[str, list[FieldValueEvidence]] = {}
                 for evidence in evidences:
                     evidences_by_event_id.setdefault(evidence.value_event_id, []).append(evidence)
@@ -130,16 +150,44 @@ class EhrService:
                 return events
         return []
 
-    async def list_field_candidates(self, *, patient_id: str, field_path: str, owner_id: str | None = None) -> dict[str, Any]:
+    async def list_field_candidates(
+        self,
+        *,
+        patient_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> dict[str, Any]:
         context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
-        query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
+        query_path = await self._resolve_existing_field_path(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=query_record_id,
+        )
         events = await self.event_repository.list_candidates_by_context_field(
             context_id=context.id,
             field_path=query_path,
+            record_instance_id=query_record_id,
         )
         current_values = await self.current_repository.list_by_context(context.id)
-        current = next((value for value in current_values if value.field_path == query_path), None)
-        evidences = await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+        current = next(
+            (
+                value for value in current_values
+                if value.field_path == query_path
+                and (query_record_id is None or value.record_instance_id == query_record_id)
+            ),
+            None,
+        )
+        evidences = await self.evidence_repository.list_by_field(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
         evidences_by_event_id: dict[str, list[FieldValueEvidence]] = {}
         for evidence in evidences:
             evidences_by_event_id.setdefault(evidence.value_event_id, []).append(evidence)
@@ -205,11 +253,34 @@ class EhrService:
             return current.value_datetime.isoformat()
         return current.value_text
 
-    async def list_field_evidence(self, *, patient_id: str, field_path: str, owner_id: str | None = None) -> list[FieldValueEvidence]:
+    async def list_field_evidence(
+        self,
+        *,
+        patient_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> list[FieldValueEvidence]:
         context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
-        query_path = await self._resolve_existing_field_path(context_id=context.id, field_path=field_path)
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
+        query_path = await self._resolve_existing_field_path(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=query_record_id,
+        )
         current_values = await self.current_repository.list_by_context(context.id)
-        current = next((value for value in current_values if value.field_path == query_path), None)
+        current = next(
+            (
+                value for value in current_values
+                if value.field_path == query_path
+                and (query_record_id is None or value.record_instance_id == query_record_id)
+            ),
+            None,
+        )
         if current is not None and current.selected_event_id:
             evidences = await self.evidence_repository.list_by_event(current.selected_event_id)
             return self._relevant_evidences_for_field(
@@ -219,7 +290,11 @@ class EhrService:
                 field_title=None,
                 value=self._current_display_value(current),
             )
-        return await self.evidence_repository.list_by_field(context_id=context.id, field_path=query_path)
+        return await self.evidence_repository.list_by_field(
+            context_id=context.id,
+            field_path=query_path,
+            record_instance_id=query_record_id,
+        )
 
     def _source_location_from_evidence(self, evidence: FieldValueEvidence) -> dict[str, Any] | list[Any] | None:
         location = evidence.bbox_json
@@ -300,17 +375,50 @@ class EhrService:
         self,
         current_values: list[FieldCurrentValue],
         schema_json: dict[str, Any] | None,
+        records: list[RecordInstance] | None = None,
     ) -> dict[str, FieldCurrentValue]:
         output: dict[str, FieldCurrentValue] = {}
         original_paths: dict[str, str] = {}
+        records_by_id = {record.id: record for record in records or []}
         for value in current_values:
-            display_path = self._schema_display_path(value.field_path, schema_json)
+            display_path = self._display_path_for_current_value(value, schema_json, records_by_id)
             existing_path = original_paths.get(display_path)
             if existing_path is not None and self._path_has_index(existing_path) and not self._path_has_index(value.field_path):
                 continue
             output[display_path] = value
             original_paths[display_path] = value.field_path
         return output
+
+    def _display_path_for_current_value(
+        self,
+        value: FieldCurrentValue,
+        schema_json: dict[str, Any] | None,
+        records_by_id: dict[str, RecordInstance],
+    ) -> str:
+        display_path = self._schema_display_path(value.field_path, schema_json)
+        record = records_by_id.get(value.record_instance_id)
+        if record is None:
+            return display_path
+        repeat_index = int(record.repeat_index or 0)
+        if repeat_index <= 0:
+            return display_path
+        return self._replace_display_repeat_index(
+            display_path=display_path,
+            form_key=record.form_key,
+            repeat_index=repeat_index,
+        )
+
+    def _replace_display_repeat_index(self, *, display_path: str, form_key: str, repeat_index: int) -> str:
+        parts = [part for part in str(display_path or "").split(".") if part]
+        form_parts = [part for part in str(form_key or "").split(".") if part]
+        if not form_parts or parts[: len(form_parts)] != form_parts:
+            return display_path
+        index_position = len(form_parts)
+        if index_position < len(parts) and parts[index_position].isdigit():
+            parts[index_position] = str(repeat_index)
+        else:
+            parts.insert(index_position, str(repeat_index))
+        return ".".join(parts)
 
     def _schema_display_path(self, field_path: str, schema_json: dict[str, Any] | None) -> str:
         if not isinstance(schema_json, dict):
@@ -367,12 +475,17 @@ class EhrService:
         owner_id: str | None = None,
     ) -> FieldCurrentValue:
         context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
-        normalized_field_path = self._canonical_field_path(field_path)
-        record = await self._resolve_record(context.id, record_instance_id)
+        raw_field_path = ".".join(part for part in str(field_path or "").replace("/", ".").split(".") if part)
+        record = await self._resolve_record_for_field_path(
+            context_id=context.id,
+            record_instance_id=record_instance_id,
+            field_path=raw_field_path,
+        )
+        normalized_field_path = self._storage_field_path(raw_field_path)
         return await self.value_service.manual_edit(
             context_id=context.id,
             record_instance_id=record.id,
-            field_key=field_key or normalized_field_path.split(".")[-1],
+            field_key=field_key or self._field_key_from_path(normalized_field_path),
             field_path=normalized_field_path,
             value_type=value_type,
             edited_by=edited_by,
@@ -387,13 +500,24 @@ class EhrService:
         patient_id: str,
         field_path: str,
         event_id: str,
+        record_instance_id: str | None = None,
         selected_by: str | None = None,
         owner_id: str | None = None,
     ) -> FieldCurrentValue:
         context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
         event = await self.event_repository.get_by_id(event_id)
         allowed_paths = set(self._field_path_aliases(field_path))
-        if event is None or event.context_id != context.id or event.field_path not in allowed_paths:
+        if (
+            event is None
+            or event.context_id != context.id
+            or event.field_path not in allowed_paths
+            or (query_record_id is not None and event.record_instance_id != query_record_id)
+        ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Field event not found")
         return await self.value_service.select_current_value(event=event, selected_by=selected_by)
 
@@ -401,18 +525,58 @@ class EhrService:
         parts = [part for part in str(field_path or "").split(".") if part and not part.isdigit()]
         return ".".join(parts)
 
+    def _storage_field_path(self, field_path: str) -> str:
+        raw_path = ".".join(part for part in str(field_path or "").replace("/", ".").split(".") if part)
+        return self._canonical_field_path(raw_path)
+
+    def _field_key_from_path(self, field_path: str) -> str:
+        parts = [part for part in str(field_path or "").split(".") if part and not part.isdigit()]
+        return parts[-1] if parts else str(field_path or "")
+
     def _field_path_aliases(self, field_path: str) -> list[str]:
         raw_path = str(field_path or "").strip()
         canonical_path = self._canonical_field_path(raw_path)
         return list(dict.fromkeys(path for path in [raw_path, canonical_path] if path))
 
-    async def _resolve_existing_field_path(self, *, context_id: str, field_path: str) -> str:
+    async def _resolve_existing_field_path(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+    ) -> str:
         current_values = await self.current_repository.list_by_context(context_id)
-        existing_paths = {value.field_path for value in current_values}
+        existing_paths = {
+            value.field_path
+            for value in current_values
+            if record_instance_id is None or value.record_instance_id == record_instance_id
+        }
         for query_path in self._field_path_aliases(field_path):
             if query_path in existing_paths:
                 return query_path
         return self._canonical_field_path(field_path)
+
+    async def _resolve_query_record_id(
+        self,
+        *,
+        context_id: str,
+        field_path: str,
+        record_instance_id: str | None,
+    ) -> str | None:
+        if record_instance_id is not None:
+            return (await self._resolve_record(context_id, record_instance_id)).id
+        if not self._path_has_index(field_path):
+            return None
+        form_key = self._record_form_key_from_path(field_path)
+        if not form_key:
+            return None
+        repeat_index = self._repeat_index_from_path(field_path, form_key)
+        record = await self.record_repository.get_by_form(
+            context_id=context_id,
+            form_key=form_key,
+            repeat_index=repeat_index,
+        )
+        return record.id if record is not None else None
 
     @Transactional()
     async def create_record_instance(
@@ -455,12 +619,36 @@ class EhrService:
         await self.record_repository.delete(record)
 
     @Transactional()
-    async def delete_field_value(self, *, patient_id: str, field_path: str, owner_id: str | None = None) -> None:
+    async def delete_field_value(
+        self,
+        *,
+        patient_id: str,
+        field_path: str,
+        record_instance_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> None:
         context = await self._get_patient_context_or_404(patient_id, owner_id=owner_id)
+        query_record_id = await self._resolve_query_record_id(
+            context_id=context.id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+        )
         for query_path in self._field_path_aliases(field_path):
-            await self.evidence_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
-            await self.current_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
-            await self.event_repository.delete_by_context_field(context_id=context.id, field_path=query_path)
+            await self.evidence_repository.delete_by_context_field(
+                context_id=context.id,
+                field_path=query_path,
+                record_instance_id=query_record_id,
+            )
+            await self.current_repository.delete_by_context_field(
+                context_id=context.id,
+                field_path=query_path,
+                record_instance_id=query_record_id,
+            )
+            await self.event_repository.delete_by_context_field(
+                context_id=context.id,
+                field_path=query_path,
+                record_instance_id=query_record_id,
+            )
 
     async def _ensure_patient_access(self, patient_id: str, *, owner_id: str | None = None):
         from app.models import Patient
@@ -488,6 +676,82 @@ class EhrService:
         if not records:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record instance not found")
         return records[0]
+
+    async def _resolve_record_for_field_path(
+        self,
+        *,
+        context_id: str,
+        record_instance_id: str | None,
+        field_path: str,
+    ) -> RecordInstance:
+        if record_instance_id is not None:
+            return await self._resolve_record(context_id, record_instance_id)
+
+        form_key = self._record_form_key_from_path(field_path)
+        if form_key:
+            repeat_index = self._repeat_index_from_path(field_path, form_key)
+            record = await self.record_repository.get_by_form(
+                context_id=context_id,
+                form_key=form_key,
+                repeat_index=repeat_index,
+            )
+            if record is not None:
+                return record
+            base_record = await self.record_repository.get_by_form(
+                context_id=context_id,
+                form_key=form_key,
+                repeat_index=0,
+            )
+            return await self._create_record_for_repeat_index(
+                context_id=context_id,
+                form_key=form_key,
+                repeat_index=repeat_index,
+                base_record=base_record,
+            )
+
+        return await self._resolve_record(context_id, None)
+
+    def _record_form_key_from_path(self, field_path: str) -> str | None:
+        parts = [part for part in str(field_path or "").split(".") if part]
+        if len(parts) >= 2:
+            return f"{parts[0]}.{parts[1]}"
+        return parts[0] if parts else None
+
+    def _repeat_index_from_path(self, field_path: str, form_key: str) -> int:
+        parts = [part for part in str(field_path or "").split(".") if part]
+        form_parts = [part for part in str(form_key or "").split(".") if part]
+        if form_parts and parts[: len(form_parts)] == form_parts:
+            candidates = parts[len(form_parts):]
+        else:
+            candidates = parts[2:]
+        for part in candidates:
+            if part.isdigit():
+                return int(part)
+        return 0
+
+    async def _create_record_for_repeat_index(
+        self,
+        *,
+        context_id: str,
+        form_key: str,
+        repeat_index: int,
+        base_record: RecordInstance | None = None,
+    ) -> RecordInstance:
+        form_title = getattr(base_record, "form_title", None) or form_key.split(".")[-1]
+        group_key = getattr(base_record, "group_key", None) or (form_key.split(".")[0] if "." in form_key else None)
+        group_title = getattr(base_record, "group_title", None) or group_key
+        return await self.record_repository.create(
+            {
+                "context_id": context_id,
+                "group_key": group_key,
+                "group_title": group_title,
+                "form_key": form_key,
+                "form_title": form_title,
+                "repeat_index": repeat_index,
+                "instance_label": form_title if repeat_index == 0 else f"{form_title} #{repeat_index + 1}",
+                "review_status": "unreviewed",
+            }
+        )
 
     async def initialize_default_record_instances(
         self,

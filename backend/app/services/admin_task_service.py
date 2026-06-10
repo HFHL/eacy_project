@@ -131,7 +131,13 @@ class AdminTaskService:
         ]
 
     async def list_templates(self) -> list[dict[str, Any]]:
-        result = await session.execute(select(SchemaTemplate).where(SchemaTemplate.status != "archived").order_by(SchemaTemplate.created_at.desc()).limit(500))
+        result = await session.execute(
+            select(SchemaTemplate)
+            .where(SchemaTemplate.status != "archived")
+            .where(SchemaTemplate.template_type != "project_crf")
+            .order_by(SchemaTemplate.created_at.desc())
+            .limit(500)
+        )
         templates = list(result.scalars().all())
         latest_versions = await self._latest_template_versions([template.id for template in templates])
         return [

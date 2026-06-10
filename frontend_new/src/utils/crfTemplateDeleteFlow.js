@@ -11,7 +11,7 @@ const MAX_PROJECT_LINES = 8
  * @returns {string}
  */
 export const buildDeleteCrfTemplateConfirmMessage = (templateName, projects = []) => {
-  const base = `确定删除模板「${templateName || '未命名模板'}」吗？删除后将从模板列表中移除。`
+  const base = `确定删除模板「${templateName || '未命名模板'}」吗？删除后将从模板列表中移除，不影响已关联项目的项目内 CRF 副本。`
   if (!projects.length) return base
 
   const lines = projects
@@ -24,7 +24,7 @@ export const buildDeleteCrfTemplateConfirmMessage = (templateName, projects = []
   return [
     base,
     '',
-    `以下 ${projects.length} 个科研项目正在使用该模板，删除后将自动解除关联，项目内需重新选择 CRF 模板：`,
+    `以下 ${projects.length} 个科研项目仍直接使用该基础模板，删除时系统会保留项目内 CRF 副本，项目 CRF 不受影响：`,
     ...lines,
   ].join('\n')
 }

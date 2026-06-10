@@ -128,7 +128,7 @@ const FieldEditRenderer = ({
           <Input
             value={value}
             onChange={(e) => handleValueChange(e.target.value)}
-            onPressEnter={() => onSave(field.apiFieldId || field.id)}
+            onPressEnter={() => onSave(field)}
             autoFocus
             style={{ 
               fontSize: 14,
@@ -158,7 +158,7 @@ const FieldEditRenderer = ({
           <InputNumber
             value={value ? Number(value.replace(/[^\d.]/g, '')) : null}
             onChange={handleValueChange}
-            onPressEnter={() => onSave(field.apiFieldId || field.id)}
+            onPressEnter={() => onSave(field)}
             autoFocus
             controls={false}
             style={{ 
@@ -229,7 +229,7 @@ const FieldEditRenderer = ({
           <Input
             value={value}
             onChange={(e) => handleValueChange(e.target.value)}
-            onPressEnter={() => onSave(field.apiFieldId || field.id)}
+            onPressEnter={() => onSave(field)}
             autoFocus
             style={{ 
               fontSize: 14,
@@ -250,7 +250,7 @@ const FieldEditRenderer = ({
         type="text" 
         size="small" 
         icon={<CheckCircleOutlined />}
-        onClick={() => onSave(field.apiFieldId || field.id)}
+        onClick={() => onSave(field)}
         style={{ color: appThemeToken.colorSuccess, padding: '0 4px', flexShrink: 0 }}
       />
       <Button 

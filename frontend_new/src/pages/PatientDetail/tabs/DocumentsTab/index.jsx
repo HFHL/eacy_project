@@ -80,6 +80,27 @@ const DocumentsTab = ({
 
   const stats = getFilterStats()
 
+  useEffect(() => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current)
+      searchTimerRef.current = null
+    }
+    searchVersionRef.current += 1
+    setSelectedDocuments([])
+    setDetailModalVisible(false)
+    setSelectedDocument(null)
+    setPatientMatchVisible(false)
+    setSelectedMatchDocument(null)
+    setSelectedMatchPatient(null)
+    setPatientSearchValue('')
+    setPatientSearchResults([])
+    setShowSearchResults(false)
+    setArchivingLoading(false)
+    setMatchInfoLoading(false)
+    setTargetedModalVisible(false)
+    setTargetedModalGroups([])
+  }, [patientId])
+
   const handleCardClick = (document) => {
     setSelectedDocument(document)
     setDetailModalVisible(true)

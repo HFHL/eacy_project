@@ -1,20 +1,19 @@
 # EACY Docker Production Deployment
 
-This directory contains Docker production assets. The compose entrypoint is at the repository root:
+This directory contains the Docker production assets. The authoritative compose entrypoint is at the repository root:
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.prod build
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d postgres redis
-docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d api celery-beat worker-ocr worker-metadata worker-extraction nginx
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 ```
 
 Create `.env.prod` from `.env.prod.example` before running the stack. Do not commit real secrets.
 
-If you want to validate the compose file before creating real secrets:
+`docker-compose.prod.yml` starts Redis, the migration job, API, Celery workers, Celery Beat, and nginx. It does **not** start PostgreSQL; set `DATABASE_URL` in `.env.prod` to the external/remote PostgreSQL instance.
+
+If you want to validate the compose file before using real secrets:
 
 ```bash
-EACY_ENV_FILE=.env.prod.example docker compose -f docker-compose.prod.yml --env-file .env.prod.example config
+EACY_ENV_FILE=.env.prod.example docker compose -f docker-compose.prod.yml --env-file .env.prod.example config --services
 ```
 
 ## China Mirror Defaults
@@ -32,7 +31,6 @@ Override these in `.env.prod` if your host has a faster registry or a private mi
 PYTHON_IMAGE=python:3.11.7-slim
 NODE_IMAGE=node:20-alpine
 NGINX_IMAGE=nginx:1.27-alpine
-POSTGRES_IMAGE=postgres:16-alpine
 REDIS_IMAGE=redis:7-alpine
 APT_MIRROR=https://deb.debian.org
 PIP_INDEX_URL=https://pypi.org/simple/
@@ -41,14 +39,14 @@ NPM_REGISTRY=https://registry.npmjs.org
 
 ## Service Layout
 
-- `nginx`: serves the built React app and proxies `/api/v1/` to `api:8000`.
-- `api`: FastAPI via Gunicorn + Uvicorn worker.
+- `redis`: Celery broker/backend and cache dependency, persisted in the `redis-data` named volume.
+- `migrate`: one-shot Alembic migration job.
+- `api`: FastAPI via Gunicorn + Uvicorn worker, listening on `api:8000` inside the compose network.
 - `worker-ocr`: consumes the `ocr` queue.
-- `celery-beat`: schedules periodic maintenance (default: daily 03:00 Asia/Shanghai, abandon stale pending extraction jobs).
+- `celery-beat`: schedules periodic maintenance, including stale pending extraction cleanup.
 - `worker-metadata`: consumes the `metadata` and `maintenance` queues.
 - `worker-extraction`: consumes the `extraction` queue.
-- `migrate`: one-shot Alembic migration job.
-- `postgres` and `redis`: internal dependency services with named volumes.
+- `nginx`: serves the built React app and proxies `/api/v1/` to `api:8000`; this is the only public port.
 
 ## Production Sizing
 
@@ -74,6 +72,8 @@ With defaults, this is `(2 + 1 + 1 + 2) * 3 = 18` connections. Keep this below P
 
 ## Upgrade Order
 
+Run a database backup before migrations in production.
+
 ```bash
 docker compose -f docker-compose.prod.yml --env-file .env.prod stop celery-beat worker-ocr worker-metadata worker-extraction
 docker compose -f docker-compose.prod.yml --env-file .env.prod build
@@ -82,4 +82,12 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d api
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d celery-beat worker-ocr worker-metadata worker-extraction nginx
 ```
 
-Run a database backup before migrations in production.
+## Common Operations
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod ps
+docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f api
+docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f worker-extraction
+docker compose -f docker-compose.prod.yml --env-file .env.prod restart api
+docker compose -f docker-compose.prod.yml --env-file .env.prod down
+```

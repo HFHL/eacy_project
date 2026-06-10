@@ -118,9 +118,44 @@ class ExtractionPlanner:
                 normalized_source = self._normalize(source)
                 if not normalized_source:
                     continue
-                if any(normalized_source in term or term in normalized_source for term in document_terms):
+                if any(self._source_matches(normalized_source, term) for term in document_terms):
                     return role, source
         return None, None
+
+    def _source_matches(self, source: str, document_term: str) -> bool:
+        if not source or not document_term:
+            return False
+        if source == document_term:
+            return True
+        if source in document_term:
+            return self._contains_as_source_token(source, document_term)
+        if document_term in source:
+            return self._contains_as_source_token(document_term, source)
+        return False
+
+    def _contains_as_source_token(self, needle: str, haystack: str) -> bool:
+        start = 0
+        while True:
+            index = haystack.find(needle, start)
+            if index < 0:
+                return False
+            if not self._has_ascii_alnum(needle):
+                return True
+            before = haystack[index - 1] if index > 0 else ""
+            after_index = index + len(needle)
+            after = haystack[after_index] if after_index < len(haystack) else ""
+            before_is_boundary = not before or not (
+                before.isascii() and (before.isalnum() or before in "-_")
+            )
+            after_is_boundary = not after or not (
+                after.isascii() and (after.isalnum() or after in "-_")
+            )
+            if before_is_boundary and after_is_boundary:
+                return True
+            start = index + 1
+
+    def _has_ascii_alnum(self, value: str) -> bool:
+        return any(char.isascii() and char.isalnum() for char in value)
 
     def _normalize(self, value: Any) -> str:
         if value is None:

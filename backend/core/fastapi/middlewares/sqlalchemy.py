@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import suppress
 from uuid import uuid4
 
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -15,8 +17,14 @@ class SQLAlchemyMiddleware:
 
         try:
             await self.app(scope, receive, send)
-        except Exception as e:
-            raise e
+        except BaseException:
+            with suppress(Exception):
+                await asyncio.shield(session.rollback())
+            raise
+        else:
+            await asyncio.shield(session.commit())
         finally:
-            await session.remove()
-            reset_session_context(context=context)
+            try:
+                await asyncio.shield(session.remove())
+            finally:
+                reset_session_context(context=context)

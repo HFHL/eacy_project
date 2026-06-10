@@ -316,6 +316,46 @@ const setByDotPath = (target, path, value, schema = null) => {
   setBySchemaPath(target, schema, parts, value)
 }
 
+const setRowRecordInstanceBySchemaPath = (target, schemaNode, parts, recordInstanceId) => {
+  if (!recordInstanceId || !parts.length) return
+
+  if (isSchemaArrayRecord(schemaNode)) {
+    const [firstPart, ...restParts] = parts
+    const hasExplicitIndex = isIndexedPathPart(firstPart)
+    const rowIndex = hasExplicitIndex ? Number(firstPart) : 0
+    const nextParts = hasExplicitIndex ? restParts : parts
+    while (target.length <= rowIndex) target.push({})
+    if (target[rowIndex] == null || typeof target[rowIndex] !== 'object' || Array.isArray(target[rowIndex])) {
+      target[rowIndex] = {}
+    }
+    target[rowIndex]._record_instance_id = recordInstanceId
+    target[rowIndex]._row_uid = target[rowIndex]._row_uid || recordInstanceId
+    if (nextParts.length > 0) {
+      setRowRecordInstanceBySchemaPath(target[rowIndex], schemaNode.items, nextParts, recordInstanceId)
+    }
+    return
+  }
+
+  const [part, ...restParts] = parts
+  const childSchema = isSchemaObject(schemaNode) ? schemaNode.properties[part] : null
+  if (isSchemaArrayRecord(childSchema)) {
+    if (!Array.isArray(target[part])) target[part] = []
+    setRowRecordInstanceBySchemaPath(target[part], childSchema, restParts, recordInstanceId)
+    return
+  }
+  if (restParts.length === 0) return
+  if (target[part] == null || typeof target[part] !== 'object' || Array.isArray(target[part])) {
+    target[part] = {}
+  }
+  setRowRecordInstanceBySchemaPath(target[part], childSchema, restParts, recordInstanceId)
+}
+
+const setRowRecordInstanceByDotPath = (target, path, recordInstanceId, schema = null) => {
+  const parts = String(path || '').split('.').filter(Boolean)
+  if (!parts.length) return
+  setRowRecordInstanceBySchemaPath(target, schema, parts, recordInstanceId)
+}
+
 const normalizeEhrResponse = (payload = {}) => {
   const currentValues = payload.current_values && typeof payload.current_values === 'object'
     ? payload.current_values
@@ -324,6 +364,7 @@ const normalizeEhrResponse = (payload = {}) => {
 
   Object.entries(currentValues).forEach(([fieldPath, currentValue]) => {
     setByDotPath(data, fieldPath, getCurrentValuePayload(currentValue), payload.schema)
+    setRowRecordInstanceByDotPath(data, fieldPath, currentValue?.record_instance_id, payload.schema)
   })
 
   return {
@@ -438,6 +479,12 @@ const inferEhrValuePayload = (fieldPath, value) => {
     value_type: 'text',
     value_text: value == null ? '' : String(value),
   }
+}
+
+const recordInstanceParams = (options = {}) => {
+  if (!options || typeof options !== 'object') return undefined
+  const recordInstanceId = options.record_instance_id || options.recordInstanceId
+  return recordInstanceId ? { record_instance_id: recordInstanceId } : undefined
 }
 
 const normalizeHistoryEvent = (event = {}) => ({
@@ -587,20 +634,26 @@ export const getExtractionTaskStatus = async (taskId = '') => {
     percentage: payload.progress || 0,
   })
 }
-export const getEhrFieldHistory = async (patientId = '', fieldPath = '') => {
-  const events = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/events`)
+export const getEhrFieldHistory = async (patientId = '', fieldPath = '', options = {}) => {
+  const events = await request.get(
+    `${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/events`,
+    recordInstanceParams(options)
+  )
   return emptySuccess((Array.isArray(events) ? events : []).map(normalizeHistoryEvent))
 }
-export const getEhrFieldEvidence = async (patientId = '', fieldPath = '') => {
-  const evidences = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/evidence`)
+export const getEhrFieldEvidence = async (patientId = '', fieldPath = '', options = {}) => {
+  const evidences = await request.get(
+    `${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/evidence`,
+    recordInstanceParams(options)
+  )
   return emptySuccess((Array.isArray(evidences) ? evidences : []).map(normalizeFieldEvidence))
 }
-export const getEhrFieldHistoryV2 = async (patientId = '', fieldPath = '') => {
-  const history = await getEhrFieldHistory(patientId, fieldPath)
+export const getEhrFieldHistoryV2 = async (patientId = '', fieldPath = '', options = {}) => {
+  const history = await getEhrFieldHistory(patientId, fieldPath, options)
   return emptySuccess({ history: history.data || [] })
 }
-export const getEhrFieldHistoryV3 = async (patientId = '', fieldPath = '') => getEhrFieldHistoryV2(patientId, fieldPath)
-export const getEhrFieldCandidatesV3 = async (patientId = '', fieldPath = '') => {
+export const getEhrFieldHistoryV3 = async (patientId = '', fieldPath = '', options = {}) => getEhrFieldHistoryV2(patientId, fieldPath, options)
+export const getEhrFieldCandidatesV3 = async (patientId = '', fieldPath = '', options = {}) => {
   if (!patientId || !fieldPath) return emptySuccess({
     candidates: [],
     selected_candidate_id: null,
@@ -608,14 +661,17 @@ export const getEhrFieldCandidatesV3 = async (patientId = '', fieldPath = '') =>
     has_value_conflict: false,
     distinct_value_count: 0,
   })
-  const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/candidates`)
+  const payload = await request.get(
+    `${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/candidates`,
+    recordInstanceParams(options)
+  )
   return emptySuccess(payload)
 }
 export const saveEhrFieldValueV3 = async (patientId = '', fieldPath = '', value, options = {}) => {
   if (!patientId || !fieldPath) return emptySuccess(null)
   const payload = {
     ...inferEhrValuePayload(fieldPath, value),
-    ...(options.record_instance_id ? { record_instance_id: options.record_instance_id } : {}),
+    ...recordInstanceParams(options),
     ...(options.note ? { note: options.note } : {}),
   }
   const current = await request.patch(
@@ -624,9 +680,12 @@ export const saveEhrFieldValueV3 = async (patientId = '', fieldPath = '', value,
   )
   return emptySuccess(current)
 }
-export const deleteEhrFieldValueV3 = async (patientId = '', fieldPath = '') => {
+export const deleteEhrFieldValueV3 = async (patientId = '', fieldPath = '', options = {}) => {
   if (!patientId || !fieldPath) return emptySuccess(null)
-  await request.delete(`${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}`)
+  await request.delete(
+    `${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}`,
+    recordInstanceParams(options)
+  )
   return emptySuccess(null)
 }
 export const createEhrRecordInstanceV3 = async (patientId = '', data = {}) => {
@@ -639,21 +698,24 @@ export const deleteEhrRecordInstanceV3 = async (patientId = '', recordInstanceId
   await request.delete(`${PATIENTS_ENDPOINT}/${patientId}/ehr/records/${recordInstanceId}`)
   return emptySuccess(null)
 }
-export const selectEhrFieldCandidateV3 = async (patientId = '', fieldPath = '', candidateId = '', selectedValue) => {
+export const selectEhrFieldCandidateV3 = async (patientId = '', fieldPath = '', candidateId = '', selectedValue, options = {}) => {
   if (!patientId || !fieldPath) return emptySuccess(null)
-  if (!candidateId) return saveEhrFieldValueV3(patientId, fieldPath, selectedValue)
+  if (!candidateId) return saveEhrFieldValueV3(patientId, fieldPath, selectedValue, options)
   const payload = await request.post(
     `${PATIENTS_ENDPOINT}/${patientId}/ehr/fields/${encodeURIComponent(fieldPath)}/select-candidate`,
-    { candidate_id: candidateId }
+    {
+      candidate_id: candidateId,
+      ...recordInstanceParams(options),
+    }
   )
   return emptySuccess(payload)
 }
 export const uploadAndExtractField = async () => emptyTask()
 export const getFieldConflicts = async () => emptyList()
 export const resolveFieldConflict = async () => emptySuccess(null)
-export const getAiSummary = async (patientId = '') => {
+export const getAiSummary = async (patientId = '', options) => {
   if (!patientId) return emptySuccess({ content: '', source_documents: [] })
-  const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ai-summary`)
+  const payload = await request.get(`${PATIENTS_ENDPOINT}/${patientId}/ai-summary`, undefined, options)
   return emptySuccess({
     content: payload?.content || '',
     generated_at: payload?.generated_at || null,

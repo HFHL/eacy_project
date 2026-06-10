@@ -10,7 +10,7 @@ class MutableFakeDocumentRepository:
     def __init__(self, document):
         self.document = document
 
-    async def get_visible_by_id(self, document_id):
+    async def get_visible_by_id(self, document_id, **_kwargs):
         if self.document.id != document_id or self.document.status == "deleted":
             return None
         return self.document

@@ -213,6 +213,18 @@ export function useProjectExtractionProgress({
     setIsProgressCardDismissed(false)
   }, [projectId])
 
+  const upsertTask = useCallback((taskId, patch) => {
+    if (!taskId) return
+    setTasksById((prev) => ({
+      ...prev,
+      [taskId]: {
+        ...(prev[taskId] || {}),
+        taskId,
+        ...patch,
+      },
+    }))
+  }, [])
+
   // 进入项目页时从服务端拉取进行中的批次，弥补 localStorage 丢失或未写入的情况。
   useEffect(() => {
     if (!projectId) return undefined
@@ -280,21 +292,9 @@ export function useProjectExtractionProgress({
         ? (scopedPatients.length === 1
           ? (labelsByPatientId[normalizedIds[0]] || '1 位患者')
           : `${scopedPatients.length} 位患者`)
-        : `全部 ${patientDataset.length} 位患者`,
+      : `全部 ${patientDataset.length} 位患者`,
     }
   }, [patientDataset])
-
-  const upsertTask = useCallback((taskId, patch) => {
-    if (!taskId) return
-    setTasksById((prev) => ({
-      ...prev,
-      [taskId]: {
-        ...(prev[taskId] || {}),
-        taskId,
-        ...patch,
-      },
-    }))
-  }, [])
 
   const removeTask = useCallback((taskId) => {
     setTasksById((prev) => {

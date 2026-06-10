@@ -83,6 +83,7 @@ services:
       - --loglevel=info
       - --concurrency=${OCR_CONCURRENCY:-1}
       - --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}
+      - --prefetch-multiplier=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       - -n
       - eacy-ocr@%h
     depends_on:
@@ -131,6 +132,7 @@ services:
       - --loglevel=info
       - --concurrency=${METADATA_CONCURRENCY:-1}
       - --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}
+      - --prefetch-multiplier=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       - -n
       - eacy-metadata@%h
     depends_on:
@@ -157,8 +159,45 @@ services:
       - --loglevel=info
       - --concurrency=${EXTRACTION_CONCURRENCY:-2}
       - --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}
+      - --prefetch-multiplier=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       - -n
       - eacy-extraction@%h
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - eacy
+
+  worker-claude-code:
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.m.daocloud.io/library/python:3.11.7-slim}
+        APT_MIRROR: ${APT_MIRROR:-https://mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        INSTALL_CLAUDE_CODE: "true"
+    image: eacy-backend-claude-code:prod
+    restart: unless-stopped
+    env_file:
+      - ${EACY_ENV_FILE:-.env.prod}
+    environment:
+      ENV: prod
+      DEBUG: "false"
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - -Q
+      - claude-code
+      - --loglevel=info
+      - --concurrency=${CLAUDE_CODE_CONCURRENCY:-1}
+      - --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}
+      - --prefetch-multiplier=1
+      - -n
+      - eacy-claude-code@%h
     depends_on:
       api:
         condition: service_healthy

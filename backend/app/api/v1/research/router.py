@@ -68,10 +68,12 @@ class CrfFieldUpdate(CrfFieldValue):
 
 class CrfSelectEventRequest(BaseModel):
     event_id: str
+    record_instance_id: str | None = None
 
 
 class CrfSelectCandidateRequest(BaseModel):
     candidate_id: str
+    record_instance_id: str | None = None
 
 
 class CrfRecordCreate(BaseModel):
@@ -154,6 +156,13 @@ class ProjectPatientListItemResponse(ProjectPatientResponse):
     document_count: int = 0
     crf_completeness: float = 0
     crf_group_stats: dict[str, CrfGroupStatsItem] = Field(default_factory=dict)
+
+
+class ProjectPatientListResponse(BaseModel):
+    items: list[ProjectPatientListItemResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 class ProjectPatientCrfGroupFieldsRequest(BaseModel):
@@ -519,7 +528,11 @@ async def create_template_binding(
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> TemplateBindingResponse:
     try:
-        binding = await service.bind_crf_template(project_id=project_id, **payload.model_dump())
+        binding = await service.bind_crf_template(
+            project_id=project_id,
+            owner_id=user_scope_id(current_user),
+            **payload.model_dump(),
+        )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
     return TemplateBindingResponse.model_validate(binding)
@@ -533,26 +546,55 @@ async def disable_template_binding(
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> TemplateBindingResponse:
     try:
-        binding = await service.disable_template_binding(project_id=project_id, binding_id=binding_id)
+        binding = await service.disable_template_binding(
+            project_id=project_id,
+            binding_id=binding_id,
+            owner_id=user_scope_id(current_user),
+        )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
     return TemplateBindingResponse.model_validate(binding)
 
 
-@router.get("/{project_id}/patients", response_model=list[ProjectPatientListItemResponse])
+@router.get(
+    "/{project_id}/patients",
+    response_model=ProjectPatientListResponse | list[ProjectPatientListItemResponse],
+)
 async def list_project_patients(
     project_id: str,
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=200),
     current_user: CurrentUser = Depends(get_current_user),
     service: ResearchProjectService = Depends(get_research_project_service),
-) -> list[ProjectPatientListItemResponse]:
+) -> ProjectPatientListResponse | list[ProjectPatientListItemResponse]:
     try:
-        patients = await service.list_project_patients_with_summary(
+        if page is None and page_size is None:
+            patients = await service.list_project_patients_with_summary(
+                project_id,
+                owner_id=user_scope_id(current_user),
+            )
+            return [ProjectPatientListItemResponse.model_validate(patient) for patient in patients]
+
+        current_page = page or 1
+        current_page_size = page_size or 20
+        total = await service.count_project_patients(
             project_id,
             owner_id=user_scope_id(current_user),
         )
+        patients = await service.list_project_patients_with_summary(
+            project_id,
+            owner_id=user_scope_id(current_user),
+            limit=current_page_size,
+            offset=(current_page - 1) * current_page_size,
+        )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
-    return [ProjectPatientListItemResponse.model_validate(patient) for patient in patients]
+    return ProjectPatientListResponse(
+        items=[ProjectPatientListItemResponse.model_validate(patient) for patient in patients],
+        total=total,
+        page=current_page,
+        page_size=current_page_size,
+    )
 
 
 @router.post("/{project_id}/patients/crf-group-fields", response_model=ProjectPatientCrfGroupFieldsResponse)
@@ -587,6 +629,7 @@ async def enroll_project_patient(
         project_patient = await service.enroll_patient(
             project_id=project_id,
             created_by=uuid_user_id_or_none(current_user),
+            owner_id=user_scope_id(current_user),
             **payload.model_dump(exclude_none=True),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
@@ -606,6 +649,7 @@ async def get_project_patient_crf(
             project_id=project_id,
             project_patient_id=project_patient_id,
             created_by=uuid_user_id_or_none(current_user),
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
@@ -722,6 +766,7 @@ async def update_project_patient_crf_field(
             edited_by=uuid_user_id_or_none(current_user),
             note=payload.note,
             values=values,
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
@@ -733,6 +778,7 @@ async def list_project_patient_crf_field_events(
     project_id: str,
     project_patient_id: str,
     field_path: str,
+    record_instance_id: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> list[CrfEventResponse]:
@@ -741,6 +787,8 @@ async def list_project_patient_crf_field_events(
             project_id=project_id,
             project_patient_id=project_patient_id,
             field_path=field_path,
+            record_instance_id=record_instance_id,
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
@@ -755,6 +803,7 @@ async def list_project_patient_crf_field_candidates(
     project_id: str,
     project_patient_id: str,
     field_path: str,
+    record_instance_id: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> CrfCandidatesResponse:
@@ -763,6 +812,8 @@ async def list_project_patient_crf_field_candidates(
             project_id=project_id,
             project_patient_id=project_patient_id,
             field_path=field_path,
+            record_instance_id=record_instance_id,
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
@@ -787,7 +838,9 @@ async def select_project_patient_crf_field_event(
             project_patient_id=project_patient_id,
             field_path=field_path,
             event_id=payload.event_id,
+            record_instance_id=payload.record_instance_id,
             selected_by=uuid_user_id_or_none(current_user),
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
@@ -812,7 +865,9 @@ async def select_project_patient_crf_field_candidate(
             project_patient_id=project_patient_id,
             field_path=field_path,
             event_id=payload.candidate_id,
+            record_instance_id=payload.record_instance_id,
             selected_by=uuid_user_id_or_none(current_user),
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
@@ -824,11 +879,18 @@ async def delete_project_patient_crf_field(
     project_id: str,
     project_patient_id: str,
     field_path: str,
+    record_instance_id: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> Response:
     try:
-        await service.delete_crf_field_value(project_id=project_id, project_patient_id=project_patient_id, field_path=field_path)
+        await service.delete_crf_field_value(
+            project_id=project_id,
+            project_patient_id=project_patient_id,
+            field_path=field_path,
+            record_instance_id=record_instance_id,
+            owner_id=user_scope_id(current_user),
+        )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -846,6 +908,7 @@ async def create_project_patient_crf_record(
         record = await service.create_crf_record_instance(
             project_id=project_id,
             project_patient_id=project_patient_id,
+            owner_id=user_scope_id(current_user),
             **payload.model_dump(exclude_none=True),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
@@ -866,6 +929,7 @@ async def delete_project_patient_crf_record(
             project_id=project_id,
             project_patient_id=project_patient_id,
             record_instance_id=record_instance_id,
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
@@ -877,6 +941,7 @@ async def list_project_patient_crf_field_evidence(
     project_id: str,
     project_patient_id: str,
     field_path: str,
+    record_instance_id: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
     service: ResearchProjectService = Depends(get_research_project_service),
 ) -> list[CrfEvidenceResponse]:
@@ -885,6 +950,8 @@ async def list_project_patient_crf_field_evidence(
             project_id=project_id,
             project_patient_id=project_patient_id,
             field_path=field_path,
+            record_instance_id=record_instance_id,
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)
@@ -902,6 +969,7 @@ async def withdraw_project_patient(
         project_patient = await service.withdraw_project_patient(
             project_id=project_id,
             project_patient_id=project_patient_id,
+            owner_id=user_scope_id(current_user),
         )
     except (ResearchProjectNotFoundError, ResearchProjectConflictError) as error:
         _raise_research_error(error)

@@ -61,9 +61,17 @@ class PatientService:
     async def get_patient(self, patient_id: str, *, owner_id: str | None = None) -> Patient | None:
         return await self.patient_repository.get_active_by_id(patient_id, owner_id=owner_id)
 
-    async def list_patient_projects(self, patient_id: str) -> list[dict[str, Any]]:
+    async def list_patient_projects(
+        self,
+        patient_id: str,
+        *,
+        owner_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """返回某个患者关联的研究项目（用于患者详情页"关联项目"展示）。"""
-        rows = await self.project_patient_repository.list_projects_by_patient(patient_id)
+        rows = await self.project_patient_repository.list_projects_by_patient(
+            patient_id,
+            owner_id=owner_id,
+        )
         return [
             {
                 "id": project.id,
@@ -256,7 +264,7 @@ class PatientService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
         await self.document_repository.soft_delete_by_patient(patient_id, uploaded_by=owner_id)
-        await self.project_patient_repository.withdraw_by_patient(patient_id)
+        await self.project_patient_repository.withdraw_by_patient(patient_id, owner_id=owner_id)
         await self.patient_repository.soft_delete(patient)
         await DocumentService().invalidate_archive_tree_cache(owner_id)
 

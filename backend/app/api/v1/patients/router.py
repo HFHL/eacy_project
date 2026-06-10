@@ -122,10 +122,12 @@ class EhrFieldUpdate(EhrFieldValue):
 
 class EhrSelectEventRequest(BaseModel):
     event_id: str
+    record_instance_id: str | None = None
 
 
 class EhrSelectCandidateRequest(BaseModel):
     candidate_id: str
+    record_instance_id: str | None = None
 
 
 class EhrRecordCreate(BaseModel):
@@ -361,9 +363,11 @@ async def get_ehr_extraction_status_batch(
 
     用于左侧患者 rail 的"病历夹更新中"指示器，前端定期轮询此端点。
     """
-    _ = current_user  # 暂未启用按用户范围过滤；patient_id 列表已由前端限制为可见集合
     patient_ids = [str(pid) for pid in (payload.patient_ids or []) if pid]
-    status_map = await service.list_active_ehr_status_by_patients(patient_ids)
+    status_map = await service.list_active_ehr_status_by_patients(
+        patient_ids,
+        requested_by=user_scope_id(current_user),
+    )
     items = [EhrExtractionStatusItem(patient_id=pid, **entry) for pid, entry in status_map.items()]
     return EhrExtractionStatusResponse(items=items)
 
@@ -378,7 +382,7 @@ async def get_patient(
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
     owner_id = user_scope_id(current_user)
-    projects = await service.list_patient_projects(patient_id)
+    projects = await service.list_patient_projects(patient_id, owner_id=owner_id)
     stats = await service.get_patient_stats(patient, owner_id=owner_id)
     response = _patient_response(patient, stats)
     response.projects = [PatientProjectItem.model_validate(item) for item in projects]
@@ -467,12 +471,14 @@ async def update_patient_ehr_field(
 async def list_patient_ehr_field_events(
     patient_id: str,
     field_path: str,
+    record_instance_id: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
     service: EhrService = Depends(get_ehr_service),
 ) -> list[EhrEventResponse]:
     events = await service.list_field_events(
         patient_id=patient_id,
         field_path=field_path,
+        record_instance_id=record_instance_id,
         owner_id=user_scope_id(current_user),
     )
     return [EhrEventResponse.model_validate(event) for event in events]
@@ -482,12 +488,14 @@ async def list_patient_ehr_field_events(
 async def list_patient_ehr_field_candidates(
     patient_id: str,
     field_path: str,
+    record_instance_id: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
     service: EhrService = Depends(get_ehr_service),
 ) -> EhrCandidatesResponse:
     candidates = await service.list_field_candidates(
         patient_id=patient_id,
         field_path=field_path,
+        record_instance_id=record_instance_id,
         owner_id=user_scope_id(current_user),
     )
     return EhrCandidatesResponse.model_validate(candidates)
@@ -505,6 +513,7 @@ async def select_patient_ehr_field_event(
         patient_id=patient_id,
         field_path=field_path,
         event_id=payload.event_id,
+        record_instance_id=payload.record_instance_id,
         selected_by=uuid_user_id_or_none(current_user),
         owner_id=user_scope_id(current_user),
     )
@@ -523,6 +532,7 @@ async def select_patient_ehr_field_candidate(
         patient_id=patient_id,
         field_path=field_path,
         event_id=payload.candidate_id,
+        record_instance_id=payload.record_instance_id,
         selected_by=uuid_user_id_or_none(current_user),
         owner_id=user_scope_id(current_user),
     )
@@ -533,12 +543,14 @@ async def select_patient_ehr_field_candidate(
 async def delete_patient_ehr_field(
     patient_id: str,
     field_path: str,
+    record_instance_id: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
     service: EhrService = Depends(get_ehr_service),
 ) -> Response:
     await service.delete_field_value(
         patient_id=patient_id,
         field_path=field_path,
+        record_instance_id=record_instance_id,
         owner_id=user_scope_id(current_user),
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -578,12 +590,14 @@ async def delete_patient_ehr_record(
 async def list_patient_ehr_field_evidence(
     patient_id: str,
     field_path: str,
+    record_instance_id: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
     service: EhrService = Depends(get_ehr_service),
 ) -> list[EhrEvidenceResponse]:
     evidences = await service.list_field_evidence(
         patient_id=patient_id,
         field_path=field_path,
+        record_instance_id=record_instance_id,
         owner_id=user_scope_id(current_user),
     )
     return [EhrEvidenceResponse.model_validate(evidence) for evidence in evidences]

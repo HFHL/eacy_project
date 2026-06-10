@@ -29,6 +29,8 @@ class SchemaTemplateRepository(BaseRepo[SchemaTemplate]):
         query = query.order_by(SchemaTemplate.created_at.desc())
         if template_type is not None:
             query = query.where(SchemaTemplate.template_type == template_type)
+        else:
+            query = query.where(SchemaTemplate.template_type != "project_crf")
         if status is not None:
             query = query.where(SchemaTemplate.status == status)
         else:
@@ -48,6 +50,8 @@ class SchemaTemplateRepository(BaseRepo[SchemaTemplate]):
             query = query.where(or_(SchemaTemplate.created_by == created_by, SchemaTemplate.is_system.is_(True)))
         if template_type is not None:
             query = query.where(SchemaTemplate.template_type == template_type)
+        else:
+            query = query.where(SchemaTemplate.template_type != "project_crf")
         if status is not None:
             query = query.where(SchemaTemplate.status == status)
         else:

@@ -80,7 +80,12 @@ class PatientRepository(BaseRepo[Patient]):
         result = await session.execute(query)
         return int(result.scalar_one())
 
-    async def list_by_ids(self, patient_ids: list[str]) -> list[Patient]:
+    async def list_by_ids(
+        self,
+        patient_ids: list[str],
+        *,
+        owner_id: str | None = None,
+    ) -> list[Patient]:
         """批量按 id 列出患者（含已软删，但软删数据上层一般不再展示）。
 
         用于"文档列表回填患者摘要"等批量场景；调用方需要保留输入与返回的对应关系
@@ -92,6 +97,8 @@ class PatientRepository(BaseRepo[Patient]):
         if not unique_ids:
             return []
         query = select(Patient).where(Patient.id.in_(unique_ids))
+        if owner_id is not None:
+            query = query.where(Patient.owner_id == owner_id)
         result = await session.execute(query)
         return list(result.scalars().all())
 

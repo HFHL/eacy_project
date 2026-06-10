@@ -21,7 +21,7 @@ import {
 import { appThemeToken } from '../../styles/themeTokens'
 import ExtractionTaskObservatory from './ExtractionTaskObservatory'
 
-// ─── 抽取流程节点展示（SSE 事件里 node 字段 → 中文 + 图标色） ────────────
+// ─── 抽取流程节点展示（事件里的 node 字段 → 中文 + 图标色） ────────────
 const NODE_META = {
   start:                 { label: '任务开始', color: 'processing' },
   load_schema_and_docs:  { label: '加载 Schema & 文档', color: 'blue' },
@@ -467,7 +467,7 @@ const LLMCallList = ({ calls }) => {
 }
 
 // 任务详情弹窗：展示 summary、jobs 列表（含 extraction_run）、LLM 调用
-// 小组件：running 状态下展示 SSE 实时进度流（时间线）
+// 小组件：running 状态下通过事件轮询展示进度时间线
 // terminal=true 时上层 Modal 会 refetch 详情把 status 翻到最终态。
 const ExtractionProgressStream = ({ events, status, terminal, error }) => {
   const hasEvents = events && events.length > 0
@@ -475,10 +475,10 @@ const ExtractionProgressStream = ({ events, status, terminal, error }) => {
   const streamBadge = (() => {
     if (error) return { status: 'error', text: '连接中断' }
     if (terminal) return { status: 'success', text: '已完成' }
-    if (status === 'open') return { status: 'processing', text: '实时接收中' }
-    if (status === 'connecting') return { status: 'processing', text: '连接中' }
-    if (status === 'closed') return { status: 'default', text: '已断开' }
-    return { status: 'default', text: '未连接' }
+    if (status === 'open') return { status: 'processing', text: '轮询中' }
+    if (status === 'connecting') return { status: 'processing', text: '加载中' }
+    if (status === 'closed') return { status: 'default', text: '轮询暂停' }
+    return { status: 'default', text: '未开始' }
   })()
 
   return (
@@ -492,7 +492,7 @@ const ExtractionProgressStream = ({ events, status, terminal, error }) => {
           type="info"
           showIcon
           message="正在等待进度事件"
-          description="抽取服务每完成一个节点会推送一条事件；若长时间未收到，可能任务尚未开始或进度通道不可达。"
+          description="抽取服务每完成一个节点会记录一条事件；若长时间未收到，可能任务尚未开始或事件轮询暂不可达。"
         />
       ) : (
         <div
@@ -631,7 +631,7 @@ const ExtractionTaskDetailModal = ({ open, taskId, onClose }) => {
     return () => { aborted = true }
   }, [open, taskId, refreshKey])
 
-  // 只有 running 的任务才订阅 SSE；其它状态没有进度事件
+  // 只有 running/pending 的任务才轮询进度事件；其它状态没有增量事件
   const isRunning = detail?.summary?.status === 'running' || detail?.summary?.status === 'pending'
   const {
     events: progressEvents,
@@ -910,7 +910,7 @@ const ExtractionTasksTab = () => {
   useEffect(() => { fetchTasks() }, [fetchTasks])
 
   // 如果当前有任何 running/pending 任务，开启 5s 轻量轮询，让列表里的进度列
-  // 能跟着 SSE 推送的终态一起翻面。SSE 留给详情弹窗逐节点看；列表只需汇总。
+  // 能跟着事件轮询的终态一起翻面。详情弹窗逐节点看；列表只需汇总。
   const hasLiveTask = useMemo(
     () => (rawData.items || []).some((r) => r.status === 'running' || r.status === 'pending'),
     [rawData.items],

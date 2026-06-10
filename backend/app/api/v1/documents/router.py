@@ -368,7 +368,7 @@ async def build_extraction_records(document_id: str) -> list[dict[str, Any]]:
     return records
 
 
-async def build_linked_patients(document) -> list[dict[str, Any]]:
+async def build_linked_patients(document, *, owner_id: str | None = None) -> list[dict[str, Any]]:
     """根据 document.patient_id 拉取一条 LinkedPatientSummary。
 
     目前每个文档至多绑定一个患者；保留 list 形式以便日后多绑定扩展。
@@ -378,7 +378,7 @@ async def build_linked_patients(document) -> list[dict[str, Any]]:
         return []
     from app.repositories import PatientRepository
 
-    patient = await PatientRepository().get_active_by_id(str(patient_id))
+    patient = await PatientRepository().get_active_by_id(str(patient_id), owner_id=owner_id)
     if patient is None:
         return []
     return [
@@ -450,7 +450,11 @@ async def build_extract_status_map(documents) -> dict[str, str]:
     return await repo.list_latest_extract_status_by_document_ids(document_ids)
 
 
-async def build_bound_patient_map(documents) -> dict[str, BoundPatientSummary]:
+async def build_bound_patient_map(
+    documents,
+    *,
+    owner_id: str | None = None,
+) -> dict[str, BoundPatientSummary]:
     """批量回填文档列表的"已绑定患者摘要"。
 
     `DocumentSummaryResponse.bound_patient` 默认为 None；这里挑出 `document.patient_id`
@@ -464,7 +468,7 @@ async def build_bound_patient_map(documents) -> dict[str, BoundPatientSummary]:
     })
     if not patient_ids:
         return {}
-    patients = await PatientRepository().list_by_ids(patient_ids)
+    patients = await PatientRepository().list_by_ids(patient_ids, owner_id=owner_id)
     return {
         str(patient.id): BoundPatientSummary(
             patient_id=str(patient.id),
@@ -559,7 +563,7 @@ async def list_documents(
         uploaded_by=user_scope_id(current_user),
     )
     extract_status_map = await build_extract_status_map(documents)
-    bound_patient_map = await build_bound_patient_map(documents)
+    bound_patient_map = await build_bound_patient_map(documents, owner_id=user_scope_id(current_user))
     return DocumentListResponse(
         items=[
             document_summary_response(
@@ -605,7 +609,7 @@ async def get_document_statuses(
 ) -> DocumentStatusesResponse:
     documents = await service.list_documents_by_ids(payload.document_ids, uploaded_by=user_scope_id(current_user))
     extract_status_map = await build_extract_status_map(documents)
-    bound_patient_map = await build_bound_patient_map(documents)
+    bound_patient_map = await build_bound_patient_map(documents, owner_id=user_scope_id(current_user))
     return DocumentStatusesResponse(
         items=[
             document_summary_response(
@@ -628,7 +632,7 @@ async def get_group_documents(
 ) -> DocumentGroupDocumentsResponse:
     payload = await service.get_archive_group_documents(group_id, uploaded_by=user_scope_id(current_user))
     extract_status_map = await build_extract_status_map(payload["items"])
-    bound_patient_map = await build_bound_patient_map(payload["items"])
+    bound_patient_map = await build_bound_patient_map(payload["items"], owner_id=user_scope_id(current_user))
     items = [
         document_summary_response(
             document,
@@ -696,7 +700,7 @@ async def get_document(
         from fastapi import HTTPException
 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    linked_patients = await build_linked_patients(document)
+    linked_patients = await build_linked_patients(document, owner_id=user_scope_id(current_user))
     extraction_records = await build_extraction_records(document_id)
     return document_response(
         document,

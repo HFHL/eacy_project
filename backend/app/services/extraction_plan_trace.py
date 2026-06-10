@@ -9,14 +9,15 @@ from app.services.extraction_planner import ExtractionPlanItem, ExtractionPlanne
 
 
 def document_trace_terms(document: Document) -> list[str]:
-    metadata = document.metadata_json if isinstance(document.metadata_json, dict) else {}
+    raw_metadata = getattr(document, "metadata_json", None)
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     values = [
-        document.doc_type,
-        document.doc_subtype,
-        document.document_type,
-        document.document_sub_type,
-        document.doc_title,
-        document.original_filename,
+        getattr(document, "doc_type", None),
+        getattr(document, "doc_subtype", None),
+        getattr(document, "document_type", None),
+        getattr(document, "document_sub_type", None),
+        getattr(document, "doc_title", None),
+        getattr(document, "original_filename", None),
         metadata.get("文档类型"),
         metadata.get("文档子类型"),
         metadata.get("document_type"),
@@ -29,15 +30,16 @@ def document_trace_terms(document: Document) -> list[str]:
 
 
 def document_trace_summary(document: Document) -> dict[str, Any]:
+    raw_metadata = getattr(document, "metadata_json", None)
     return {
-        "document_id": document.id,
-        "file_name": document.file_name or document.original_filename,
-        "original_filename": document.original_filename,
-        "doc_type": document.doc_type or document.document_type,
-        "doc_subtype": document.doc_subtype or document.document_sub_type,
-        "doc_title": document.doc_title,
-        "metadata_json": document.metadata_json if isinstance(document.metadata_json, dict) else None,
-        "ocr_status": document.ocr_status,
+        "document_id": getattr(document, "id", None),
+        "file_name": getattr(document, "file_name", None) or getattr(document, "original_filename", None),
+        "original_filename": getattr(document, "original_filename", None),
+        "doc_type": getattr(document, "doc_type", None) or getattr(document, "document_type", None),
+        "doc_subtype": getattr(document, "doc_subtype", None) or getattr(document, "document_sub_type", None),
+        "doc_title": getattr(document, "doc_title", None),
+        "metadata_json": raw_metadata if isinstance(raw_metadata, dict) else None,
+        "ocr_status": getattr(document, "ocr_status", None),
         "doc_terms": document_trace_terms(document),
     }
 

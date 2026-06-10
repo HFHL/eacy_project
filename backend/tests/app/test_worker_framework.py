@@ -1,5 +1,6 @@
 from app.workers.celery_app import (
     ABANDON_STALE_PENDING_TASK_NAME,
+    CLAUDE_CODE_QUEUE,
     EXTRACTION_QUEUE,
     EXTRACTION_TASK_NAME,
     MAINTENANCE_QUEUE,
@@ -7,6 +8,7 @@ from app.workers.celery_app import (
     METADATA_TASK_NAME,
     OCR_QUEUE,
     OCR_TASK_NAME,
+    SCHEDULE_PENDING_EXTRACTION_TASK_NAME,
     celery_app,
 )
 from core.config import config
@@ -19,6 +21,7 @@ def test_celery_app_registers_worker_tasks():
     assert METADATA_TASK_NAME in celery_app.tasks
     assert EXTRACTION_TASK_NAME in celery_app.tasks
     assert ABANDON_STALE_PENDING_TASK_NAME in celery_app.tasks
+    assert SCHEDULE_PENDING_EXTRACTION_TASK_NAME in celery_app.tasks
 
 
 def test_celery_task_routes_are_declared():
@@ -27,7 +30,9 @@ def test_celery_task_routes_are_declared():
     assert routes[OCR_TASK_NAME]["queue"] == OCR_QUEUE
     assert routes[METADATA_TASK_NAME]["queue"] == METADATA_QUEUE
     assert routes[EXTRACTION_TASK_NAME]["queue"] == EXTRACTION_QUEUE
+    assert CLAUDE_CODE_QUEUE == "claude-code"
     assert routes[ABANDON_STALE_PENDING_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
+    assert routes[SCHEDULE_PENDING_EXTRACTION_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
 
 
 def test_celery_beat_schedule_abandon_stale_pending_when_enabled():
@@ -38,6 +43,16 @@ def test_celery_beat_schedule_abandon_stale_pending_when_enabled():
     entry = schedule["abandon-stale-pending-extraction-jobs"]
     assert entry["task"] == ABANDON_STALE_PENDING_TASK_NAME
     assert entry["kwargs"]["older_than_hours"] == config.STALE_PENDING_ABANDON_HOURS
+
+
+def test_celery_beat_schedule_pending_extraction_when_enabled():
+    if not config.EXTRACTION_SCHEDULER_ENABLED:
+        return
+    schedule = celery_app.conf.beat_schedule
+    assert "schedule-pending-extraction-jobs" in schedule
+    entry = schedule["schedule-pending-extraction-jobs"]
+    assert entry["task"] == SCHEDULE_PENDING_EXTRACTION_TASK_NAME
+    assert entry["schedule"] == config.EXTRACTION_SCHEDULER_INTERVAL_SECONDS
 
 
 def test_extraction_worker_processes_existing_job(monkeypatch):

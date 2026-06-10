@@ -175,6 +175,15 @@ const PatientDetail = () => {
   const [uploadFileList, setUploadFileList] = useState([])
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState({})
+  const getUploadFileKey = useCallback((file) => file?.uid || file?.name, [])
+  const uploadableFileList = useMemo(() => (
+    uploadFileList.filter((file) => {
+      const fileKey = getUploadFileKey(file)
+      const status = uploadProgress[fileKey]?.status
+      return !status || status === 'error'
+    })
+  ), [getUploadFileKey, uploadFileList, uploadProgress])
+  const hasUploadableFiles = uploadableFileList.length > 0
   
   const [aiMessages, setAiMessages] = useState([
     {
@@ -1711,6 +1720,7 @@ const PatientDetail = () => {
               ),
               children: (
                 <SchemaEhrTab
+                  key={`schema-ehr-${patientId || 'empty'}`}
                   patientId={patientId}
                   patientDocuments={documents}
                   onSave={async (data, type) => console.log('Schema保存', type, data)}
@@ -1728,6 +1738,7 @@ const PatientDetail = () => {
               ),
               children: (
                 <DocumentsTab
+                  key={`documents-${patientId || 'empty'}`}
                   patientId={patientId}
                   patientInfo={patientInfo}
                   documents={documents}
@@ -2053,15 +2064,15 @@ const PatientDetail = () => {
             key="upload" 
             type="primary"
             loading={uploading}
-            disabled={uploadFileList.length === 0}
+            disabled={uploading || !hasUploadableFiles}
             onClick={async () => {
-              if (uploadFileList.length === 0) {
+              if (!hasUploadableFiles) {
                 message.warning('请先选择要上传的文件')
                 return
               }
 
               const batchCheck = validateUploadBatch(
-                uploadFileList.map((item) => item.originFileObj || item)
+                uploadableFileList.map((item) => item.originFileObj || item)
               )
               if (!batchCheck.ok) {
                 message.error(batchCheck.message)
@@ -2073,9 +2084,9 @@ const PatientDetail = () => {
               let queuedCount = 0
               let failCount = 0
               
-              for (let i = 0; i < uploadFileList.length; i++) {
-                const file = uploadFileList[i]
-                const fileKey = file.uid || file.name
+              for (let i = 0; i < uploadableFileList.length; i++) {
+                const file = uploadableFileList[i]
+                const fileKey = getUploadFileKey(file)
                 
                 try {
                   setUploadProgress(prev => ({

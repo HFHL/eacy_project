@@ -42,7 +42,10 @@ class DocumentMetadataService:
             await session.rollback()
             raise
 
-        self._enqueue_metadata_task(document.id)
+        try:
+            self._enqueue_metadata_task(document.id)
+        except Exception as exc:
+            document = await self._mark_failed(document.id, exc, uploaded_by=uploaded_by)
         return document
 
     async def process_document_metadata(self, document_id: str, *, uploaded_by: str | None = None) -> Document:
@@ -72,7 +75,13 @@ class DocumentMetadataService:
             document = await self.document_repository.save(document)
             await session.commit()
             await DocumentService().invalidate_archive_tree_cache(getattr(document, "uploaded_by", None))
-            await DocumentService().enqueue_ready_extraction_jobs(document.id)
+            try:
+                await DocumentService().enqueue_ready_extraction_jobs(document.id)
+            except Exception as exc:
+                try:
+                    await self._record_postprocess_warning(document.id, exc, uploaded_by=uploaded_by)
+                except Exception:
+                    pass
             return document
         except Exception as exc:
             await session.rollback()
@@ -111,6 +120,28 @@ class DocumentMetadataService:
             "result": previous_result,
             "error": {"type": exc.__class__.__name__, "message": str(exc)},
         }
+        document.updated_at = datetime.utcnow()
+        document = await self.document_repository.save(document)
+        await session.commit()
+        await DocumentService().invalidate_archive_tree_cache(getattr(document, "uploaded_by", None))
+        return document
+
+    async def _record_postprocess_warning(self, document_id: str, exc: Exception, *, uploaded_by: str | None = None) -> Document | None:
+        document = await self.document_repository.get_visible_by_id(document_id, uploaded_by=uploaded_by)
+        if document is None:
+            return None
+        metadata_json = dict(document.metadata_json or {}) if isinstance(document.metadata_json, dict) else {}
+        warnings = list(metadata_json.get("postprocess_warnings") or [])
+        warnings.append(
+            {
+                "stage": "enqueue_ready_extraction_jobs",
+                "type": exc.__class__.__name__,
+                "message": str(exc),
+                "created_at": datetime.utcnow().isoformat(),
+            }
+        )
+        metadata_json["postprocess_warnings"] = warnings[-10:]
+        document.metadata_json = metadata_json
         document.updated_at = datetime.utcnow()
         document = await self.document_repository.save(document)
         await session.commit()

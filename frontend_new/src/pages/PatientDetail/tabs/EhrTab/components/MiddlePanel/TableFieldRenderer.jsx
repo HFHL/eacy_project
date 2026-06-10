@@ -69,28 +69,27 @@ const TableFieldRenderer = ({
       dataIndex: key,
       key: key,
       width: key === '指标名称（中文）' ? 120 : key === '检测值' ? 80 : key === '参考范围' ? 100 : 90,
-      render: (text, record) => {
+      render: (text, record, rowIndex) => {
         const cellId = `${field.id}_${record.id}_${key}`
+        const getColumnUiType = (columnName) => {
+          if (columnName.includes('日期') || columnName.includes('时间')) return 'datepicker'
+          if (columnName.includes('数量') || columnName.includes('值') || columnName.includes('频率')) return 'number'
+          if (columnName.includes('是否') || columnName.includes('异常')) return 'checkbox'
+          if (columnName.includes('类型') || columnName.includes('状态') || columnName.includes('方式')) return 'select'
+          return 'text'
+        }
+        const virtualField = {
+          id: cellId,
+          name: key,
+          uiType: getColumnUiType(key),
+          confidence: field.confidence,
+          apiFieldId: field.apiFieldId,
+          field_path: field.field_path ? `${field.field_path}.${rowIndex}.${key}` : field.apiFieldId,
+          record_instance_id: record.record_instance_id || field.record_instance_id,
+        }
         
         // 如果当前单元格正在编辑
         if (editingEhrField === cellId) {
-          // 根据列名推断uiType
-          const getColumnUiType = (columnName) => {
-            if (columnName.includes('日期') || columnName.includes('时间')) return 'datepicker'
-            if (columnName.includes('数量') || columnName.includes('值') || columnName.includes('频率')) return 'number'
-            if (columnName.includes('是否') || columnName.includes('异常')) return 'checkbox'
-            if (columnName.includes('类型') || columnName.includes('状态') || columnName.includes('方式')) return 'select'
-            return 'text'
-          }
-          
-          // 创建虚拟字段对象
-          const virtualField = {
-            id: cellId,
-            name: key,
-            uiType: getColumnUiType(key),
-            confidence: field.confidence
-          }
-          
           return (
             <div style={{ fontSize: 12 }}>
               <FieldEditRenderer
@@ -110,7 +109,7 @@ const TableFieldRenderer = ({
           return (
             <div 
               style={{ cursor: 'pointer' }}
-              onDoubleClick={() => onEdit(cellId, text)}
+              onDoubleClick={() => onEdit(virtualField, text)}
             >
               {text ? <Tag color="red">异常</Tag> : <Tag color="green">正常</Tag>}
             </div>
@@ -121,7 +120,7 @@ const TableFieldRenderer = ({
           return (
             <div 
               style={{ cursor: 'pointer' }}
-              onDoubleClick={() => onEdit(cellId, text)}
+              onDoubleClick={() => onEdit(virtualField, text)}
             >
               <Text style={{ color: appThemeToken.colorError, fontWeight: 'bold' }}>{text}</Text>
             </div>
@@ -132,7 +131,7 @@ const TableFieldRenderer = ({
         return (
           <div 
             style={{ cursor: 'pointer' }}
-            onDoubleClick={() => onEdit(cellId, text)}
+            onDoubleClick={() => onEdit(virtualField, text)}
           >
             <Text style={{ fontSize: 12 }}>{text}</Text>
           </div>

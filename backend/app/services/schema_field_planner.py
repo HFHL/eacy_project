@@ -14,12 +14,42 @@ class SchemaField:
     record_form_title: str | None = None
     group_key: str | None = None
     group_title: str | None = None
+    display_type: str | None = None
+    schema_type: str | None = None
+    schema_format: str | None = None
+    merge_binding: str | None = None
 
 
 def schema_top_level_forms(schema_json: dict[str, Any]) -> list[dict[str, str | None]]:
+    legacy_groups = schema_json.get("groups")
+    if isinstance(legacy_groups, list):
+        legacy_forms: list[dict[str, str | None]] = []
+        for group in legacy_groups:
+            if not isinstance(group, dict):
+                continue
+            group_key = str(group.get("key") or group.get("title") or "")
+            group_title = str(group.get("title") or group_key)
+            for form in group.get("forms") or []:
+                if not isinstance(form, dict) or form.get("repeatable") is True:
+                    continue
+                form_key = str(form.get("key") or form.get("title") or "")
+                if not form_key:
+                    continue
+                legacy_forms.append(
+                    {
+                        "group_key": group_key or None,
+                        "group_title": group_title or group_key or None,
+                        "form_key": form_key,
+                        "form_title": str(form.get("title") or form_key),
+                    }
+                )
+        return legacy_forms
+
     properties = schema_json.get("properties") or {}
     forms: list[dict[str, str | None]] = []
     for folder_key, folder_schema in properties.items():
+        if isinstance(folder_schema, dict) and folder_schema.get("type") == "array":
+            continue
         folder_properties = (folder_schema or {}).get("properties") or {}
         if not folder_properties:
             forms.append(
@@ -31,7 +61,9 @@ def schema_top_level_forms(schema_json: dict[str, Any]) -> list[dict[str, str | 
                 }
             )
             continue
-        for form_key in folder_properties.keys():
+        for form_key, form_schema in folder_properties.items():
+            if isinstance(form_schema, dict) and form_schema.get("type") == "array":
+                continue
             forms.append(
                 {
                     "group_key": str(folder_key),
@@ -146,6 +178,8 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
             return "date"
         if schema_type in {"number", "integer"} or display == "number":
             return "number"
+        if schema_type == "boolean":
+            return "json"
         if schema_type in {"array", "object"}:
             return "json"
         return "text"
@@ -168,6 +202,7 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
         group_title: str | None,
         record_form_key: str | None,
         record_form_title: str | None,
+        merge_binding: str | None,
     ) -> None:
         if is_leaf(schema):
             if schema.get("x-skip-extraction"):
@@ -187,6 +222,10 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
                     record_form_title=record_form_title,
                     group_key=group_key,
                     group_title=group_title,
+                    display_type=schema.get("x-display"),
+                    schema_type=schema.get("type"),
+                    schema_format=schema.get("format"),
+                    merge_binding=schema.get("x-merge-binding") or merge_binding,
                 )
             )
             return
@@ -203,6 +242,7 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
                     group_title=group_title,
                     record_form_key=record_form_key,
                     record_form_title=record_form_title,
+                    merge_binding=child_schema.get("x-merge-binding") or merge_binding,
                 )
 
     for folder_key, folder_schema in (schema_json.get("properties") or {}).items():
@@ -215,6 +255,7 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
                 group_title=str(folder_key),
                 record_form_key=f"{folder_key}.{form_key}",
                 record_form_title=str(form_key),
+                merge_binding=form_schema.get("x-merge-binding") if isinstance(form_schema, dict) else None,
             )
 
     return fields

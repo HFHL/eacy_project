@@ -74,13 +74,21 @@ class FakeResearchProjectService:
         self.bindings[binding.id] = binding
         return binding
 
-    async def disable_template_binding(self, *, project_id, binding_id):
+    async def disable_template_binding(self, *, project_id, binding_id, **kwargs):
         binding = self.bindings[binding_id]
         binding.status = "disabled"
         return binding
 
     async def list_project_patients(self, project_id, **kwargs):
-        return [patient for patient in self.project_patients.values() if patient.project_id == project_id]
+        patients = [patient for patient in self.project_patients.values() if patient.project_id == project_id]
+        offset = kwargs.get("offset", 0) or 0
+        limit = kwargs.get("limit")
+        if limit is None:
+            return patients
+        return patients[offset:offset + limit]
+
+    async def count_project_patients(self, project_id, **kwargs):
+        return len([patient for patient in self.project_patients.values() if patient.project_id == project_id])
 
     async def list_project_patients_with_summary(self, project_id, **kwargs):
         patients = await self.list_project_patients(project_id, **kwargs)
@@ -135,7 +143,7 @@ class FakeResearchProjectService:
         )
         return project_patient
 
-    async def withdraw_project_patient(self, *, project_id, project_patient_id):
+    async def withdraw_project_patient(self, *, project_id, project_patient_id, **kwargs):
         project_patient = self.project_patients[project_patient_id]
         project_patient.status = "withdrawn"
         project_patient.withdrawn_at = datetime(2026, 1, 2)
@@ -190,6 +198,15 @@ def test_project_binding_enrollment_and_archive_flow():
     patients_response = client.get(f"/api/v1/projects/{project['id']}/patients")
     assert patients_response.status_code == 200
     assert patients_response.json()[0]["id"] == project_patient["id"]
+
+    paged_patients_response = client.get(
+        f"/api/v1/projects/{project['id']}/patients",
+        params={"page": 1, "page_size": 20},
+    )
+    assert paged_patients_response.status_code == 200
+    paged_patients = paged_patients_response.json()
+    assert paged_patients["total"] == 1
+    assert paged_patients["items"][0]["id"] == project_patient["id"]
 
     withdraw_response = client.delete(f"/api/v1/projects/{project['id']}/patients/{project_patient['id']}")
     assert withdraw_response.status_code == 200

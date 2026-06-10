@@ -181,7 +181,7 @@ class ResearchProjectExportService:
 
     async def export_crf_xlsx(self, project_id: str, request: ExportRequest, *, owner_id: str | None = None) -> bytes:
         project = await self.project_repository.get_by_id(project_id)
-        if project is None or project.status == "deleted" or (owner_id is not None and project.owner_id != owner_id):
+        if project is None or project.status == "deleted" or (owner_id is not None and str(project.owner_id) != str(owner_id)):
             raise ResearchProjectNotFoundError("Research project not found")
 
         binding = await self.binding_repository.get_active_primary_crf(project_id)

@@ -122,7 +122,7 @@ async def get_extraction_job(
     current_user: CurrentUser = Depends(get_current_user),
     service: ExtractionService = Depends(get_extraction_service),
 ) -> ExtractionJobResponse:
-    job = await service.get_job(job_id)
+    job = await service.get_job(job_id, requested_by=uuid_user_id_or_none(current_user))
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Extraction job not found")
     return ExtractionJobResponse.model_validate(job)
@@ -135,7 +135,7 @@ async def list_extraction_runs(
     service: ExtractionService = Depends(get_extraction_service),
 ) -> list[ExtractionRunResponse]:
     try:
-        runs = await service.list_runs(job_id)
+        runs = await service.list_runs(job_id, requested_by=uuid_user_id_or_none(current_user))
     except (ExtractionNotFoundError, ExtractionConflictError) as error:
         _raise_extraction_error(error)
     return [ExtractionRunResponse.model_validate(run) for run in runs]
@@ -148,7 +148,7 @@ async def cancel_extraction_job(
     service: ExtractionService = Depends(get_extraction_service),
 ) -> ExtractionJobResponse:
     try:
-        job = await service.cancel_job(job_id)
+        job = await service.cancel_job(job_id, requested_by=uuid_user_id_or_none(current_user))
     except (ExtractionNotFoundError, ExtractionConflictError) as error:
         _raise_extraction_error(error)
     return ExtractionJobResponse.model_validate(job)
@@ -161,7 +161,7 @@ async def retry_extraction_job(
     service: ExtractionService = Depends(get_extraction_service),
 ) -> ExtractionJobResponse:
     try:
-        job = await service.retry_job(job_id)
+        job = await service.retry_job(job_id, requested_by=uuid_user_id_or_none(current_user))
     except (ExtractionNotFoundError, ExtractionConflictError) as error:
         _raise_extraction_error(error)
     return ExtractionJobResponse.model_validate(job)
@@ -174,7 +174,7 @@ async def delete_extraction_job(
     service: ExtractionService = Depends(get_extraction_service),
 ) -> Response:
     try:
-        await service.delete_job(job_id)
+        await service.delete_job(job_id, requested_by=uuid_user_id_or_none(current_user))
     except (ExtractionNotFoundError, ExtractionConflictError) as error:
         _raise_extraction_error(error)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

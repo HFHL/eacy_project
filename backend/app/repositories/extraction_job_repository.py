@@ -8,7 +8,7 @@ from core.db import session
 from core.repository.base import BaseRepo
 
 
-_EXTRACT_PRIORITY = ("running", "pending", "completed", "succeeded", "failed", "cancelled")
+_EXTRACT_PRIORITY = ("running", "queued", "pending", "completed", "succeeded", "timeout", "failed", "cancelled")
 _EXTRACT_STATUS_RANK = {name: idx for idx, name in enumerate(_EXTRACT_PRIORITY)}
 
 
@@ -26,15 +26,37 @@ class ExtractionJobRepository(BaseRepo[ExtractionJob]):
         *,
         older_than: datetime,
         limit: int = 500,
+        statuses: tuple[str, ...] = ("pending",),
     ) -> list[ExtractionJob]:
-        """Return pending jobs whose last activity predates ``older_than``."""
+        """Return unstarted jobs whose last activity predates ``older_than``."""
         marker = func.coalesce(ExtractionJob.updated_at, ExtractionJob.created_at)
         query = (
             select(ExtractionJob)
-            .where(ExtractionJob.status == "pending")
+            .where(ExtractionJob.status.in_(statuses))
             .where(marker < older_than)
             .order_by(marker)
             .limit(limit)
+        )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_active_for_scheduler(self, *, limit: int = 10000) -> list[ExtractionJob]:
+        query = (
+            select(ExtractionJob)
+            .where(ExtractionJob.status.in_(("queued", "running")))
+            .order_by(ExtractionJob.created_at)
+            .limit(limit)
+        )
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_pending_for_scheduler(self, *, limit: int = 200) -> list[ExtractionJob]:
+        query = (
+            select(ExtractionJob)
+            .where(ExtractionJob.status == "pending")
+            .order_by(desc(ExtractionJob.priority), ExtractionJob.created_at, ExtractionJob.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
         )
         result = await session.execute(query)
         return list(result.scalars().all())
@@ -56,7 +78,8 @@ class ExtractionJobRepository(BaseRepo[ExtractionJob]):
         patient_ids: list[str],
         *,
         job_type: str | None = None,
-        active_statuses: tuple[str, ...] = ("pending", "running"),
+        requested_by: str | None = None,
+        active_statuses: tuple[str, ...] = ("pending", "queued", "running"),
     ) -> list[ExtractionJob]:
         """批量查询若干患者下处于活跃状态的 extraction_jobs。
 
@@ -71,6 +94,8 @@ class ExtractionJobRepository(BaseRepo[ExtractionJob]):
         )
         if job_type is not None:
             query = query.where(ExtractionJob.job_type == job_type)
+        if requested_by is not None:
+            query = query.where(ExtractionJob.requested_by == requested_by)
         result = await session.execute(query)
         return list(result.scalars().all())
 

@@ -57,15 +57,15 @@ class FakeExtractionService:
         self.runs[second.id] = self.runs.pop("job-1") if "job-1" in self.runs and first.id != "job-1" else self.runs.get(second.id, [])
         return [first, second]
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, **kwargs):
         return self.jobs.get(job_id)
 
-    async def list_runs(self, job_id):
+    async def list_runs(self, job_id, **kwargs):
         if job_id not in self.jobs:
             raise ExtractionNotFoundError("Extraction job not found")
         return self.runs[job_id]
 
-    async def cancel_job(self, job_id):
+    async def cancel_job(self, job_id, **kwargs):
         job = self.jobs.get(job_id)
         if job is None:
             raise ExtractionNotFoundError("Extraction job not found")
@@ -74,7 +74,7 @@ class FakeExtractionService:
         job.status = "cancelled"
         return job
 
-    async def retry_job(self, job_id):
+    async def retry_job(self, job_id, **kwargs):
         job = self.jobs.get(job_id)
         if job is None:
             raise ExtractionNotFoundError("Extraction job not found")
@@ -82,7 +82,7 @@ class FakeExtractionService:
         self.runs[job_id].append(SimpleNamespace(**{**self.runs[job_id][0].__dict__, "id": "run-2", "run_no": 2}))
         return job
 
-    async def delete_job(self, job_id):
+    async def delete_job(self, job_id, **kwargs):
         if job_id not in self.jobs:
             raise ExtractionNotFoundError("Extraction job not found")
         if self.runs.get(job_id):

@@ -98,16 +98,49 @@ class TaskProgressService:
         await self.aggregate_batch(batch_id)
         return item
 
-    async def mark_job_queued(self, job_id: str, *, celery_task_id: str | None = None, commit: bool = False) -> None:
+    async def mark_job_queued(
+        self,
+        job_id: str,
+        *,
+        celery_task_id: str | None = None,
+        commit: bool = False,
+        message: str | None = None,
+        reset_progress: bool = False,
+    ) -> None:
         await self.update_job_progress(
             job_id,
             status="queued",
             progress=5,
             stage="queued",
             stage_label="已进入队列",
-            message="任务已进入后台队列",
+            message=message or "任务已进入后台队列",
             celery_task_id=celery_task_id,
             event_type="state_changed",
+            reset_progress=reset_progress,
+            clear_error=reset_progress,
+            clear_finished=reset_progress,
+            commit=commit,
+        )
+
+    async def mark_job_waiting_for_scheduler(
+        self,
+        job: ExtractionJob,
+        *,
+        message: str | None = None,
+        reset_progress: bool = False,
+        commit: bool = False,
+    ) -> None:
+        await self.update_job_progress(
+            job,
+            status="queued",
+            progress=0,
+            stage="waiting_scheduler",
+            stage_label="等待调度",
+            message=message or "任务正在等待公平调度",
+            event_type="state_changed",
+            reset_progress=reset_progress,
+            clear_error=reset_progress,
+            clear_finished=reset_progress,
             commit=commit,
         )
 
@@ -126,6 +159,9 @@ class TaskProgressService:
         current_step: int | None = None,
         event_type: str = "progress",
         payload_json: dict[str, Any] | None = None,
+        reset_progress: bool = False,
+        clear_error: bool = False,
+        clear_finished: bool = False,
         commit: bool = False,
     ) -> None:
         if isinstance(job_or_id, str):
@@ -134,6 +170,8 @@ class TaskProgressService:
             job_id = job_or_id.id
         item = await self.item_repository.get_by_extraction_job(job_id)
         if item is None:
+            if commit:
+                await session.commit()
             return
 
         now = datetime.utcnow()
@@ -143,8 +181,10 @@ class TaskProgressService:
                 item.started_at = now
             if status in TERMINAL_STATUSES:
                 item.finished_at = now
+            elif clear_finished:
+                item.finished_at = None
         if progress is not None:
-            item.progress = max(int(item.progress or 0), int(progress))
+            item.progress = int(progress) if reset_progress else max(int(item.progress or 0), int(progress))
         if stage is not None:
             item.stage = stage
         if stage_label is not None:
@@ -157,6 +197,8 @@ class TaskProgressService:
             item.extraction_run_id = extraction_run_id
         if error_message is not None:
             item.error_message = error_message
+        elif clear_error:
+            item.error_message = None
         if current_step is not None:
             item.current_step = current_step
         item.heartbeat_at = now
@@ -185,6 +227,19 @@ class TaskProgressService:
             message=error_message,
             error_message=error_message,
             event_type="error",
+            commit=commit,
+        )
+
+    async def mark_job_cancelled(self, job: ExtractionJob, *, message: str | None = None, commit: bool = False) -> None:
+        cancellation_message = message or "任务已取消"
+        await self.update_job_progress(
+            job,
+            status="cancelled",
+            stage="cancelled",
+            stage_label="已取消",
+            message=cancellation_message,
+            error_message=cancellation_message,
+            event_type="state_changed",
             commit=commit,
         )
 
@@ -239,7 +294,7 @@ class TaskProgressService:
         batches = list(result.scalars().all())
         payloads: list[dict[str, Any]] = []
         for batch in batches:
-            payload = await self.get_batch_payload(batch.id)
+            payload = await self.get_batch_payload(batch.id, requested_by=requested_by)
             if payload is not None:
                 payloads.append(payload)
         return payloads
@@ -261,6 +316,15 @@ class TaskProgressService:
             item.finished_at = item.finished_at or now
             item.heartbeat_at = now
             await self.item_repository.save(item)
+            job_id = getattr(item, "extraction_job_id", None)
+            if isinstance(job_id, str) and job_id:
+                job = await session.get(ExtractionJob, job_id)
+                if job is not None and job.status in {"pending", "running"}:
+                    job.status = "failed"
+                    job.error_type = "stale_progress"
+                    job.error_message = ITEM_STALE_MESSAGE
+                    job.finished_at = job.finished_at or now
+                    session.add(job)
             changed = True
         if changed:
             await session.flush()
@@ -313,9 +377,16 @@ class TaskProgressService:
         await session.refresh(batch)
         return batch
 
-    async def get_batch_payload(self, batch_id: str) -> dict[str, Any] | None:
+    async def get_batch_payload(
+        self,
+        batch_id: str,
+        *,
+        requested_by: str | None = None,
+    ) -> dict[str, Any] | None:
         batch = await self.aggregate_batch(batch_id)
         if batch is None:
+            return None
+        if requested_by is not None and str(batch.requested_by) != str(requested_by):
             return None
         items = await self.item_repository.list_by_batch(batch_id)
         running = sum(1 for item in items if item.status == "running")
@@ -375,7 +446,18 @@ class TaskProgressService:
             "skipped": skipped_entries[:50],
         }
 
-    async def list_batch_events(self, batch_id: str, *, after_id: str | None = None, limit: int = 200) -> list[AsyncTaskEvent]:
+    async def list_batch_events(
+        self,
+        batch_id: str,
+        *,
+        after_id: str | None = None,
+        limit: int = 200,
+        requested_by: str | None = None,
+    ) -> list[AsyncTaskEvent]:
+        if requested_by is not None:
+            batch = await self.batch_repository.get_by_id(batch_id)
+            if batch is None or str(batch.requested_by) != str(requested_by):
+                return []
         return await self.event_repository.list_by_batch(batch_id, after_id=after_id, limit=limit)
 
     def _merge_event_payload(
