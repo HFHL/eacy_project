@@ -1,0 +1,75 @@
+export const initialState = {
+  projects: {
+    list: [],
+    total: 0,
+    loading: false,
+    filters: {
+      search: '',
+      status: '',
+      createdBy: '',
+      dateRange: null,
+    },
+    pagination: {
+      current: 1,
+      pageSize: 10,
+      total: 0,
+    },
+  },
+  currentProject: {
+    info: null,
+    patients: [],
+    crfTemplate: null,
+    extractionTasks: [],
+    dataSet: {},
+    statistics: {
+      totalPatients: 0,
+      extractedPatients: 0,
+      completeness: 0,
+      lastUpdated: null,
+    },
+    loading: false,
+  },
+  patientSelection: {
+    availablePatients: [],
+    selectedPatients: [],
+    filters: {
+      search: '',
+      gender: '',
+      ageRange: '',
+      department: '',
+      diagnosis: '',
+      completeness: '',
+      excludeExisting: true,
+    },
+    loading: false,
+    total: 0,
+  },
+  extraction: {
+    tasks: [],
+    currentTask: null,
+    progress: {
+      total: 0,
+      completed: 0,
+      failed: 0,
+      inProgress: 0,
+    },
+    settings: {
+      mode: 'smart',
+      batchSize: 10,
+      retryFailed: true,
+    },
+    loading: false,
+  },
+  export: {
+    formats: ['excel', 'csv', 'json'],
+    settings: {
+      format: 'excel',
+      includeMetadata: true,
+      maskSensitiveData: true,
+      selectedFields: [],
+      selectedPatients: [],
+    },
+    tasks: [],
+    loading: false,
+  },
+}

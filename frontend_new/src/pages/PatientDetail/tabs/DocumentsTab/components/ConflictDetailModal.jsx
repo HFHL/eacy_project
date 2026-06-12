@@ -3,40 +3,28 @@
  * 展示抽取记录产生的冲突，支持采用新值或保留现有值
  */
 import React, { useState, useEffect } from 'react'
-import { 
-  Modal, 
-  Table, 
-  Button, 
-  Space, 
-  Typography, 
-  Tag,
+import {
+  Modal,
+  Button,
+  Space,
+  Typography,
   message,
   Spin,
-  Empty,
-  Tooltip,
-  Card,
-  Descriptions,
-  Popconfirm,
-  Alert
+  Empty
 } from 'antd'
-import { 
-  CheckCircleOutlined, 
-  CloseCircleOutlined,
-  WarningOutlined,
-  SwapOutlined,
-  FileTextOutlined,
-  ClockCircleOutlined,
-  UserOutlined
+import {
+  CheckCircleOutlined,
+  WarningOutlined
 } from '@ant-design/icons'
 import { getConflictsByExtractionId, resolveConflict } from '../../../../../api/patient'
-import { getFieldLabel } from './ehrFieldLabels'
 import { appThemeToken } from '../../../../../styles/themeTokens'
+import ConflictCard from './ConflictCard'
 import './ConflictDetailModal.css'
 
 const { Text, Title } = Typography
 
-const ConflictDetailModal = ({ 
-  visible, 
+const ConflictDetailModal = ({
+  visible,
   extractionId,
   onClose,
   onResolve // 冲突解决后的回调
@@ -49,7 +37,7 @@ const ConflictDetailModal = ({
   // 获取冲突数据
   const fetchConflicts = async () => {
     if (!extractionId) return
-    
+
     setLoading(true)
     try {
       const response = await getConflictsByExtractionId(extractionId)
@@ -104,188 +92,8 @@ const ConflictDetailModal = ({
     }
   }
 
-  // 格式化时间
-  const formatTime = (timeStr) => {
-    if (!timeStr) return '-'
-    try {
-      const date = new Date(timeStr)
-      return date.toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
-      })
-    } catch {
-      return timeStr
-    }
-  }
-
-  // 格式化值用于展示
-  const formatValue = (value) => {
-    if (value === null || value === undefined) return <Text type="secondary">（空）</Text>
-    if (typeof value === 'object') {
-      return (
-        <pre className="value-json">
-          {JSON.stringify(value, null, 2)}
-        </pre>
-      )
-    }
-    return String(value)
-  }
-
-  // 获取状态标签
-  const getStatusTag = (status) => {
-    const statusMap = {
-      pending: { color: 'warning', text: '待解决', icon: <WarningOutlined /> },
-      resolved_adopt: { color: 'success', text: '已采用新值', icon: <CheckCircleOutlined /> },
-      resolved_keep: { color: 'processing', text: '已保留旧值', icon: <CheckCircleOutlined /> },
-      ignored: { color: 'default', text: '已忽略', icon: <CloseCircleOutlined /> }
-    }
-    const config = statusMap[status] || statusMap.pending
-    return <Tag color={config.color} icon={config.icon}>{config.text}</Tag>
-  }
-
-  // 渲染来源信息
-  const renderSourceInfo = (source, type) => {
-    if (!source) return <Text type="secondary">未知来源</Text>
-    
-    return (
-      <div className="source-info">
-        {source.document_name && (
-          <div className="source-item">
-            <FileTextOutlined style={{ marginRight: 4 }} />
-            <Text ellipsis={{ tooltip: source.document_name }}>
-              {source.document_name}
-            </Text>
-          </div>
-        )}
-        {source.created_at && (
-          <div className="source-item">
-            <ClockCircleOutlined style={{ marginRight: 4 }} />
-            <Text type="secondary">{formatTime(source.created_at)}</Text>
-          </div>
-        )}
-        {source.operator_name && (
-          <div className="source-item">
-            <UserOutlined style={{ marginRight: 4 }} />
-            <Text type="secondary">{source.operator_name}</Text>
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  // 渲染单个冲突卡片
-  const renderConflictCard = (conflict) => {
-    const isPending = conflict.status === 'pending'
-    const isResolving = resolving[conflict.id]
-    
-    return (
-      <Card 
-        key={conflict.id} 
-        className={`conflict-card ${isPending ? 'conflict-pending' : 'conflict-resolved'}`}
-        size="small"
-      >
-        {/* 头部：字段名 + 状态 */}
-        <div className="conflict-header">
-          <div className="conflict-field">
-            <Text strong>{conflict.field_label || getFieldLabel(conflict.field_name) || conflict.field_name}</Text>
-            {conflict.record_index !== null && conflict.record_index !== undefined && (
-              <Tag color="blue" style={{ marginLeft: 8 }}>索引 {conflict.record_index}</Tag>
-            )}
-          </div>
-          <div className="conflict-status">
-            {getStatusTag(conflict.status)}
-          </div>
-        </div>
-
-        {/* 值对比 */}
-        <div className="conflict-comparison">
-          {/* 现有值 */}
-          <div className="value-box existing-value">
-            <div className="value-header">
-              <Tag color="blue">现有值</Tag>
-            </div>
-            <div className="value-content">
-              {formatValue(conflict.existing_value)}
-            </div>
-            <div className="value-source">
-              {renderSourceInfo(conflict.existing_value_source, 'existing')}
-            </div>
-          </div>
-
-          {/* 箭头 */}
-          <div className="comparison-arrow">
-            <SwapOutlined style={{ fontSize: 20, color: appThemeToken.colorTextTertiary }} />
-          </div>
-
-          {/* 新值 */}
-          <div className="value-box new-value">
-            <div className="value-header">
-              <Tag color="orange">新值</Tag>
-            </div>
-            <div className="value-content">
-              {formatValue(conflict.new_value)}
-            </div>
-            <div className="value-source">
-              {renderSourceInfo(conflict.new_value_source, 'new')}
-            </div>
-          </div>
-        </div>
-
-        {/* 操作按钮（仅待解决状态显示） */}
-        {isPending && (
-          <div className="conflict-actions">
-            <Space>
-              <Popconfirm
-                title="确认采用新值？"
-                description="这将用新值替换现有值"
-                onConfirm={() => handleResolve(conflict.id, 'adopt')}
-                okText="确认"
-                cancelText="取消"
-              >
-                <Button 
-                  type="primary" 
-                  size="small"
-                  icon={<CheckCircleOutlined />}
-                  loading={isResolving}
-                >
-                  采用新值
-                </Button>
-              </Popconfirm>
-              
-              <Popconfirm
-                title="确认保留现有值？"
-                description="这将忽略新值，保持现有数据不变"
-                onConfirm={() => handleResolve(conflict.id, 'keep')}
-                okText="确认"
-                cancelText="取消"
-              >
-                <Button 
-                  size="small"
-                  icon={<CloseCircleOutlined />}
-                  loading={isResolving}
-                >
-                  保留现有值
-                </Button>
-              </Popconfirm>
-            </Space>
-          </div>
-        )}
-
-        {/* 已解决信息 */}
-        {!isPending && conflict.resolved_at && (
-          <div className="resolve-info">
-            <Text type="secondary">
-              {conflict.resolved_by_name || '系统'} 于 {formatTime(conflict.resolved_at)} 解决
-              {conflict.resolution_remark && ` - ${conflict.resolution_remark}`}
-            </Text>
-          </div>
-        )}
-      </Card>
-    )
-  }
+  const pendingConflicts = conflicts.filter(conflict => conflict.status === 'pending')
+  const resolvedConflicts = conflicts.filter(conflict => conflict.status !== 'pending')
 
   return (
     <Modal
@@ -328,24 +136,38 @@ const ConflictDetailModal = ({
         ) : (
           <div className="conflict-list">
             {/* 待解决的冲突 */}
-            {conflicts.filter(c => c.status === 'pending').length > 0 && (
+            {pendingConflicts.length > 0 && (
               <div className="conflict-section">
                 <Title level={5} style={{ color: appThemeToken.colorWarning }}>
                   <WarningOutlined style={{ marginRight: 8 }} />
                   待解决
                 </Title>
-                {conflicts.filter(c => c.status === 'pending').map(renderConflictCard)}
+                {pendingConflicts.map(conflict => (
+                  <ConflictCard
+                    key={conflict.id}
+                    conflict={conflict}
+                    onResolve={handleResolve}
+                    resolving={resolving[conflict.id]}
+                  />
+                ))}
               </div>
             )}
-            
+
             {/* 已解决的冲突 */}
-            {conflicts.filter(c => c.status !== 'pending').length > 0 && (
+            {resolvedConflicts.length > 0 && (
               <div className="conflict-section">
                 <Title level={5} style={{ color: appThemeToken.colorSuccess }}>
                   <CheckCircleOutlined style={{ marginRight: 8 }} />
                   已解决
                 </Title>
-                {conflicts.filter(c => c.status !== 'pending').map(renderConflictCard)}
+                {resolvedConflicts.map(conflict => (
+                  <ConflictCard
+                    key={conflict.id}
+                    conflict={conflict}
+                    onResolve={handleResolve}
+                    resolving={resolving[conflict.id]}
+                  />
+                ))}
               </div>
             )}
           </div>
@@ -356,4 +178,3 @@ const ConflictDetailModal = ({
 }
 
 export default ConflictDetailModal
-

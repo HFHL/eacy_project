@@ -1,0 +1,1 @@
+PROJECT_CRF_TEMPLATE_TYPE = "project_crf"

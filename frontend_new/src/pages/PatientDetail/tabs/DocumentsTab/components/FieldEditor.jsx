@@ -4,29 +4,23 @@
  */
 import React, { useState, useEffect } from 'react'
 import {
-  Input, 
-  InputNumber, 
-  DatePicker, 
-  Select, 
-  Radio, 
-  Checkbox, 
-  Switch,
+  InputNumber,
   Space,
   Typography
 } from 'antd'
 import dayjs from 'dayjs'
 import ConfidenceIndicator from './ConfidenceIndicator'
+import FieldInputControl from './FieldInputControl'
 
 const { Text } = Typography
-const { TextArea } = Input
 
-const FieldEditor = ({ 
-  field, 
-  value, 
+const FieldEditor = ({
+  field,
+  value,
   confidence,
   editable = true,
   onSave,
-  onCancel 
+  onCancel
 }) => {
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(value)
@@ -100,135 +94,13 @@ const FieldEditor = ({
     }
   }
 
-  // 根据字段类型渲染编辑器
-  const renderEditor = () => {
-    const fieldType = field.uiComponentHint || 'text'
-    
-    switch (fieldType) {
-      case 'number':
-        return (
-          <InputNumber
-            value={editValue}
-            onChange={setEditValue}
-            onPressEnter={handleSave}
-            style={{ width: '100%' }}
-            placeholder={`请输入${field.fieldName}`}
-          />
-        )
-      
-      case 'textarea':
-        return (
-          <TextArea
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onPressEnter={(e) => {
-              if (!e.shiftKey) {
-                e.preventDefault()
-                handleSave()
-              }
-            }}
-            rows={3}
-            placeholder={`请输入${field.fieldName}`}
-          />
-        )
-      
-      case 'datepicker':
-        return (
-          <DatePicker
-            autoFocus
-            open={pickerOpen}
-            value={editValue ? dayjs(editValue, 'YYYY-MM-DD') : null}
-            format="YYYY-MM-DD"
-            onChange={(date, dateString) => {
-              const nextValue = dateString || ''
-              setEditValue(nextValue)
-              if (nextValue !== value || editConfidence !== confidence) {
-                onSave?.(field.fieldId, nextValue, editConfidence)
-              }
-              setPickerOpen(false)
-              setIsEditing(false)
-            }}
-            onOpenChange={(open) => {
-              setPickerOpen(open)
-            }}
-            style={{ width: '100%' }}
-            placeholder={`请选择${field.fieldName}`}
-          />
-        )
-      
-      case 'select':
-        return (
-          <Select
-            value={editValue}
-            onChange={setEditValue}
-            style={{ width: '100%' }}
-            placeholder={`请选择${field.fieldName}`}
-            showSearch
-            allowClear
-            filterOption={(input, option) =>
-              (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
-            }
-            onBlur={handleSave}
-          >
-            {field.options?.map(option => (
-              <Select.Option key={option.value} value={option.value}>
-                {option.label}
-              </Select.Option>
-            ))}
-          </Select>
-        )
-      
-      case 'radio':
-        return (
-          <Radio.Group
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={handleSave}
-          >
-            {field.options?.map(option => (
-              <Radio key={option.value} value={option.value}>
-                {option.label}
-              </Radio>
-            ))}
-          </Radio.Group>
-        )
-      
-      case 'checkbox':
-        return (
-          <Checkbox.Group
-            value={editValue ? editValue.split(',') : []}
-            onChange={(values) => setEditValue(values.join(','))}
-            onBlur={handleSave}
-          >
-            {field.options?.map(option => (
-              <Checkbox key={option.value} value={option.value}>
-                {option.label}
-              </Checkbox>
-            ))}
-          </Checkbox.Group>
-        )
-      
-      case 'switch':
-        return (
-          <Switch
-            checked={editValue === 'true' || editValue === true}
-            onChange={(checked) => setEditValue(checked.toString())}
-            onBlur={handleSave}
-            checkedChildren="是"
-            unCheckedChildren="否"
-          />
-        )
-      
-      default:
-        return (
-          <Input
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onPressEnter={handleSave}
-            placeholder={`请输入${field.fieldName}`}
-          />
-        )
+  const handleDateCommit = (nextValue) => {
+    setEditValue(nextValue)
+    if (nextValue !== value || editConfidence !== confidence) {
+      onSave?.(field.fieldId, nextValue, editConfidence)
     }
+    setPickerOpen(false)
+    setIsEditing(false)
   }
 
   // 渲染显示值
@@ -238,7 +110,7 @@ const FieldEditor = ({
     }
 
     const fieldType = field.uiComponentHint || 'text'
-    
+
     switch (fieldType) {
       case 'switch':
         return <Text>{value === 'true' || value === true ? '是' : '否'}</Text>
@@ -271,9 +143,17 @@ const FieldEditor = ({
         {isEditing ? (
           <div className="field-edit-mode">
             <div style={{ marginBottom: 8 }}>
-              {renderEditor()}
+              <FieldInputControl
+                editValue={editValue}
+                field={field}
+                onDateCommit={handleDateCommit}
+                onPickerOpenChange={setPickerOpen}
+                onSave={handleSave}
+                onValueChange={setEditValue}
+                pickerOpen={pickerOpen}
+              />
             </div>
-            
+
             {/* 置信度调整 */}
             {confidence !== undefined && (
               <div style={{ marginBottom: 8 }}>

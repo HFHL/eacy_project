@@ -1,0 +1,181 @@
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .ocr-stats-bar {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .ocr-block-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .extraction-record-header {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .extraction-group-grid {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .extraction-field-card.full-width {
+    width: 100%;
+  }
+}
+
+/* 可重复字段详情弹窗样式 */
+.array-field-detail-modal .ant-modal-body {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.array-field-records {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.array-field-records .ant-card {
+  transition: box-shadow 0.3s ease;
+}
+
+.array-field-records .ant-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.array-field-records .ant-card .ant-card-body {
+  padding: 16px;
+}
+
+/* 检验指标表格样式 */
+.lab-items-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.lab-items-table th,
+.lab-items-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border: 1px solid #f0f0f0;
+}
+
+.lab-items-table th {
+  background: linear-gradient(135deg, #fafafa 0%, #f5f5f5 100%);
+  font-weight: 500;
+  color: #595959;
+  white-space: nowrap;
+}
+
+.lab-items-table td {
+  background: #fff;
+}
+
+.lab-items-table tr:hover td {
+  background: #fafafa;
+}
+
+.lab-items-table tr.abnormal td {
+  background: #fff7e6;
+}
+
+.lab-items-table tr.abnormal td:nth-child(2) {
+  color: #fa8c16;
+  font-weight: 500;
+}
+
+/* 操作历史样式 */
+.operation-history {
+  padding: 16px 0;
+}
+
+.history-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #fafafa;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.history-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.history-timeline-item {
+  display: flex;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid #f0f0f0;
+  position: relative;
+}
+
+.history-timeline-item:last-child {
+  border-bottom: none;
+}
+
+.history-timeline-item::before {
+  content: '';
+  position: absolute;
+  left: 17px;
+  top: 48px;
+  bottom: -16px;
+  width: 2px;
+  background: #f0f0f0;
+}
+
+.history-timeline-item:last-child::before {
+  display: none;
+}
+
+.timeline-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  z-index: 1;
+}
+
+.timeline-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.timeline-description {
+  margin-bottom: 8px;
+}
+
+.timeline-meta {
+  display: flex;
+  align-items: center;
+}
+
+/* 患者绑定标签样式 */
+.patient-binding-tag:hover {
+  background: #f4ffed !important;
+  border-color: #95de64 !important;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.patient-binding-tag .ant-typography {
+  transition: color 0.3s;
+}

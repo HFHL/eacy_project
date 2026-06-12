@@ -14,7 +14,7 @@ import {
 /**
  * 根据 extract_status 判断 EHR 抽取状态
  * extract_status 来自 ehr_extraction_jobs 表，job_type='extract'
- * 取值: pending / running / completed / succeeded / failed
+ * 取值: pending / running / completed / succeeded / failed / timeout
  */
 const getEhrExtractionConfig = (extractStatus) => {
   const status = (extractStatus || '').toLowerCase()
@@ -49,13 +49,13 @@ const getEhrExtractionConfig = (extractStatus) => {
     }
   }
 
-  if (status === 'failed') {
+  if (status === 'failed' || status === 'timeout') {
     return {
       icon: <CloseCircleOutlined />,
       color: '#ff4d4f',        // 红色
       bgColor: '#fff2f0',
-      text: '抽取失败',
-      description: '电子病历夹抽取失败',
+      text: status === 'timeout' ? '抽取超时' : '抽取失败',
+      description: status === 'timeout' ? '电子病历夹抽取超时' : '电子病历夹抽取失败',
     }
   }
 

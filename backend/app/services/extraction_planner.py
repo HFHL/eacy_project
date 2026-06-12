@@ -84,6 +84,36 @@ class ExtractionPlanner:
                 )
         return forms
 
+    def plan_unsourced_secondary_forms(
+        self,
+        *,
+        document: Document,
+        schema_json: dict[str, Any],
+        excluded_form_keys: set[str] | None = None,
+        target_form_keys: list[str] | None = None,
+    ) -> list[ExtractionPlanItem]:
+        excluded = excluded_form_keys or set()
+        targets = set(target_form_keys or [])
+        items: list[ExtractionPlanItem] = []
+        for form in self._schema_forms(schema_json):
+            form_key = form["form_key"]
+            if form_key in excluded:
+                continue
+            if targets and form_key not in targets:
+                continue
+            if form.get("sources"):
+                continue
+            items.append(
+                ExtractionPlanItem(
+                    document_id=document.id,
+                    target_form_key=form_key,
+                    form_title=form.get("form_title"),
+                    reason="document has related targeted extraction; unsourced form planned as secondary",
+                    match_role="secondary",
+                )
+            )
+        return items
+
     def _explicit_form_keys(self, *, target_form_key: str | None, input_json: dict[str, Any] | None) -> set[str]:
         form_keys = set(self._as_list((input_json or {}).get("form_keys")))
         if target_form_key:

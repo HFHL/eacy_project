@@ -40,10 +40,15 @@ class ExtractionJobRepository(BaseRepo[ExtractionJob]):
         result = await session.execute(query)
         return list(result.scalars().all())
 
-    async def list_active_for_scheduler(self, *, limit: int = 10000) -> list[ExtractionJob]:
+    async def list_active_for_scheduler(
+        self,
+        *,
+        limit: int = 10000,
+        statuses: tuple[str, ...] = ("queued", "running"),
+    ) -> list[ExtractionJob]:
         query = (
             select(ExtractionJob)
-            .where(ExtractionJob.status == "running")
+            .where(ExtractionJob.status.in_(statuses))
             .order_by(ExtractionJob.created_at)
             .limit(limit)
         )

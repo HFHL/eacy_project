@@ -1,0 +1,266 @@
+/* 文档详情弹窗样式 */
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.modal-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.footer-left,
+.footer-right {
+  display: flex;
+  align-items: center;
+}
+
+/* 文档预览区域 */
+.document-preview-area {
+  height: 100%;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.preview-header h5 {
+  margin: 0 !important;
+}
+
+.preview-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.preview-placeholder {
+  text-align: center;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.preview-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.preview-info {
+  margin-bottom: 16px;
+  line-height: 1.6;
+}
+
+.preview-note {
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  border: 1px dashed #d9d9d9;
+}
+
+/* 字段区域 */
+.document-fields {
+  height: 100%;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.document-fields .ant-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.document-fields .ant-tabs-content-holder {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.document-fields .ant-tabs-content {
+  height: 100%;
+}
+
+.document-fields .ant-tabs-tabpane {
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* 字段网格 - 响应式布局 */
+.fields-grid-responsive {
+  width: 100%;
+}
+
+.field-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.field-item {
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  background: #fafafa;
+  transition: all 0.2s ease;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.field-item:hover {
+  border-color: #f0f0f0;
+  background: #fafafa;
+}
+
+/* 旧的单列布局（保留作为备用） */
+.fields-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 字段编辑器 */
+.field-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.field-content {
+  min-height: 32px;
+}
+
+.field-edit-mode {
+  padding: 8px;
+  background: #ffffff;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+}
+
+.field-display-mode {
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.field-display-clickable {
+  cursor: text;
+}
+
+.field-display-clickable:hover {
+  border-color: #1677ff;
+  background: #f0f7ff;
+}
+
+.field-description {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid #f0f0f0;
+}
+
+/* 元数据字段 */
+.metadata-fields h5 {
+  margin-bottom: 16px !important;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+/* 抽取字段 */
+.extracted-fields h5 {
+  margin-bottom: 16px !important;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+/* 操作历史 */
+.operation-history h5 {
+  margin-bottom: 16px !important;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  border-left: 3px solid #6366f1;
+}
+
+/* 响应式设计 */
+@media (max-width: 1200px) {
+  .document-detail-content .ant-row {
+    flex-direction: column;
+  }
+
+  .document-detail-content .ant-col {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .document-preview-area {
+    height: 300px;
+    margin-bottom: 16px;
+  }
+
+  .document-fields {
+    height: 400px;
+  }
+}
+
+/* 滚动条样式 */
+.document-fields .ant-tabs-content-holder::-webkit-scrollbar {
+  width: 6px;
+}
+
+.document-fields .ant-tabs-content-holder::-webkit-scrollbar-track {
+  background: #f0f0f0;
+  border-radius: 3px;
+}
+
+.document-fields .ant-tabs-content-holder::-webkit-scrollbar-thumb {
+  background: #d9d9d9;
+  border-radius: 3px;
+}
+
+.document-fields .ant-tabs-content-holder::-webkit-scrollbar-thumb:hover {
+  background: #bfbfbf;
+}

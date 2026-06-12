@@ -1,0 +1,80 @@
+import React from 'react'
+import {
+  ExperimentOutlined,
+  FormOutlined,
+  MedicineBoxOutlined,
+  SafetyOutlined,
+} from '@ant-design/icons'
+
+import { appThemeToken } from '../../../../../styles/themeTokens'
+
+export const FORM_TEMPLATES = [
+  {
+    id: 'custom',
+    name: '自定义表单',
+    description: '从空白开始创建表单',
+    icon: <FormOutlined style={{ fontSize: 16, color: appThemeToken.colorPrimary }} />,
+    color: appThemeToken.colorPrimaryBg,
+    fields: [],
+  },
+  {
+    id: 'blood_routine',
+    name: '18项血常规',
+    description: '常用血常规检验指标',
+    icon: <ExperimentOutlined style={{ fontSize: 16, color: 'rgb(235, 47, 150)' }} />,
+    color: 'rgb(255, 240, 246)',
+    fieldsCount: 18,
+    fields: [
+      { name: '送检日期', displayType: 'date' },
+      { name: '白细胞计数(WBC)', displayType: 'text', unit: '×10^9/L' },
+      { name: '红细胞计数(RBC)', displayType: 'text', unit: '×10^12/L' },
+      { name: '血红蛋白(HGB)', displayType: 'text', unit: 'g/L' },
+      { name: '血小板计数(PLT)', displayType: 'text', unit: '×10^9/L' },
+      { name: '红细胞压积(HCT)', displayType: 'text', unit: '%' },
+      { name: '平均红细胞体积(MCV)', displayType: 'text', unit: 'fL' },
+      { name: '平均红细胞血红蛋白含量(MCH)', displayType: 'text', unit: 'pg' },
+      { name: '平均红细胞血红蛋白浓度(MCHC)', displayType: 'text', unit: 'g/L' },
+      { name: '红细胞分布宽度(RDW)', displayType: 'text', unit: '%' },
+      { name: '淋巴细胞百分比(LY%)', displayType: 'text', unit: '%' },
+      { name: '单核细胞百分比(MO%)', displayType: 'text', unit: '%' },
+      { name: '中性粒细胞百分比(NE%)', displayType: 'text', unit: '%' },
+      { name: '嗜酸性粒细胞百分比(EO%)', displayType: 'text', unit: '%' },
+      { name: '嗜碱性粒细胞百分比(BA%)', displayType: 'text', unit: '%' },
+      { name: '淋巴细胞计数(LY#)', displayType: 'text', unit: '×10^9/L' },
+      { name: '中性粒细胞计数(NE#)', displayType: 'text', unit: '×10^9/L' },
+      { name: '备注', displayType: 'textarea' },
+    ],
+  },
+  {
+    id: 'blood_routine_21',
+    name: '21项血常规',
+    description: '扩展血常规检验指标',
+    icon: <ExperimentOutlined style={{ fontSize: 16, color: 'rgb(114, 46, 209)' }} />,
+    color: 'rgb(249, 240, 255)',
+    fieldsCount: 21,
+  },
+  {
+    id: 'blood_routine_32',
+    name: '32项血常规',
+    description: '完整血常规检验指标',
+    icon: <ExperimentOutlined style={{ fontSize: 16, color: 'rgb(19, 194, 194)' }} />,
+    color: 'rgb(230, 255, 251)',
+    fieldsCount: 32,
+  },
+  {
+    id: 'biochemistry',
+    name: '生化',
+    description: '常用生化检验指标',
+    icon: <MedicineBoxOutlined style={{ fontSize: 16, color: appThemeToken.colorWarning }} />,
+    color: 'rgb(255, 247, 230)',
+    fieldsCount: 36,
+  },
+  {
+    id: 'urinalysis',
+    name: '尿常规',
+    description: '尿液分析指标',
+    icon: <SafetyOutlined style={{ fontSize: 16, color: appThemeToken.colorSuccess }} />,
+    color: 'rgb(246, 255, 237)',
+    fieldsCount: 24,
+  },
+]

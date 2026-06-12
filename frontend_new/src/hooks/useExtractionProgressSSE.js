@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAdminExtractionTaskEvents } from '../api/admin'
 
-const TERMINAL_STATUSES = new Set(['completed', 'completed_with_errors', 'failed', 'cancelled', 'succeeded'])
+const TERMINAL_STATUSES = new Set(['completed', 'completed_with_errors', 'failed', 'timeout', 'cancelled', 'succeeded'])
 
 export default function useExtractionProgressSSE(taskId, { enabled = true, intervalMs = 2000, itemId = null } = {}) {
   const [events, setEvents] = useState([])

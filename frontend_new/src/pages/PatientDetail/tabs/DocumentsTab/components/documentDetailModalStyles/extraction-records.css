@@ -1,0 +1,160 @@
+/* ========== 抽取记录列表样式 ========== */
+
+.extraction-records-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.extraction-record {
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.extraction-record-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #eef1f5 100%);
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.extraction-time {
+  display: flex;
+  align-items: center;
+  color: #1890ff;
+}
+
+.extraction-status {
+  display: flex;
+  align-items: center;
+}
+
+.extraction-record-content {
+  padding: 16px;
+  background: #fff;
+}
+
+/* 分组内容样式 - 新增 */
+.extraction-grouped-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.extraction-collapse .ant-collapse-item {
+  border: 1px solid #e8ecf0;
+  border-radius: 8px !important;
+  margin-bottom: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.extraction-collapse .ant-collapse-header {
+  background: #fafbfc;
+  padding: 10px 16px !important;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.extraction-collapse .ant-collapse-content {
+  background: #fff;
+}
+
+.extraction-group-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px;
+}
+
+.extraction-field-card {
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fafcff;
+  transition: all 0.2s ease;
+  width: 100%;
+}
+
+.extraction-field-card:hover {
+  border-color: #d9e2ef;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
+}
+
+.extraction-field-card.full-width {
+  background: #fdfdfd;
+}
+
+/* 普通字段样式 */
+.extraction-primitive-field .field-label {
+  font-size: 12px;
+  color: #8c8c8c;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.extraction-primitive-field .field-value {
+  font-size: 14px;
+  color: #262626;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+/* 列表字段样式 */
+.extraction-array-field {
+  width: 100%;
+}
+
+.array-field-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  border-bottom: 1px dashed #e8e8e8;
+  padding-bottom: 6px;
+}
+
+.array-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.array-summary-item {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  color: #595959;
+  padding: 4px 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+}
+
+.extraction-record-actions {
+  padding: 12px 16px;
+  background: #fafafa;
+  border-top: 1px solid #f0f0f0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 已合并的记录样式 */
+.extraction-record:has(.ant-tag-success) {
+  border-color: #b7eb8f;
+}
+
+.extraction-record:has(.ant-tag-success) .extraction-record-header {
+  background: linear-gradient(135deg, #f6ffed 0%, #e8f5e9 100%);
+}
+
+/* 未合并的记录样式 */
+.extraction-record:has(.ant-tag-warning) {
+  border-color: #ffe58f;
+}
+
+.extraction-record:has(.ant-tag-warning) .extraction-record-header {
+  background: linear-gradient(135deg, #fffbe6 0%, #fff7e6 100%);
+}

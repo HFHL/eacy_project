@@ -1,0 +1,146 @@
+:root {
+  --primary-color: #1890ff;
+  --success-color: #52c41a;
+  --warning-color: #faad14;
+  --error-color: #ff4d4f;
+  --text-color: rgba(0, 0, 0, 0.85);
+  --text-color-secondary: rgba(0, 0, 0, 0.45);
+  --bg-color: #f0f2f5;
+  --border-color: #f0f0f0;
+  --font-size-caption: 12px;
+  --font-size-body: 14px;
+  --font-size-subtitle: 16px;
+  --font-size-title: 20px;
+  --font-size-hero: 24px;
+  --space-1: 8px;
+  --space-2: 12px;
+  --space-3: 16px;
+  --space-4: 20px;
+  --space-5: 24px;
+  --space-6: 32px;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+    'Noto Color Emoji';
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 默认滚动条基础样式 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Schema 三栏统一使用：默认隐藏，悬浮时显示细滚动条 */
+.hover-scrollbar {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.hover-scrollbar:hover {
+  scrollbar-color: rgba(95, 107, 122, 0.45) transparent;
+}
+
+.hover-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.hover-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hover-scrollbar::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.hover-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: rgba(95, 107, 122, 0.45);
+}
+
+.hover-scrollbar:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(95, 107, 122, 0.6);
+}
+
+.table-scrollbar-unified .ant-table-body,
+.table-scrollbar-unified .ant-table-content,
+.table-scrollbar-unified .ant-table-header {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.table-scrollbar-unified:hover .ant-table-body,
+.table-scrollbar-unified:hover .ant-table-content,
+.table-scrollbar-unified:hover .ant-table-header,
+.table-scrollbar-unified:focus-within .ant-table-body,
+.table-scrollbar-unified:focus-within .ant-table-content,
+.table-scrollbar-unified:focus-within .ant-table-header {
+  scrollbar-color: rgba(95, 107, 122, 0.45) transparent;
+}
+
+.table-scrollbar-unified .ant-table-body::-webkit-scrollbar,
+.table-scrollbar-unified .ant-table-content::-webkit-scrollbar,
+.table-scrollbar-unified .ant-table-header::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.table-scrollbar-unified .ant-table-body::-webkit-scrollbar-track,
+.table-scrollbar-unified .ant-table-content::-webkit-scrollbar-track,
+.table-scrollbar-unified .ant-table-header::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.table-scrollbar-unified .ant-table-body::-webkit-scrollbar-thumb,
+.table-scrollbar-unified .ant-table-content::-webkit-scrollbar-thumb,
+.table-scrollbar-unified .ant-table-header::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.table-scrollbar-unified:hover .ant-table-body::-webkit-scrollbar-thumb,
+.table-scrollbar-unified:hover .ant-table-content::-webkit-scrollbar-thumb,
+.table-scrollbar-unified:hover .ant-table-header::-webkit-scrollbar-thumb,
+.table-scrollbar-unified:focus-within .ant-table-body::-webkit-scrollbar-thumb,
+.table-scrollbar-unified:focus-within .ant-table-content::-webkit-scrollbar-thumb,
+.table-scrollbar-unified:focus-within .ant-table-header::-webkit-scrollbar-thumb {
+  background: rgba(95, 107, 122, 0.45);
+}
+
+.table-scrollbar-unified:hover .ant-table-body::-webkit-scrollbar-thumb:hover,
+.table-scrollbar-unified:hover .ant-table-content::-webkit-scrollbar-thumb:hover,
+.table-scrollbar-unified:hover .ant-table-header::-webkit-scrollbar-thumb:hover,
+.table-scrollbar-unified:focus-within .ant-table-body::-webkit-scrollbar-thumb:hover,
+.table-scrollbar-unified:focus-within .ant-table-content::-webkit-scrollbar-thumb:hover,
+.table-scrollbar-unified:focus-within .ant-table-header::-webkit-scrollbar-thumb:hover {
+  background: rgba(95, 107, 122, 0.6);
+}
+
+.scroll-edge-hint {
+  box-shadow:
+    inset 1px 0 0 rgba(15, 23, 42, 0.12),
+    inset -1px 0 0 rgba(15, 23, 42, 0.12);
+}

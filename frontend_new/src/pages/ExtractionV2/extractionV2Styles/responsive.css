@@ -1,0 +1,35 @@
+/* 响应式 */
+@media (max-width: 768px) {
+  .extraction-v2-page {
+    padding: 8px;
+  }
+
+  .workflow-steps {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 16px;
+  }
+
+  .workflow-step {
+    flex-direction: column;
+    text-align: center;
+    min-width: 100px;
+  }
+
+  .step-content {
+    margin-left: 0;
+    margin-top: 8px;
+  }
+
+  .step-arrow {
+    display: none;
+  }
+
+  .field-key {
+    min-width: 120px;
+  }
+
+  .metadata-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

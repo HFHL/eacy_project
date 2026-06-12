@@ -3,170 +3,16 @@
  * 中间面板：设计画布中的字段组（表单）容器
  */
 
-import React, { useState, useRef, useEffect } from 'react';
-import { Empty, Alert, Input } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { Empty, Alert } from 'antd';
 import { DndContext, closestCenter } from '@dnd-kit/core';
 import {
   SortableContext,
-  useSortable,
   verticalListSortingStrategy,
   arrayMove
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import FieldCard from './FieldCard';
-import { appThemeToken } from '../../../../styles/themeTokens';
-
-/**
- * 可排序的字段卡片包装器
- */
-const SortableFieldCard = ({
-  field,
-  index,
-  selected,
-  onSelect,
-  onEdit,
-  onDelete,
-  onCopy,
-  onFieldNameChange,
-  onOptionsChange,
-  onChildSelect,
-  onAddTableChild,
-  onAddTableRow,
-  onDeleteTableChild,
-  onAddMatrixRow,
-  onAddMatrixCol,
-  onCopyMatrixRow,
-  onDeleteMatrixRow,
-  onMatrixConfigChange,
-  onTableChildNameChange,
-  onReorderTableChildren,
-  readonly
-}) => {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging
-  } = useSortable({ id: field.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1
-  };
-
-  return (
-    <div ref={setNodeRef} style={style}>
-      <FieldCard
-        field={field}
-        index={index}
-        selected={selected}
-        onSelect={onSelect}
-        onEdit={onEdit}
-        onDelete={onDelete}
-        onCopy={onCopy}
-        onFieldNameChange={onFieldNameChange}
-        onOptionsChange={onOptionsChange}
-        onChildSelect={onChildSelect}
-        onAddTableChild={onAddTableChild}
-        onAddTableRow={onAddTableRow}
-        onDeleteTableChild={onDeleteTableChild}
-        onAddMatrixRow={onAddMatrixRow}
-        onAddMatrixCol={onAddMatrixCol}
-        onCopyMatrixRow={onCopyMatrixRow}
-        onDeleteMatrixRow={onDeleteMatrixRow}
-        onMatrixConfigChange={onMatrixConfigChange}
-        onTableChildNameChange={onTableChildNameChange}
-        onReorderTableChildren={onReorderTableChildren}
-        readonly={readonly}
-        dragHandleProps={{ attributes, listeners }}
-      />
-    </div>
-  );
-};
-
-/**
- * 可编辑的表单标题组件
- */
-const EditableGroupTitle = ({ value, onChange, isHovered }) => {
-  const [editing, setEditing] = useState(false);
-  const [inputValue, setInputValue] = useState(value);
-  const inputRef = useRef(null);
-  const isComposingRef = useRef(false);
-
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editing]);
-
-  useEffect(() => {
-    setInputValue(value);
-  }, [value]);
-
-  const handleBlur = () => {
-    setEditing(false);
-    if (inputValue !== value && inputValue.trim()) {
-      onChange?.(inputValue.trim());
-    } else {
-      setInputValue(value);
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (isComposingRef.current) return;
-    if (e.key === 'Enter') {
-      handleBlur();
-    } else if (e.key === 'Escape') {
-      setInputValue(value);
-      setEditing(false);
-    }
-  };
-
-  if (editing) {
-    return (
-      <Input
-        ref={inputRef}
-        value={inputValue}
-        onChange={(e) => setInputValue(e.target.value)}
-        onBlur={handleBlur}
-        onKeyDown={handleKeyDown}
-        onCompositionStart={() => { isComposingRef.current = true; }}
-        onCompositionEnd={() => { isComposingRef.current = false; }}
-        size="small"
-        style={{
-          width: 280,
-          fontSize: 14,
-          fontWeight: 500,
-          borderColor: appThemeToken.colorBorder
-        }}
-        onClick={(e) => e.stopPropagation()}
-      />
-    );
-  }
-
-  return (
-    <div
-      className="group-title"
-      style={{
-        cursor: 'text',
-        borderRadius: 6,
-        border: isHovered ? `1px solid ${appThemeToken.colorBorder}` : '1px solid transparent',
-        background: isHovered ? appThemeToken.colorFillTertiary : 'transparent',
-        transition: 'all 0.2s'
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        setEditing(true);
-      }}
-    >
-      {value}
-    </div>
-  );
-};
+import { EditableGroupTitle } from './groupCard/EditableGroupTitle';
+import { SortableFieldCard } from './groupCard/SortableFieldCard';
 
 /**
  * 字段组卡片组件
@@ -204,7 +50,7 @@ const GroupCard = ({
   const [titleHovered, setTitleHovered] = useState(false);
 
   // 当group.fields变化或版本号变化时，同步本地state
-  React.useEffect(() => {
+  useEffect(() => {
     // 创建新数组引用以确保触发更新，即使 group.fields 引用未变
     setFields([...(group.fields || [])]);
   }, [group.fields, version]);
@@ -254,7 +100,7 @@ const GroupCard = ({
       className={`group-card ${selected ? 'selected' : ''}`}
       onClick={handleGroupClick}
     >
-      <div 
+      <div
         className="group-header"
         onMouseEnter={() => setTitleHovered(true)}
         onMouseLeave={() => setTitleHovered(false)}

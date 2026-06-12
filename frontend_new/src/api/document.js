@@ -1,910 +1,148 @@
-import request, { ensureFreshAccessToken } from './request'
-import { emptyFileUrl, emptyList, emptySuccess, emptyTask } from './_empty'
-import { createPatient } from './patient'
+import {
+  isImageFileLike,
+  isOcrPagePreviewResponse,
+  isOfficeDocumentLike,
+  isPdfFileLike,
+} from './document/fileTypes'
+import {
+  normalizeDocument,
+  normalizeDocumentListResponse,
+} from './document/normalizers'
+import {
+  buildDocumentStreamUrl,
+  getDocumentPdfStreamUrl,
+  getDocumentTempUrl,
+  getFreshDocumentPdfStreamUrl,
+  getFreshDocumentStreamUrl,
+  resolveTraceDocumentPreviewUrl,
+} from './document/previewApi'
+import {
+  deleteDocument,
+  deleteDocuments,
+  getDocumentDetail,
+  getDocumentEvidenceImpact,
+  getDocumentList,
+  getParseProgress,
+  getParseResult,
+  markDocumentReview,
+  parseDocument,
+  parseDocuments,
+  reparseDocumentSync,
+  updateDocumentMetadata,
+  uploadDocument,
+  uploadDocuments,
+} from './document/documentsApi'
+import {
+  aiExtractAndMatchPatient,
+  aiMatchPatient,
+  archiveDocument,
+  batchArchiveDocuments,
+  batchConfirmAutoArchive,
+  batchCreatePatientAndArchive,
+  changeArchivePatient,
+  confirmAutoArchive,
+  confirmCreatePatientAndArchive,
+  getDocumentAiMatchInfo,
+  getDocumentOperationHistory,
+  pickRecommendedPatientId,
+  refreshDocumentMatchInfo,
+  resolveDocumentRecommendedPatientId,
+  unarchiveDocument,
+} from './document/archiveApi'
+import {
+  aiMatchPatientAsync,
+  batchAiMatchAsync,
+  checkDuplicateFiles,
+  extractDocumentMetadata,
+  extractEhrData,
+  extractEhrDataAsync,
+  extractEhrDataTargeted,
+  getDocumentTaskProgress,
+  getExtractionJob,
+  pollDocumentTaskProgress,
+} from './document/extractionApi'
+import {
+  confirmGroupArchive,
+  createPatientAndArchiveGroup,
+  getFileListV2Counts,
+  getFileListV2GroupDocuments,
+  getFileListV2Tree,
+  getFileStatusById,
+  getFileStatusesByIds,
+  matchGroup,
+  moveDocumentToGroup,
+  rebuildGroups,
+  searchUserFiles,
+  uploadAndArchiveAsync,
+  uploadAndArchiveToPatient,
+} from './document/fileListV2Api'
 
-const DOCUMENTS_ENDPOINT = '/documents'
-const DEFAULT_API_BASE_URL = '/api/v1'
-
-const trimTrailingSlash = (value = '') => value.replace(/\/+$/, '')
-const trimLeadingSlash = (value = '') => value.replace(/^\/+/, '')
-
-const getApiBaseUrl = () => trimTrailingSlash(import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL)
-
-const OFFICE_FILE_EXTENSIONS = new Set(['doc', 'docx', 'ppt', 'pptx'])
-const IMAGE_FILE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'])
-
-export const isPdfFileLike = ({ fileType, fileName, fileUrl, mimeType } = {}) => {
-  const type = String(fileType || mimeType || '').toLowerCase()
-  const name = String(fileName || '').toLowerCase()
-  const url = String(fileUrl || '').toLowerCase()
-  const cleanUrl = url.split('?')[0].split('#')[0]
-  return (
-    type === 'pdf'
-    || type === '.pdf'
-    || type.includes('application/pdf')
-    || name.endsWith('.pdf')
-    || cleanUrl.endsWith('.pdf')
-  )
+export {
+  aiExtractAndMatchPatient,
+  aiMatchPatient,
+  aiMatchPatientAsync,
+  archiveDocument,
+  batchAiMatchAsync,
+  batchArchiveDocuments,
+  batchConfirmAutoArchive,
+  batchCreatePatientAndArchive,
+  buildDocumentStreamUrl,
+  changeArchivePatient,
+  checkDuplicateFiles,
+  confirmAutoArchive,
+  confirmCreatePatientAndArchive,
+  confirmGroupArchive,
+  createPatientAndArchiveGroup,
+  deleteDocument,
+  deleteDocuments,
+  extractDocumentMetadata,
+  extractEhrData,
+  extractEhrDataAsync,
+  extractEhrDataTargeted,
+  getDocumentAiMatchInfo,
+  getDocumentDetail,
+  getDocumentEvidenceImpact,
+  getDocumentList,
+  getDocumentOperationHistory,
+  getDocumentPdfStreamUrl,
+  getDocumentTaskProgress,
+  getDocumentTempUrl,
+  getExtractionJob,
+  getFileListV2Counts,
+  getFileListV2GroupDocuments,
+  getFileListV2Tree,
+  getFileStatusById,
+  getFileStatusesByIds,
+  getFreshDocumentPdfStreamUrl,
+  getFreshDocumentStreamUrl,
+  getParseProgress,
+  getParseResult,
+  isImageFileLike,
+  isOcrPagePreviewResponse,
+  isOfficeDocumentLike,
+  isPdfFileLike,
+  markDocumentReview,
+  matchGroup,
+  moveDocumentToGroup,
+  normalizeDocument,
+  normalizeDocumentListResponse,
+  parseDocument,
+  parseDocuments,
+  pickRecommendedPatientId,
+  pollDocumentTaskProgress,
+  rebuildGroups,
+  refreshDocumentMatchInfo,
+  reparseDocumentSync,
+  resolveDocumentRecommendedPatientId,
+  resolveTraceDocumentPreviewUrl,
+  searchUserFiles,
+  unarchiveDocument,
+  updateDocumentMetadata,
+  uploadAndArchiveAsync,
+  uploadAndArchiveToPatient,
+  uploadDocument,
+  uploadDocuments,
 }
-
-export const isImageFileLike = ({ fileType, fileName, fileUrl, mimeType } = {}) => {
-  const type = String(fileType || mimeType || '').toLowerCase()
-  const name = String(fileName || '').toLowerCase()
-  const url = String(fileUrl || '').toLowerCase()
-  const cleanUrl = url.split('?')[0].split('#')[0]
-  if (type.startsWith('image/')) return true
-  const normalizedType = type.replace(/^\./, '')
-  if (IMAGE_FILE_EXTENSIONS.has(normalizedType)) return true
-  return IMAGE_FILE_EXTENSIONS.some((ext) => name.endsWith(`.${ext}`) || cleanUrl.endsWith(`.${ext}`))
-}
-
-export const isOfficeDocumentLike = ({ fileType, fileName, mimeType } = {}) => {
-  const type = String(fileType || mimeType || '').toLowerCase()
-  const name = String(fileName || '').toLowerCase()
-  if (
-    type.includes('wordprocessingml')
-    || type.includes('msword')
-    || type.includes('presentationml')
-    || type.includes('ms-powerpoint')
-  ) {
-    return true
-  }
-  const ext = name.includes('.') ? name.split('.').pop() : String(fileType || '').replace(/^\./, '').toLowerCase()
-  return OFFICE_FILE_EXTENSIONS.has(ext)
-}
-
-export const isOcrPagePreviewResponse = (data = {}) => data?.preview_source === 'ocr_page'
-
-export async function resolveTraceDocumentPreviewUrl(documentId, {
-  pageNo = 1,
-  fileType,
-  fileName,
-  mimeType,
-} = {}) {
-  if (!documentId) return null
-  const urlRes = await getDocumentTempUrl(documentId, 3600, { page: pageNo })
-  if (!urlRes.success || !urlRes.data?.temp_url) return null
-
-  const data = urlRes.data
-  const resolvedFileType = data.file_type || data.mime_type || mimeType || fileType
-  const resolvedFileName = data.file_name || fileName
-
-  if (isPdfFileLike({
-    fileType: resolvedFileType,
-    fileName: resolvedFileName,
-    fileUrl: data.temp_url,
-    mimeType: data.mime_type,
-  })) {
-    return {
-      mode: 'pdf',
-      url: await getFreshDocumentPdfStreamUrl(documentId),
-      previewSource: 'native',
-      ocrPageCount: data.ocr_page_count ?? null,
-      pageNo: null,
-      fileName: resolvedFileName,
-      fileType: resolvedFileType,
-      mimeType: data.mime_type,
-    }
-  }
-
-  if (
-    isOcrPagePreviewResponse(data)
-    || isImageFileLike({
-      fileType: resolvedFileType,
-      fileName: resolvedFileName,
-      fileUrl: data.temp_url,
-      mimeType: data.mime_type,
-    })
-  ) {
-    const resolvedPageNo = data.page_no || pageNo
-    const url = isOcrPagePreviewResponse(data)
-      ? await getFreshDocumentStreamUrl(documentId, { page: resolvedPageNo })
-      : data.temp_url
-    return {
-      mode: 'image',
-      url,
-      previewSource: data.preview_source || 'native',
-      ocrPageCount: data.ocr_page_count ?? null,
-      pageNo: resolvedPageNo,
-      fileName: resolvedFileName,
-      fileType: resolvedFileType,
-      mimeType: data.mime_type || 'image/jpeg',
-    }
-  }
-
-  return {
-    mode: 'unsupported',
-    url: data.temp_url,
-    previewSource: data.preview_source || 'native',
-    ocrPageCount: data.ocr_page_count ?? null,
-    pageNo: data.page_no || pageNo,
-    fileName: resolvedFileName,
-    fileType: resolvedFileType,
-    mimeType: data.mime_type,
-  }
-}
-
-const buildApiUrl = (path = '') => {
-  const apiBaseUrl = getApiBaseUrl()
-  const url = `${apiBaseUrl}/${trimLeadingSlash(path)}`
-  if (/^https?:\/\//i.test(url)) return url
-  return url
-}
-
-const toArray = (value) => {
-  if (Array.isArray(value)) return value
-  if (value === undefined || value === null || value === '') return []
-  return String(value).split(',').map((item) => item.trim()).filter(Boolean)
-}
-
-const getFileType = (document = {}) => (
-  document.file_ext || document.mime_type || document.file_type || 'unknown'
-)
-
-const METADATA_FIELD_TO_CN = {
-  identifiers: '唯一标识符',
-  organizationName: '机构名称',
-  patientName: '患者姓名',
-  gender: '患者性别',
-  age: '患者年龄',
-  birthDate: '出生日期',
-  phone: '联系电话',
-  diagnosis: '诊断',
-  department: '科室信息',
-  documentType: '文档类型',
-  documentSubtype: '文档子类型',
-  documentTitle: '文档标题',
-  effectiveDate: '文档生效日期',
-}
-
-const getMetadataResult = (metadata = {}) => (
-  metadata?.result && typeof metadata.result === 'object' && !Array.isArray(metadata.result)
-    ? metadata.result
-    : {}
-)
-
-const firstNonEmpty = (...values) => {
-  for (const value of values) {
-    if (value !== undefined && value !== null && value !== '') return value
-  }
-  return ''
-}
-
-const normalizeMetadataForDisplay = (metadata = {}, summary = {}) => {
-  const safeMetadata = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {}
-  const safeSummary = summary && typeof summary === 'object' && !Array.isArray(summary) ? summary : {}
-  const result = getMetadataResult(safeMetadata)
-  const identifiers = Array.isArray(result['唯一标识符'])
-    ? result['唯一标识符']
-    : (Array.isArray(safeMetadata.identifiers) ? safeMetadata.identifiers : (Array.isArray(safeSummary.identifiers) ? safeSummary.identifiers : []))
-
-  return {
-    ...safeMetadata,
-    result,
-    identifiers,
-    organizationName: firstNonEmpty(safeMetadata.organizationName, safeMetadata.organization_name, safeSummary.organization_name, result['机构名称']),
-    patientName: firstNonEmpty(safeMetadata.patientName, safeMetadata.patient_name, safeSummary.patient_name, result['患者姓名']),
-    gender: firstNonEmpty(safeMetadata.gender, safeMetadata.patient_gender, safeSummary.patient_gender, result['患者性别']),
-    age: firstNonEmpty(safeMetadata.age, safeMetadata.patient_age, safeSummary.patient_age, result['患者年龄']),
-    birthDate: firstNonEmpty(safeMetadata.birthDate, safeMetadata.birth_date, safeSummary.birth_date, result['出生日期']),
-    phone: firstNonEmpty(safeMetadata.phone, safeSummary.phone, result['联系电话']),
-    diagnosis: firstNonEmpty(safeMetadata.diagnosis, safeSummary.diagnosis, result['诊断']),
-    department: firstNonEmpty(safeMetadata.department, safeSummary.department, result['科室信息']),
-    documentType: firstNonEmpty(safeMetadata.documentType, safeMetadata.document_type, safeSummary.document_type, result['文档类型']),
-    documentSubtype: firstNonEmpty(safeMetadata.documentSubtype, safeMetadata.document_subtype, safeSummary.document_subtype, result['文档子类型']),
-    documentTitle: firstNonEmpty(safeMetadata.documentTitle, safeMetadata.document_title, safeMetadata.title, safeSummary.document_title, result['文档标题']),
-    effectiveDate: firstNonEmpty(safeMetadata.effectiveDate, safeMetadata.effective_at, safeMetadata.effectiveAt, safeSummary.effective_date, result['文档生效日期']),
-  }
-}
-
-const getDocumentType = (document = {}) => (
-  document.doc_type || document.document_type || normalizeMetadataForDisplay(document.metadata_json, document.document_metadata_summary).documentType || ''
-)
-
-const getDocumentSubtype = (document = {}) => (
-  document.doc_subtype || document.document_sub_type || normalizeMetadataForDisplay(document.metadata_json, document.document_metadata_summary).documentSubtype || ''
-)
-
-const normalizeTaskStatus = (document = {}) => {
-  const status = document.status || document.task_status || 'uploaded'
-  const archivedAt = document.archived_at || document.archivedAt
-  if (status === 'archived' || archivedAt) return 'archived'
-  if (status === 'failed') return 'parse_failed'
-  if (status === 'ocr_pending') return 'parsing'
-
-  const ocrStatus = document.ocr_status || document.ocrStatus
-  const metaStatus = document.meta_status || document.metaStatus
-  if ((status === 'ocr_completed' || ocrStatus === 'completed') && metaStatus === 'completed') {
-    return 'pending_confirm_uncertain'
-  }
-  if (status === 'ocr_completed') return 'parsed'
-  if (['queued', 'running'].includes(ocrStatus)) return 'parsing'
-  if (ocrStatus === 'completed') return 'parsed'
-  if (ocrStatus === 'failed') return 'parse_failed'
-
-  return status
-}
-
-export const normalizeDocument = (document = {}) => {
-  const metadata = document.metadata_json && typeof document.metadata_json === 'object'
-    ? document.metadata_json
-    : {}
-  const displayMetadata = normalizeMetadataForDisplay(metadata, document.document_metadata_summary)
-  const fileName = document.original_filename || document.file_name || document.fileName || ''
-  const documentType = getDocumentType(document)
-  const documentSubtype = getDocumentSubtype(document)
-  const taskStatus = normalizeTaskStatus(document)
-  const createdAt = document.created_at || document.upload_time || document.uploadTime || ''
-  const effectiveAt = document.effective_at || displayMetadata.effectiveDate || ''
-  const patientId = document.patient_id || document.patientId || document.patient_info?.patient_id || null
-  const backendSummary = document.document_metadata_summary && typeof document.document_metadata_summary === 'object'
-    ? document.document_metadata_summary
-    : null
-  const documentMetadataSummary = backendSummary
-    ? {
-        ...backendSummary,
-        name: firstNonEmpty(backendSummary.name, backendSummary.patient_name, displayMetadata.patientName),
-        patient_name: firstNonEmpty(backendSummary.patient_name, backendSummary.name, displayMetadata.patientName),
-        gender: firstNonEmpty(backendSummary.gender, backendSummary.patient_gender, displayMetadata.gender),
-        patient_gender: firstNonEmpty(backendSummary.patient_gender, backendSummary.gender, displayMetadata.gender),
-        age: firstNonEmpty(backendSummary.age, backendSummary.patient_age, displayMetadata.age),
-        patient_age: firstNonEmpty(backendSummary.patient_age, backendSummary.age, displayMetadata.age),
-        document_title: firstNonEmpty(backendSummary.document_title, displayMetadata.documentTitle),
-        effective_date: firstNonEmpty(backendSummary.effective_date, effectiveAt),
-      }
-    : {
-        name: displayMetadata.patientName,
-        patient_name: displayMetadata.patientName,
-        gender: displayMetadata.gender,
-        patient_gender: displayMetadata.gender,
-        age: displayMetadata.age,
-        patient_age: displayMetadata.age,
-        document_title: displayMetadata.documentTitle,
-        effective_date: effectiveAt,
-      }
-
-  return {
-    ...document,
-    id: document.id,
-    document_id: document.id,
-    documentId: document.id,
-    original_filename: fileName,
-    file_name: fileName,
-    fileName,
-    name: fileName,
-    file_ext: document.file_ext || '',
-    file_type: getFileType(document),
-    fileType: getFileType(document),
-    mime_type: document.mime_type || '',
-    file_size: document.file_size || 0,
-    fileSize: document.file_size || 0,
-    file_url: document.file_url || '',
-    fileUrl: document.file_url || '',
-    storage_path: document.storage_path || '',
-    status: document.status || taskStatus,
-    task_status: taskStatus,
-    taskStatus,
-    upload_time: createdAt,
-    uploadTime: createdAt,
-    created_at: createdAt,
-    createdAt,
-    updated_at: document.updated_at || '',
-    archived_at: document.archived_at || '',
-    patient_id: patientId,
-    patientId,
-    patient_info: {
-      ...(document.patient_info || {}),
-      patient_id: patientId,
-      // 后端 DocumentSummaryResponse.bound_patient 字段（list_documents 等批量回填）
-      // 把姓名/性别/年龄一并塞进 patient_info，方便老调用方按 name/gender/age 读取。
-      ...(document.bound_patient
-        ? {
-            name: document.bound_patient.name,
-            patient_name: document.bound_patient.name,
-            gender: document.bound_patient.gender,
-            patient_gender: document.bound_patient.gender,
-            age: document.bound_patient.age,
-            patient_age: document.bound_patient.age,
-          }
-        : {}),
-    },
-    bound_patient_summary: patientId
-      ? {
-          patient_id: patientId,
-          // 当后端返回 bound_patient 时一并透出，给 FileList 的"绑定摘要"列使用
-          name: document.bound_patient?.name || null,
-          patient_name: document.bound_patient?.name || null,
-          gender: document.bound_patient?.gender || null,
-          patient_gender: document.bound_patient?.gender || null,
-          age: document.bound_patient?.age ?? null,
-          patient_age: document.bound_patient?.age ?? null,
-        }
-      : null,
-    document_type: documentType,
-    documentType,
-    document_sub_type: documentSubtype,
-    documentSubtype,
-    doc_type: document.doc_type || documentType,
-    doc_subtype: document.doc_subtype || documentSubtype,
-    doc_title: document.doc_title || displayMetadata.documentTitle || fileName,
-    metadata_json: metadata,
-    metadata: {
-      ...displayMetadata,
-      documentType,
-      documentSubtype,
-      effectiveDate: effectiveAt,
-      effective_at: effectiveAt,
-    },
-    document_metadata_summary: documentMetadataSummary,
-    effective_at: effectiveAt || null,
-    ocr_status: document.ocr_status || document.ocrStatus || null,
-    ocrStatus: document.ocr_status || document.ocrStatus || null,
-    meta_status: document.meta_status || document.metaStatus || null,
-    metaStatus: document.meta_status || document.metaStatus || null,
-    extract_status: document.extract_status || document.extractStatus || null,
-    extractStatus: document.extract_status || document.extractStatus || null,
-    is_parsed: ['parsed', 'extracted', 'ai_matching', 'archived'].includes(taskStatus) || !!document.ocr_text,
-    isParsed: ['parsed', 'extracted', 'ai_matching', 'archived'].includes(taskStatus) || !!document.ocr_text,
-    preview_source: document.preview_source || null,
-    ocr_page_count: document.ocr_page_count ?? null,
-    requires_review: metadata.requires_review === true,
-    requiresReview: metadata.requires_review === true,
-    category: documentSubtype || documentType || '未分类',
-  }
-}
-
-const normalizeListParams = (params = {}) => {
-  const next = {
-    page: params.page || params.current || 1,
-    page_size: params.page_size || params.pageSize || 20,
-  }
-
-  const patientId = params.patient_id ?? params.patientId
-  if (patientId) next.patient_id = patientId
-
-  const tab = params.tab
-  if (tab && tab !== 'all') next.tab = tab
-
-  const taskStages = toArray(params.task_stage ?? params.taskStage)
-  if (taskStages.length) next.task_stage = taskStages.join(',')
-
-  const keyword = (params.keyword ?? params.search ?? '').toString().trim()
-  if (keyword) next.keyword = keyword
-
-  const documentTypes = toArray(params.document_types ?? params.document_type)
-  if (documentTypes.length) next.document_types = documentTypes.join(',')
-
-  if (params.date_from) next.date_from = params.date_from
-  if (params.date_to) next.date_to = params.date_to
-
-  if (params.order_by) next.order_by = params.order_by
-  if (params.order_direction) next.order_direction = params.order_direction
-
-  const statuses = toArray(params.status)
-  if (statuses.length) next.status = statuses.join(',')
-
-  return next
-}
-
-export const normalizeDocumentListResponse = (payload = {}, params = {}) => {
-  const page = Number(payload.page || params.page || 1)
-  const pageSize = Number(payload.page_size || params.page_size || params.pageSize || 20)
-  const items = (Array.isArray(payload.items) ? payload.items : []).map(normalizeDocument)
-  const total = Number(payload.total ?? items.length)
-
-  items.items = items
-  items.list = items
-  items.total = total
-  items.page = page
-  items.page_size = pageSize
-
-  return emptySuccess(items, {
-    list: items,
-    items,
-    total,
-    page,
-    page_size: pageSize,
-    pagination: { total, page, page_size: pageSize },
-  })
-}
-
-const normalizeEffectiveAt = (value) => {
-  if (value === undefined || value === null || value === '') return null
-  const text = String(value).trim()
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return `${text}T00:00:00`
-  if (/^\d{4}-\d{2}-\d{2}\s/.test(text)) return text.replace(' ', 'T')
-  return text
-}
-
-const normalizeUpdatePayload = (metadata = {}) => {
-  const payload = {}
-  const nextMetadata = { ...(metadata.metadata_json || metadata.metadata || {}) }
-  const result = {
-    ...(nextMetadata.result && typeof nextMetadata.result === 'object' && !Array.isArray(nextMetadata.result)
-      ? nextMetadata.result
-      : {}),
-  }
-
-  const docType = metadata.doc_type ?? metadata.document_type ?? metadata.documentType
-  if (docType !== undefined) payload.doc_type = docType
-
-  const docSubtype = metadata.doc_subtype ?? metadata.document_sub_type ?? metadata.documentSubtype
-  if (docSubtype !== undefined) payload.doc_subtype = docSubtype
-
-  const docTitle = metadata.doc_title ?? metadata.document_title ?? metadata.documentTitle ?? metadata.title
-  if (docTitle !== undefined) payload.doc_title = docTitle
-
-  const effectiveAt = metadata.effective_at ?? metadata.effectiveAt ?? metadata.effectiveDate
-  if (effectiveAt !== undefined) payload.effective_at = normalizeEffectiveAt(effectiveAt)
-
-  ;['meta_status', 'ocr_status', 'ocr_text', 'ocr_payload_json'].forEach((key) => {
-    if (metadata[key] !== undefined) payload[key] = metadata[key]
-  })
-
-  Object.entries(metadata).forEach(([key, value]) => {
-    if (payload[key] === undefined && !['metadata', 'metadata_json'].includes(key)) {
-      nextMetadata[key] = value
-      const cnKey = METADATA_FIELD_TO_CN[key]
-      if (cnKey) result[cnKey] = value
-    }
-  })
-
-  if (Object.keys(result).length) nextMetadata.result = result
-  if (Object.keys(nextMetadata).length) payload.metadata_json = nextMetadata
-  return payload
-}
-
-export const uploadDocument = async (file, patientIdOrProgress, progressOrSignal, maybeSignal) => {
-  const patientId = typeof patientIdOrProgress === 'string' ? patientIdOrProgress : null
-  const onProgress = typeof patientIdOrProgress === 'function' ? patientIdOrProgress : progressOrSignal
-  const signal = maybeSignal || (progressOrSignal instanceof AbortSignal ? progressOrSignal : undefined)
-
-  const formData = new FormData()
-  formData.append('file', file)
-  if (patientId) formData.append('patient_id', patientId)
-
-  if (typeof onProgress === 'function') onProgress(5)
-  const payload = await request.post(DOCUMENTS_ENDPOINT, formData, { signal })
-  if (typeof onProgress === 'function') onProgress(100)
-
-  const document = normalizeDocument(payload)
-  return emptySuccess({
-    ...document,
-    document_id: document.id,
-  })
-}
-
-export const uploadDocuments = async (files = [], patientId = null) => {
-  const results = []
-  for (const file of files) {
-    const response = await uploadDocument(file, patientId)
-    results.push(response.data)
-  }
-  return results
-}
-
-export const getDocumentList = async (params = {}, options) => {
-  const payload = await request.get(DOCUMENTS_ENDPOINT, normalizeListParams(params), options)
-  return normalizeDocumentListResponse(payload, params)
-}
-
-export const deleteDocument = async (documentId = '') => {
-  await request.delete(`${DOCUMENTS_ENDPOINT}/${documentId}`)
-  return emptySuccess(null)
-}
-
-/**
- * 查询文档作为字段证据时的影响范围（用于删除前确认弹窗）。
- *
- * 返回结构（已扁平化为 success 包装）：
- *   data = {
- *     document_id: string,
- *     evidence_count: number,         // 0 表示未被任何字段证据引用
- *     fields: [{ code, title }],      // 去重后的被影响字段清单
- *   }
- */
-export const getDocumentEvidenceImpact = async (documentId = '') => {
-  if (!documentId) return emptySuccess({ document_id: '', evidence_count: 0, fields: [] })
-  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/${documentId}/evidence-impact`)
-  return emptySuccess({
-    document_id: payload?.document_id || documentId,
-    evidence_count: Number(payload?.evidence_count) || 0,
-    fields: Array.isArray(payload?.fields) ? payload.fields : [],
-  })
-}
-
-export const deleteDocuments = async (documentIds = []) => {
-  const ids = Array.isArray(documentIds) ? documentIds : (documentIds?.document_ids || [])
-  let deleted = 0
-  for (const documentId of ids) {
-    await deleteDocument(documentId)
-    deleted += 1
-  }
-  return emptySuccess({ deleted, success_count: deleted, failed_count: 0 })
-}
-
-export const getDocumentTempUrl = async (documentId = '', expiresIn = 3600, options = {}) => {
-  if (!documentId) return emptyFileUrl({ document_id: documentId })
-  const page = options?.page ?? options?.pageNo
-  const query = { expires_in: expiresIn }
-  if (page) query.page = page
-  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/${documentId}/preview-url`, query)
-  const tempUrl = payload.temp_url || payload.preview_url || payload.url || ''
-  return emptySuccess({
-    ...payload,
-    document_id: payload.document_id || documentId,
-    url: payload.url || tempUrl,
-    temp_url: tempUrl,
-    preview_url: payload.preview_url || tempUrl,
-    preview_source: payload.preview_source || 'native',
-    page_no: payload.page_no ?? null,
-    ocr_page_count: payload.ocr_page_count ?? null,
-    file_type: payload.file_type || null,
-  })
-}
-
-export function buildDocumentStreamUrl(documentId = '', { page, token } = {}) {
-  if (!documentId) return ''
-  const path = buildApiUrl(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/stream`)
-  const params = new URLSearchParams()
-  if (token) params.set('access_token', token)
-  if (page) params.set('page', String(page))
-  const query = params.toString()
-  return query ? `${path}${path.includes('?') ? '&' : '?'}${query}` : path
-}
-
-export function getDocumentPdfStreamUrl(documentId = '', options = {}) {
-  return buildDocumentStreamUrl(documentId, options)
-}
-
-export async function getFreshDocumentStreamUrl(documentId = '', options = {}) {
-  if (!documentId) return ''
-  const token = typeof localStorage !== 'undefined' ? await ensureFreshAccessToken() : ''
-  return buildDocumentStreamUrl(documentId, { ...options, token })
-}
-
-export async function getFreshDocumentPdfStreamUrl(documentId = '') {
-  return getFreshDocumentStreamUrl(documentId)
-}
-
-export const archiveDocument = async (documentId = '', patientId = '', createExtractionJob = true) => {
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${documentId}/archive`, {
-    patient_id: patientId,
-    create_extraction_job: createExtractionJob,
-  })
-  return emptySuccess(normalizeDocument(payload))
-}
-
-export const pickRecommendedPatientId = (matchInfo = {}) => {
-  if (!matchInfo || typeof matchInfo !== 'object') return ''
-  const candidates = Array.isArray(matchInfo.candidates) ? matchInfo.candidates : []
-  const top = candidates[0] || {}
-  const topId = top.id || top.patient_id || top.patientId || ''
-  return matchInfo.matched_patient_id || matchInfo.ai_recommendation || topId || ''
-}
-
-export const getDocumentAiMatchInfo = async (documentId = '') => {
-  if (!documentId) return emptySuccess(null)
-  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/match-info`)
-  return emptySuccess(payload)
-}
-
-export const refreshDocumentMatchInfo = async (documentId = '') => {
-  if (!documentId) return emptySuccess(null)
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/match-info/refresh`)
-  return emptySuccess(payload)
-}
-
-export const resolveDocumentRecommendedPatientId = async (documentId, options = {}) => {
-  const {
-    groupId = '',
-    groupMatchInfo = null,
-    treeGroups = [],
-    fetchGroupMatchInfo,
-  } = options
-
-  if (groupMatchInfo) {
-    const cachedId = pickRecommendedPatientId(groupMatchInfo)
-    if (cachedId) return { patientId: cachedId, matchInfo: groupMatchInfo, source: 'group_cache' }
-  }
-
-  if (groupId && typeof fetchGroupMatchInfo === 'function') {
-    const groupRes = await fetchGroupMatchInfo(groupId)
-    const fetchedInfo = groupRes?.data?.match_info || groupRes?.data || null
-    const fetchedId = pickRecommendedPatientId(fetchedInfo)
-    if (fetchedId) return { patientId: fetchedId, matchInfo: fetchedInfo, source: 'group_fetch' }
-  }
-
-  if (documentId && Array.isArray(treeGroups) && treeGroups.length) {
-    const treeGroup = treeGroups.find(
-      (group) => Array.isArray(group.document_ids) && group.document_ids.includes(documentId)
-    )
-    if (treeGroup?.matched_patient_id) {
-      return { patientId: treeGroup.matched_patient_id, matchInfo: null, source: 'tree' }
-    }
-  }
-
-  const matchRes = await getDocumentAiMatchInfo(documentId)
-  const matchInfo = matchRes?.data || null
-  const patientId = pickRecommendedPatientId(matchInfo)
-  return { patientId, matchInfo, source: patientId ? 'document' : 'none' }
-}
-
-export const batchArchiveDocuments = async (documentIds = [], patientId = '', createExtractionJob = true) => {
-  const ids = Array.isArray(documentIds) ? documentIds.filter(Boolean) : []
-  if (!ids.length || !patientId) return emptySuccess({ items: [], total: 0 })
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/batch-archive`, {
-    document_ids: ids,
-    patient_id: patientId,
-    create_extraction_job: createExtractionJob,
-  })
-  const items = Array.isArray(payload.items) ? payload.items.map(normalizeDocument) : []
-  return emptySuccess({ ...payload, items, total: payload.total ?? items.length })
-}
-
-export const unarchiveDocument = async (documentId = '') => {
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${documentId}/unarchive`)
-  return emptySuccess(normalizeDocument(payload))
-}
-
-export const changeArchivePatient = async (documentId = '', patientId = '', options = true) => {
-  let createExtractionJob = true
-  if (typeof options === 'boolean') {
-    createExtractionJob = options
-  } else if (options && typeof options === 'object') {
-    createExtractionJob = options.createExtractionJob ?? options.autoMergeEhr ?? true
-  }
-  return archiveDocument(documentId, patientId, createExtractionJob)
-}
-export const parseDocument = async (documentId = '') => {
-  if (!documentId) return emptyTask()
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${documentId}/ocr`)
-  return emptySuccess(normalizeDocument(payload))
-}
-export const reparseDocumentSync = parseDocument
-
-export const getDocumentDetail = async (documentId = '') => {
-  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/${documentId}`)
-  return emptySuccess(normalizeDocument(payload))
-}
-
-export const updateDocumentMetadata = async (documentId = '', metadata = {}) => {
-  const payload = await request.patch(`${DOCUMENTS_ENDPOINT}/${documentId}`, normalizeUpdatePayload(metadata))
-  return emptySuccess(normalizeDocument(payload))
-}
-
-export const getParseResult = async () => emptySuccess(null)
-export const getParseProgress = async () => emptyTask()
-export const parseDocuments = async () => []
-export const extractEhrData = async (documentId = '', patientId = '') => {
-  if (!documentId) return emptyTask()
-  const detail = await getDocumentDetail(documentId)
-  const resolvedPatientId = patientId || detail.data?.patient_id
-  const payload = await request.post('/extraction-jobs', {
-    job_type: 'patient_ehr',
-    patient_id: resolvedPatientId,
-    document_id: documentId,
-    input_json: { source: 'document_reextract' },
-  })
-  let fieldsCount = 0
-  if (payload?.id) {
-    const runs = await request.get(`/extraction-jobs/${payload.id}/runs`)
-    fieldsCount = Array.isArray(runs)
-      ? runs.reduce((sum, run) => sum + (run.parsed_output_json?.fields?.length || 0), 0)
-      : 0
-  }
-  return emptySuccess({
-    ...payload,
-    task_id: payload.id,
-    fields_count: fieldsCount,
-  })
-}
-export const extractEhrDataTargeted = async (documentOrOptions = {}, legacyPatientId = '', legacyTargetFormKey = '', legacyOptions = {}) => {
-  const options = typeof documentOrOptions === 'object' && documentOrOptions !== null
-    ? documentOrOptions
-    : {
-        ...legacyOptions,
-        documentId: documentOrOptions,
-        patientId: legacyPatientId,
-        targetFormKey: legacyTargetFormKey,
-      }
-  const {
-    documentId = '',
-    patientId = '',
-    contextId = '',
-    schemaVersionId = '',
-    targetFormKey = '',
-    waitForDocumentReady = false,
-    jobType = options.instanceType === 'project_crf' ? 'project_crf' : 'patient_ehr',
-    projectId = '',
-    projectPatientId = '',
-  } = options
-  if (!documentId || !targetFormKey) return emptyTask()
-  const payload = await request.post('/extraction-jobs', {
-    job_type: jobType,
-    patient_id: patientId || undefined,
-    document_id: documentId,
-    project_id: projectId || undefined,
-    project_patient_id: projectPatientId || undefined,
-    context_id: contextId || undefined,
-    schema_version_id: schemaVersionId || undefined,
-    target_form_key: targetFormKey,
-    input_json: {
-      source: 'form_targeted_extract',
-      form_keys: [targetFormKey],
-      wait_for_document_ready: !!waitForDocumentReady,
-      enqueue_async: true,
-    },
-  })
-  return emptySuccess({ ...payload, task_id: payload.id })
-}
-export const extractDocumentMetadata = async (documentId = '') => {
-  if (!documentId) return emptyTask()
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${documentId}/metadata`)
-  return emptySuccess(normalizeDocument(payload))
-}
-export const markDocumentReview = async (documentId = '', requiresReview = false) => {
-  if (!documentId) return emptySuccess(null, { message: '缺少文档 ID' })
-  const detail = await getDocumentDetail(documentId)
-  if (!detail?.success) return detail
-  const metadata = {
-    ...(detail.data?.metadata_json && typeof detail.data.metadata_json === 'object'
-      ? detail.data.metadata_json
-      : {}),
-    requires_review: !!requiresReview,
-  }
-  const payload = await request.patch(`${DOCUMENTS_ENDPOINT}/${documentId}`, { metadata_json: metadata })
-  return emptySuccess(normalizeDocument(payload))
-}
-export const getDocumentOperationHistory = async () => emptyList()
-export const aiMatchPatient = refreshDocumentMatchInfo
-export const aiExtractAndMatchPatient = refreshDocumentMatchInfo
-export const confirmCreatePatientAndArchive = async (documentId = '', patientData = {}) => {
-  if (!documentId) return emptySuccess(null, { message: '缺少文档 ID' })
-  const patientRes = await createPatient(patientData)
-  if (!patientRes?.success || !patientRes?.data?.id) return patientRes
-
-  const archiveRes = await archiveDocument(documentId, patientRes.data.id, true)
-  return emptySuccess({
-    patient: patientRes.data,
-    patientId: patientRes.data.id,
-    documentIds: [documentId],
-    archived_count: archiveRes?.success ? 1 : 0,
-    archived_document_ids: archiveRes?.success ? [documentId] : [],
-    archive: archiveRes?.data || null,
-  })
-}
-export const batchCreatePatientAndArchive = async (documentIds = [], patientData = {}) => {
-  const ids = Array.isArray(documentIds) ? documentIds.filter(Boolean) : []
-  if (!ids.length) return emptySuccess(null, { message: '缺少文档 ID' })
-  const patientRes = await createPatient(patientData)
-  if (!patientRes?.success || !patientRes?.data?.id) return patientRes
-
-  const archivedIds = []
-  const failed = []
-  for (const documentId of ids) {
-    try {
-      const archiveRes = await archiveDocument(documentId, patientRes.data.id, true)
-      if (archiveRes?.success) archivedIds.push(documentId)
-      else failed.push({ documentId, message: archiveRes?.message || '归档失败' })
-    } catch (error) {
-      failed.push({ documentId, message: error?.message || '归档失败' })
-    }
-  }
-
-  return emptySuccess({
-    patient: patientRes.data,
-    patientId: patientRes.data.id,
-    documentIds: ids,
-    archived_count: archivedIds.length,
-    archived_document_ids: archivedIds,
-    failed,
-  })
-}
-export const confirmAutoArchive = async () => emptySuccess(null)
-export const batchConfirmAutoArchive = async () => emptySuccess(null)
-
-export const searchUserFiles = async (params = {}) => getDocumentList(params)
-export const getFileStatusById = async (documentId = '') => getDocumentDetail(documentId)
-export const getFileStatusesByIds = async (documentIds = []) => {
-  const ids = Array.from(new Set((Array.isArray(documentIds) ? documentIds : []).filter(Boolean)))
-  if (!ids.length) return emptySuccess({ items: [], list: [], total: 0 })
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/statuses`, { document_ids: ids })
-  const items = (payload.items || []).map(normalizeDocument)
-  return emptySuccess({ items, list: items, total: items.length })
-}
-
-export const getFileListV2Tree = async (params = {}) => {
-  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/v2/tree`, params)
-  return emptySuccess(payload)
-}
-
-export const getFileListV2Counts = async (params = {}) => {
-  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/v2/counts`, params)
-  return emptySuccess(payload)
-}
-
-const getGroupTaskStatus = (matchInfo = {}) => {
-  const result = matchInfo.match_result
-  if (result === 'pending') return 'parsing'
-  if (result === 'matched') return 'auto_archived'
-  if (result === 'review') return 'pending_confirm_review'
-  if (result === 'new') return 'pending_confirm_new'
-  return 'pending_confirm_uncertain'
-}
-
-export const getFileListV2GroupDocuments = async (groupId, params = {}) => {
-  const payload = await request.get(`${DOCUMENTS_ENDPOINT}/v2/groups/${groupId}/documents`, params)
-  const taskStatus = getGroupTaskStatus(payload.match_info || {})
-  const items = (payload.items || []).map((item) => normalizeDocument({ ...item, task_status: taskStatus }))
-  return emptySuccess({ ...payload, items })
-}
-
-export const rebuildGroups = async () => getFileListV2Tree({ refresh: true })
-export const matchGroup = async (groupId) => getFileListV2GroupDocuments(groupId)
-export const confirmGroupArchive = async (groupId, patientId, autoMergeEhr = true) => {
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/v2/groups/${groupId}/confirm-archive`, {}, {
-    params: { patient_id: patientId, auto_merge_ehr: autoMergeEhr },
-  })
-  return emptySuccess(payload)
-}
-export const createPatientAndArchiveGroup = async () => emptySuccess(null)
-export const moveDocumentToGroup = async () => emptySuccess(null)
-export const uploadAndArchiveToPatient = async (file, patientId, _options = {}, onProgress) => {
-  // 后端 POST /documents 带 patient_id 时已自动归档（status=archived）并入队
-  // OCR → metadata → patient_ehr extraction 链路，无需再调 archive 接口。
-  return uploadDocument(file, patientId, onProgress)
-}
-export const uploadAndArchiveAsync = uploadAndArchiveToPatient
-export const extractEhrDataAsync = async (documentId = '', options = {}) => {
-  if (!documentId) return emptyTask()
-  const { patientId: patientIdOption = '', source = 'document_detail_manual' } = options
-  let resolvedPatientId = patientIdOption
-  if (!resolvedPatientId) {
-    const detail = await getDocumentDetail(documentId)
-    resolvedPatientId = detail.data?.patient_id || detail.data?.patientId || ''
-  }
-  if (!resolvedPatientId) {
-    return {
-      success: false,
-      code: 1,
-      message: '文档尚未绑定患者，请先归档或选择患者',
-      data: null,
-    }
-  }
-  const payload = await request.post('/extraction-jobs', {
-    job_type: 'patient_ehr',
-    patient_id: resolvedPatientId,
-    document_id: documentId,
-    input_json: {
-      source,
-      enqueue_async: true,
-    },
-  })
-  return emptySuccess({
-    ...payload,
-    task_id: payload.id,
-  })
-}
-
-export const getExtractionJob = async (jobId = '') => {
-  if (!jobId) return emptyTask()
-  const payload = await request.get(`/extraction-jobs/${jobId}`)
-  return emptySuccess(payload)
-}
-export const aiMatchPatientAsync = async (documentId = '') => {
-  if (!documentId) return emptyTask()
-  const payload = await request.post(`${DOCUMENTS_ENDPOINT}/${encodeURIComponent(documentId)}/match-info/refresh`)
-  return emptySuccess({
-    ...payload,
-    task_id: documentId,
-    status: 'completed',
-  })
-}
-export const batchAiMatchAsync = async () => emptyTask()
-export const getDocumentTaskProgress = async () => emptyTask()
-export const pollDocumentTaskProgress = async () => emptyTask()
-export const checkDuplicateFiles = async () => emptySuccess([])
 
 export default {
   uploadDocument,

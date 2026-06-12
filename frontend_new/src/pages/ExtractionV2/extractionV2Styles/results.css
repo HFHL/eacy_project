@@ -1,0 +1,152 @@
+/* ========== 结果展示 ========== */
+.result-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.status-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+}
+
+.doc-sources-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+}
+
+.result-tabs-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+}
+
+/* Result 样式 */
+.result-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.result-field {
+  display: flex;
+  padding: 8px 12px;
+  background: #fafafa;
+  border-radius: 6px;
+  border-left: 3px solid #722ed1;
+}
+
+.field-key {
+  min-width: 180px;
+  color: #666;
+  font-weight: 500;
+}
+
+.field-value {
+  flex: 1;
+}
+
+.field-value pre {
+  margin: 0;
+  padding: 8px;
+  background: #f0f0f0;
+  border-radius: 4px;
+  font-size: 12px;
+  max-height: 150px;
+  overflow: auto;
+}
+
+.result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.result-item {
+  border-left: 3px solid #1890ff;
+}
+
+/* Audit 样式 */
+.audit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.audit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.raw-text {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Metadata 样式 */
+.metadata-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.metadata-item {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 8px;
+}
+
+.metadata-item .ant-typography:first-child {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+/* Raw JSON */
+.raw-json {
+  margin: 0;
+  padding: 16px;
+  background: #1a1a2e;
+  color: #a5d6a7;
+  border-radius: 8px;
+  font-size: 12px;
+  max-height: 500px;
+  overflow: auto;
+}
+
+/* 空状态 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  text-align: center;
+}
+
+.empty-state .ant-typography {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.empty-state .ant-typography-secondary {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.step-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 24px;
+}
+
+.step-preview:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #722ed1;
+}

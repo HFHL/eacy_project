@@ -2,75 +2,41 @@
  * 文档管理Tab组件 - 重构版
  * 使用卡片式布局显示和管理患者相关文档
  */
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { Row, Col, Button, Space, Empty, Spin, Typography, Modal, List, Avatar, Progress, Alert, Descriptions, Divider, Tag, Input, message, Card, Form, Checkbox, Radio } from 'antd'
-import { UploadOutlined, FileTextOutlined, TeamOutlined, EyeOutlined, CheckOutlined, UserAddOutlined, LoadingOutlined, ReloadOutlined, AimOutlined } from '@ant-design/icons'
-import { getDocumentAiMatchInfo, changeArchivePatient, archiveDocument } from '../../../../api/document'
-import { getPatientList, getPatientEhrSchemaOnly, getTaskBatchProgress, updatePatientEhrFolder } from '../../../../api/patient'
-import { buildTargetFormGroupsFromSchema } from '../SchemaEhrTab/schemaFormShared'
-import { appThemeToken } from '../../../../styles/themeTokens'
-import { TASK_TYPE_LABEL, pushTaskNotification, claimBatchNotifyOnce } from '../../../../utils/taskNotifications'
+import React, { useState, useRef, useEffect } from 'react'
+import { Row, Col, Button, Space } from 'antd'
+import { UploadOutlined, ReloadOutlined, AimOutlined } from '@ant-design/icons'
 
 // 导入新组件
-import DocumentCard from './components/DocumentCard'
 import SearchFilter from './components/SearchFilter'
 import SortControl from './components/SortControl'
-import TimelineGroup from './components/TimelineGroup'
+import DocumentTimelineList from './components/DocumentTimelineList'
+import EhrFolderBatchProgress from './components/EhrFolderBatchProgress'
+import TargetedEhrFolderModal from './components/TargetedEhrFolderModal'
+import PatientMatchModal from './components/PatientMatchModal'
 import DocumentDetailModal from './components/DocumentDetailModal'
 import useDocumentFilter from './hooks/useDocumentFilter'
+import { useEhrFolderUpdate } from './hooks/useEhrFolderUpdate'
+import { usePatientMatchModal } from './hooks/usePatientMatchModal'
 
-const { Title, Text } = Typography
-
-const DocumentsTab = ({ 
+const DocumentsTab = ({
   patientId,
   patientInfo,  // 当前患者信息，用于显示"当前归档患者"
-  documents = [], 
+  documents = [],
   loading = false,
   handleDocumentClick,
   handleReExtract,
-  handleDeleteDocument,
   setUploadVisible,
   onRefresh
 }) => {
-  const [selectedDocuments, setSelectedDocuments] = useState([])
   const [detailModalVisible, setDetailModalVisible] = useState(false)
   const [selectedDocument, setSelectedDocument] = useState(null)
   const [detailRefreshTrigger, setDetailRefreshTrigger] = useState(0)
-  
-  // 患者匹配详情弹窗状态
-  const [patientMatchVisible, setPatientMatchVisible] = useState(false)
-  const [selectedMatchDocument, setSelectedMatchDocument] = useState(null)
-  const [patientSearchValue, setPatientSearchValue] = useState('')
-  const [patientSearchResults, setPatientSearchResults] = useState([])
-  const [patientSearchLoading, setPatientSearchLoading] = useState(false)
-  const [showSearchResults, setShowSearchResults] = useState(false)
-  const [selectedMatchPatient, setSelectedMatchPatient] = useState(null)
-  const [archivingLoading, setArchivingLoading] = useState(false)
-  const [matchInfoLoading, setMatchInfoLoading] = useState(false)
-  const [updatingEhrFolder, setUpdatingEhrFolder] = useState(false)
-  const [ehrFolderBatch, setEhrFolderBatch] = useState(null)
-  const [targetedModalVisible, setTargetedModalVisible] = useState(false)
-  const [targetedModalGroups, setTargetedModalGroups] = useState([])
-  const [targetedModalMode, setTargetedModalMode] = useState('incremental')
-  const [schemaLoading, setSchemaLoading] = useState(false)
-  const [patientSchema, setPatientSchema] = useState(null)
-  /** 患者匹配弹窗模式：archive=未绑定文档选择患者归档，change=已归档文档更换患者 */
-  const [matchModalMode, setMatchModalMode] = useState('change')
-  
-  // 患者搜索定时器和版本号
-  const searchTimerRef = useRef(null)
-  const searchVersionRef = useRef(0)
   const detailModalRef = useRef(null)
   const listScrollContainerRef = useRef(null) // 列表独立滚动容器，刷新时保留其 scrollTop
-  const ehrFolderPollTimerRef = useRef(null)
-  const ehrFolderPollOwnerRef = useRef(null)
-  const ehrFolderPollSeqRef = useRef(0)
-  
+
   // 使用文档筛选Hook
   const {
-    filters,
     groupConfig,
-    filteredDocuments,
     groupedDocuments,
     updateFilters,
     clearFilters,
@@ -79,24 +45,53 @@ const DocumentsTab = ({
   } = useDocumentFilter(documents)
 
   const stats = getFilterStats()
+  const {
+    activeEhrFolderBatch,
+    handleOpenTargetedEhrFolderModal,
+    handleSubmitTargetedEhrFolder,
+    handleUpdateEhrFolder,
+    isTerminalBatchStatus,
+    schemaLoading,
+    setTargetedModalGroups,
+    setTargetedModalMode,
+    setTargetedModalVisible,
+    targetedModalGroups,
+    targetedModalMode,
+    targetedModalVisible,
+    targetFormGroups,
+    updatingEhrFolder,
+  } = useEhrFolderUpdate({ onRefresh, patientId })
+  const {
+    archivingLoading,
+    closePatientMatchModal,
+    getConfidenceStyle,
+    handleArchivePatient,
+    handleChangePatient,
+    handleConfirmMatch,
+    handleConfirmPatientMatch,
+    handlePatientSearch,
+    handleSelectSearchPatient,
+    matchInfoLoading,
+    matchModalMode,
+    patientMatchVisible,
+    patientSearchLoading,
+    patientSearchResults,
+    patientSearchValue,
+    selectedMatchDocument,
+    selectedMatchPatient,
+    showSearchResults,
+  } = usePatientMatchModal({
+    currentDocument: selectedDocument,
+    detailModalRef,
+    documents,
+    onRefresh,
+    patientId,
+    setDetailRefreshTrigger,
+  })
 
   useEffect(() => {
-    if (searchTimerRef.current) {
-      clearTimeout(searchTimerRef.current)
-      searchTimerRef.current = null
-    }
-    searchVersionRef.current += 1
-    setSelectedDocuments([])
     setDetailModalVisible(false)
     setSelectedDocument(null)
-    setPatientMatchVisible(false)
-    setSelectedMatchDocument(null)
-    setSelectedMatchPatient(null)
-    setPatientSearchValue('')
-    setPatientSearchResults([])
-    setShowSearchResults(false)
-    setArchivingLoading(false)
-    setMatchInfoLoading(false)
     setTargetedModalVisible(false)
     setTargetedModalGroups([])
   }, [patientId])
@@ -118,7 +113,7 @@ const DocumentsTab = ({
   }
 
   // 处理清空筛选
-  const handleClearFilter = (emptyFilters) => {
+  const handleClearFilter = () => {
     clearFilters()
   }
 
@@ -151,101 +146,6 @@ const DocumentsTab = ({
     handleReExtract?.(documentId)
   }
 
-  // 处理更换患者 - 打开患者匹配详情弹窗（已归档文档）
-  const handleChangePatient = async (documentId) => {
-    setMatchModalMode('change')
-    await openPatientMatchModal(documentId, { archivedPatientId: patientId, isFromAutoArchived: true })
-  }
-
-  // 处理未绑定文档选择患者归档 - 打开患者匹配详情弹窗（未归档，使用归档接口）
-  const handleArchivePatient = async (documentId) => {
-    setMatchModalMode('archive')
-    // 未绑定文档可能不在当前患者文档列表中，优先用详情弹窗当前文档
-    const doc = (selectedDocument && selectedDocument.id === documentId) ? selectedDocument : documents.find(d => d.id === documentId)
-    await openPatientMatchModal(documentId, { archivedPatientId: null, isFromAutoArchived: false }, doc)
-  }
-
-  // 打开患者匹配弹窗并拉取匹配信息（供更换患者 / 选择归档共用）
-  const openPatientMatchModal = async (documentId, options = {}, docOverride) => {
-    const { archivedPatientId, isFromAutoArchived } = options
-    const doc = docOverride || documents.find(d => d.id === documentId)
-    if (!doc) {
-      message.warning('文档不存在')
-      return
-    }
-    const docStatus = doc.task_status || doc.status || doc.taskStatus || (archivedPatientId ? 'archived' : 'pending_confirm_review')
-    setSelectedMatchDocument({
-      id: documentId,
-      name: doc.fileName || doc.file_name || doc.name || '未知文档',
-      fileName: doc.fileName || doc.file_name || doc.name,
-      taskStatus: docStatus,
-      isFromAutoArchived: !!isFromAutoArchived,
-      archivedPatientId: archivedPatientId ?? null,
-      createdAt: doc.createdAt || doc.created_at,
-      documentType: doc.documentType || doc.document_type,
-      documentSubType: doc.documentSubType || doc.document_sub_type,
-      candidates: [],
-      extractedInfo: {}
-    })
-    setPatientMatchVisible(true)
-    setMatchInfoLoading(true)
-    setSelectedMatchPatient(null)
-    setPatientSearchValue('')
-    setPatientSearchResults([])
-    setShowSearchResults(false)
-    try {
-      const matchResponse = await getDocumentAiMatchInfo(documentId)
-      if (matchResponse.success && matchResponse.data) {
-        const matchData = matchResponse.data
-        const documentWithInfo = {
-          id: documentId,
-          name: doc.fileName || doc.file_name || doc.name || '未知文档',
-          fileName: doc.fileName || doc.file_name || doc.name,
-          taskStatus: docStatus,
-          isFromAutoArchived: !!isFromAutoArchived,
-          archivedPatientId: archivedPatientId ?? null,
-          createdAt: doc.createdAt || doc.created_at,
-          documentType: doc.documentType || doc.document_type,
-          documentSubType: doc.documentSubType || doc.document_sub_type,
-          extractedInfo: matchData.extracted_info || {},
-          matchScore: matchData.match_score || 0,
-          confidence: matchData.confidence || 0,
-          candidates: (matchData.candidates || []).map(c => ({
-            id: c.id,
-            name: c.name,
-            patientCode: c.patient_code,
-            similarity: c.similarity || 0,
-            matchReasoning: c.match_reasoning,
-            keyEvidence: c.key_evidence || [],
-            concerns: c.concerns || [],
-            matchFeatures: (c.key_evidence && c.key_evidence.length > 0)
-              ? c.key_evidence
-              : (c.concerns && c.concerns.length > 0)
-                ? c.concerns
-                : ['待AI分析'],
-            gender: c.gender || '',
-            age: c.age || ''
-          })),
-          aiRecommendation: matchData.ai_recommendation,
-          aiReason: matchData.ai_reason,
-          matchResult: matchData.match_result || 'matched'
-        }
-        setSelectedMatchDocument(documentWithInfo)
-      } else {
-        message.error('获取文档匹配信息失败')
-        setPatientMatchVisible(false)
-        setSelectedMatchDocument(null)
-      }
-    } catch (error) {
-      console.error('获取文档匹配信息失败:', error)
-      message.error('获取文档匹配信息失败')
-      setPatientMatchVisible(false)
-      setSelectedMatchDocument(null)
-    } finally {
-      setMatchInfoLoading(false)
-    }
-  }
-
   // 处理下载文档
   const handleDownloadDocument = (documentId) => {
     console.log('下载文档:', documentId)
@@ -259,391 +159,6 @@ const DocumentsTab = ({
     window.open(`/document/ocr-viewer/${documentId}`, '_blank')
   }
 
-  const stopEhrFolderPolling = ({ invalidate = true } = {}) => {
-    if (invalidate) {
-      ehrFolderPollSeqRef.current += 1
-      ehrFolderPollOwnerRef.current = null
-    }
-    if (ehrFolderPollTimerRef.current) {
-      clearTimeout(ehrFolderPollTimerRef.current)
-      ehrFolderPollTimerRef.current = null
-    }
-  }
-
-  const isTerminalBatchStatus = (status) => ['succeeded', 'completed', 'completed_with_errors', 'failed', 'cancelled'].includes(status)
-
-  const pollEhrFolderBatch = useCallback(async (batchId, ownerPatientId) => {
-    const ownerId = ownerPatientId || patientId
-    if (!batchId || !ownerId) return
-
-    if (ehrFolderPollTimerRef.current) {
-      clearTimeout(ehrFolderPollTimerRef.current)
-      ehrFolderPollTimerRef.current = null
-    }
-
-    const pollSeq = ehrFolderPollSeqRef.current
-    ehrFolderPollOwnerRef.current = ownerId
-
-    try {
-      const response = await getTaskBatchProgress(batchId)
-      if (pollSeq !== ehrFolderPollSeqRef.current || ehrFolderPollOwnerRef.current !== ownerId) return
-
-      const batch = response?.data || response
-      setEhrFolderBatch({ ...batch, patientId: ownerId, batchId })
-      setUpdatingEhrFolder(!isTerminalBatchStatus(batch?.status))
-      localStorage.setItem(`eacy_ehr_folder_batch_${ownerId}`, batchId)
-
-      if (isTerminalBatchStatus(batch?.status)) {
-        if (pollSeq !== ehrFolderPollSeqRef.current || ehrFolderPollOwnerRef.current !== ownerId) return
-        setUpdatingEhrFolder(false)
-        const effectiveBatchId = batch?.batch_id || batchId
-        const folderTitle = TASK_TYPE_LABEL.ehr_folder_batch
-        if (batch?.status === 'succeeded' || batch?.status === 'completed') {
-          if (claimBatchNotifyOnce(effectiveBatchId)) {
-            const desc = '电子病历夹更新完成'
-            message.success(desc)
-            pushTaskNotification({ type: 'success', taskType: 'ehr_folder_batch', title: folderTitle, description: desc })
-          }
-        } else if (batch?.status === 'completed_with_errors') {
-          if (claimBatchNotifyOnce(effectiveBatchId)) {
-            const desc = `电子病历夹更新完成，失败 ${batch.failed_items || 0} 个任务`
-            message.warning(desc)
-            pushTaskNotification({ type: 'warning', taskType: 'ehr_folder_batch', title: folderTitle, description: desc })
-          }
-        } else if (batch?.status === 'failed') {
-          if (claimBatchNotifyOnce(effectiveBatchId)) {
-            const desc = '电子病历夹更新失败'
-            message.error(desc)
-            pushTaskNotification({ type: 'error', taskType: 'ehr_folder_batch', title: folderTitle, description: desc })
-          }
-        } else if (claimBatchNotifyOnce(effectiveBatchId)) {
-          const desc = '电子病历夹更新已结束'
-          message.warning(desc)
-          pushTaskNotification({ type: 'warning', taskType: 'ehr_folder_batch', title: folderTitle, description: desc })
-        }
-        try {
-          localStorage.removeItem(`eacy_ehr_folder_batch_${ownerId}`)
-        } catch {
-          // ignore
-        }
-        if (String(ownerId) === String(patientId)) {
-          onRefresh?.()
-        }
-        return
-      }
-
-      ehrFolderPollTimerRef.current = setTimeout(() => {
-        pollEhrFolderBatch(batchId, ownerId)
-      }, 2500)
-    } catch (error) {
-      if (pollSeq !== ehrFolderPollSeqRef.current || ehrFolderPollOwnerRef.current !== ownerId) return
-      setUpdatingEhrFolder(false)
-      console.error('查询电子病历夹更新进度失败:', error)
-    }
-  }, [patientId, onRefresh])
-
-  const targetFormGroups = useMemo(
-    () => buildTargetFormGroupsFromSchema(patientSchema),
-    [patientSchema],
-  )
-
-  const startEhrFolderUpdate = async (options = {}) => {
-    const ownerId = patientId
-    if (!ownerId || updatingEhrFolder) return
-    setUpdatingEhrFolder(true)
-    try {
-      const response = await updatePatientEhrFolder(ownerId, options)
-      message.success(response?.message || '已提交电子病历夹更新任务')
-      const batchId = response?.data?.batch_id || response?.data?.task_id
-      if (batchId) {
-        try {
-          localStorage.setItem(`eacy_ehr_folder_batch_${ownerId}`, batchId)
-        } catch {
-          // ignore
-        }
-        setEhrFolderBatch({ batch_id: batchId, batchId, patientId: ownerId, status: 'queued', progress: 5, message: response?.data?.message })
-        pollEhrFolderBatch(batchId, ownerId)
-      } else {
-        if (String(ownerId) === String(patientId)) {
-          setUpdatingEhrFolder(false)
-          onRefresh?.()
-        }
-      }
-    } catch (error) {
-      if (String(ownerId) === String(patientId)) {
-        setUpdatingEhrFolder(false)
-      }
-      const detail = error?.message || error?.data?.detail || ''
-      const hint = typeof detail === 'string' && detail.includes('电子病历 Schema')
-        ? detail
-        : (detail || '更新电子病历夹失败')
-      message.error(hint)
-    }
-  }
-
-  const handleUpdateEhrFolder = () => startEhrFolderUpdate({ mode: 'incremental' })
-
-  const handleOpenTargetedEhrFolderModal = async () => {
-    let schema = patientSchema
-    if (!buildTargetFormGroupsFromSchema(schema).length) {
-      setSchemaLoading(true)
-      try {
-        const response = await getPatientEhrSchemaOnly(patientId)
-        const schemaCandidate = response?.data?.schema
-        const hasSchema =
-          schemaCandidate &&
-          typeof schemaCandidate === 'object' &&
-          Object.keys(schemaCandidate.properties || {}).length > 0
-        schema = hasSchema ? schemaCandidate : null
-        setPatientSchema(schema)
-      } catch (error) {
-        console.error('加载患者 Schema 失败:', error)
-        schema = null
-      } finally {
-        setSchemaLoading(false)
-      }
-    }
-    if (!buildTargetFormGroupsFromSchema(schema).length) {
-      message.warning('未加载到病历表单结构，请稍后在病历 Tab 确认 Schema 已就绪')
-      return
-    }
-    setTargetedModalGroups([])
-    setTargetedModalMode('incremental')
-    setTargetedModalVisible(true)
-  }
-
-  const handleSubmitTargetedEhrFolder = async () => {
-    if (targetedModalGroups.length === 0) {
-      message.warning('请至少选择一个字段组')
-      return
-    }
-    setTargetedModalVisible(false)
-    await startEhrFolderUpdate({
-      targetFormKeys: targetedModalGroups,
-      mode: targetedModalMode,
-    })
-  }
-
-  // 搜索患者（带防抖和版本控制）
-  const handlePatientSearch = (value) => {
-    setPatientSearchValue(value)
-    
-    if (searchTimerRef.current) {
-      clearTimeout(searchTimerRef.current)
-    }
-    
-    searchVersionRef.current += 1
-    const currentVersion = searchVersionRef.current
-    
-    if (!value || value.trim().length < 1) {
-      setShowSearchResults(false)
-      setPatientSearchResults([])
-      setPatientSearchLoading(false)
-      return
-    }
-    
-    setPatientSearchLoading(true)
-    setShowSearchResults(true)
-    setPatientSearchResults([])
-    
-    searchTimerRef.current = setTimeout(async () => {
-      try {
-        const response = await getPatientList({
-          page: 1,
-          page_size: 10,
-          search: value.trim()
-        })
-        
-        if (currentVersion === searchVersionRef.current) {
-          if (response.success && response.data) {
-            setPatientSearchResults(response.data)
-          } else {
-            setPatientSearchResults([])
-          }
-          setPatientSearchLoading(false)
-        }
-      } catch (error) {
-        console.error('搜索患者失败:', error)
-        if (currentVersion === searchVersionRef.current) {
-          setPatientSearchResults([])
-          setPatientSearchLoading(false)
-        }
-      }
-    }, 500)
-  }
-
-  // 选择搜索结果中的患者
-  const handleSelectSearchPatient = (patient) => {
-    setSelectedMatchPatient(patient)
-    setPatientSearchValue(patient.name)
-    setShowSearchResults(false)
-  }
-
-  // 确认选择患者（归档模式：archiveDocument；更换模式：changeArchivePatient）- 从搜索选择
-  const handleConfirmPatientMatch = async () => {
-    if (!selectedMatchDocument) {
-      message.warning('缺少文档信息')
-      return
-    }
-    if (!selectedMatchPatient) {
-      message.warning('请先选择一个患者')
-      return
-    }
-    const isArchive = matchModalMode === 'archive'
-    Modal.confirm({
-      title: isArchive ? '确认选择该患者归档' : '确认更换归档患者',
-      content: isArchive ? '确定选择该患者并归档文档吗？' : '确定要将文档更换归档到该患者吗？',
-      okText: isArchive ? '确认选择' : '确认更换',
-      cancelText: '取消',
-      centered: true,
-      wrapClassName: 'confirm-modal-up',
-      onOk: async () => {
-        setArchivingLoading(true)
-        try {
-          const response = isArchive
-            ? await archiveDocument(selectedMatchDocument.id, selectedMatchPatient.id, true)
-            : await changeArchivePatient(selectedMatchDocument.id, selectedMatchPatient.id, {
-                revokeLastMerge: true,
-                autoMergeEhr: true
-              })
-          if (response.success) {
-            message.success(isArchive
-              ? `文档已归档到患者: ${selectedMatchPatient.name}`
-              : `文档已更换归档到患者: ${selectedMatchPatient.name}`)
-            setPatientMatchVisible(false)
-            setPatientSearchValue('')
-            setPatientSearchResults([])
-            setShowSearchResults(false)
-            setSelectedMatchPatient(null)
-            setSelectedMatchDocument(null)
-            setMatchModalMode('change')
-            onRefresh?.()
-            setDetailRefreshTrigger(t => t + 1)
-            detailModalRef.current?.refetch?.()
-          } else {
-            message.error(response.message || (isArchive ? '归档失败' : '更换归档失败'))
-          }
-        } catch (error) {
-          console.error(isArchive ? '归档失败:' : '确认更换归档失败:', error)
-          message.error(error.response?.data?.message || (isArchive ? '归档失败' : '更换归档失败'))
-        } finally {
-          setArchivingLoading(false)
-        }
-      }
-    })
-  }
-
-  // 处理确认选择 - 从候选列表选择（归档模式用 archiveDocument，更换模式用 changeArchivePatient）
-  const handleConfirmMatch = async (docId, targetPatientId) => {
-    if (!docId || !targetPatientId) {
-      message.warning('缺少文档或患者信息')
-      return
-    }
-    const candidate = selectedMatchDocument?.candidates?.find(c => c.id === targetPatientId)
-    const isArchive = matchModalMode === 'archive'
-    Modal.confirm({
-      title: isArchive ? '确认选择该患者归档' : '确认更换归档患者',
-      content: isArchive ? '确定选择该患者并归档文档吗？' : '确定要将文档更换归档到该患者吗？',
-      okText: isArchive ? '确认选择' : '确认更换',
-      cancelText: '取消',
-      centered: true,
-      wrapClassName: 'confirm-modal-up',
-      onOk: async () => {
-        setArchivingLoading(true)
-        try {
-          const response = isArchive
-            ? await archiveDocument(docId, targetPatientId, true)
-            : await changeArchivePatient(docId, targetPatientId, {
-                revokeLastMerge: true,
-                autoMergeEhr: true
-              })
-          if (response.success) {
-            message.success(isArchive
-              ? `文档已归档到患者: ${candidate?.name || response.data?.patient_name || targetPatientId}`
-              : `文档已更换归档到患者: ${candidate?.name || response.data?.patient_name || targetPatientId}`)
-            setPatientMatchVisible(false)
-            setPatientSearchValue('')
-            setPatientSearchResults([])
-            setShowSearchResults(false)
-            setSelectedMatchPatient(null)
-            setSelectedMatchDocument(null)
-            setMatchModalMode('change')
-            onRefresh?.()
-            setDetailRefreshTrigger(t => t + 1)
-            detailModalRef.current?.refetch?.()
-          } else {
-            message.error(response.message || (isArchive ? '归档失败' : '更换归档失败'))
-          }
-        } catch (error) {
-          console.error(isArchive ? '归档失败:' : '更换归档文档失败:', error)
-          message.error(error.response?.data?.message || (isArchive ? '归档失败' : '更换归档文档失败'))
-        } finally {
-          setArchivingLoading(false)
-        }
-      }
-    })
-  }
-
-  // 获取置信度样式
-  const getConfidenceStyle = (confidence) => {
-    if (typeof confidence === 'number') {
-      if (confidence >= 90) return { 
-        color: 'green',
-        label: '高置信度'
-      }
-      if (confidence >= 70) return { 
-        color: 'orange',
-        label: '中置信度'
-      }
-      return { 
-        color: 'red',
-        label: '低置信度'
-      }
-    }
-    
-    const configs = {
-      high: { color: 'green', label: '高置信度' },
-      medium: { color: 'orange', label: '中置信度' },
-      low: { color: 'red', label: '低置信度' }
-    }
-    return configs[confidence] || { color: 'default', label: '未知' }
-  }
-
-  const activeEhrFolderBatch = useMemo(() => (
-    ehrFolderBatch && String(ehrFolderBatch.patientId) === String(patientId)
-      ? ehrFolderBatch
-      : null
-  ), [ehrFolderBatch, patientId])
-
-  // 切换患者时重置进度状态，并恢复当前患者未完成的批次轮询
-  useEffect(() => {
-    stopEhrFolderPolling({ invalidate: true })
-    setEhrFolderBatch(null)
-    setUpdatingEhrFolder(false)
-
-    if (!patientId) return undefined
-
-    const savedBatchId = localStorage.getItem(`eacy_ehr_folder_batch_${patientId}`)
-    if (savedBatchId) {
-      setUpdatingEhrFolder(true)
-      pollEhrFolderBatch(savedBatchId, patientId)
-    }
-
-    return () => {
-      stopEhrFolderPolling({ invalidate: true })
-    }
-  }, [patientId, pollEhrFolderBatch])
-
-  // 组件卸载时清理定时器
-  useEffect(() => {
-    return () => {
-      if (searchTimerRef.current) {
-        clearTimeout(searchTimerRef.current)
-      }
-      stopEhrFolderPolling({ invalidate: true })
-    }
-  }, [])
-
   return (
     <div className="documents-tab-container">
       <style>{`
@@ -651,86 +166,10 @@ const DocumentsTab = ({
           transform: translateY(-20%) !important;
         }
       `}</style>
-      {/* 页面头部 - 暂时注释，避免与Tab标题重复 */}
-      {/* <div className="documents-header" style={{ marginBottom: 24 }}>
-        <Row justify="space-between" align="middle">
-          <Col>
-            <Title level={4} style={{ margin: 0 }}>
-              文档管理
-              <Text type="secondary" style={{ marginLeft: 8, fontSize: 14, fontWeight: 'normal' }}>
-                共 {stats.total} 个文档
-                {stats.hasActiveFilters && ` · 筛选后 ${stats.filtered} 个`}
-              </Text>
-            </Title>
-          </Col>
-          <Col>
-            <Space>
-              <Button
-                icon={<ReloadOutlined />}
-                loading={updatingEhrFolder}
-                onClick={handleUpdateEhrFolder}
-              >
-                更新电子病历夹
-              </Button>
-              <Button 
-                type="primary" 
-                icon={<UploadOutlined />}
-                onClick={() => setUploadVisible?.(true)}
-              >
-                上传文档
-              </Button>
-            </Space>
-          </Col>
-        </Row>
-      </div> */}
-
-      {activeEhrFolderBatch ? (
-        <Card size="small" style={{ marginBottom: 16 }}>
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <Row justify="space-between" align="middle">
-              <Col>
-                <Space>
-                  <Text strong>电子病历夹更新</Text>
-                  <Tag color={isTerminalBatchStatus(activeEhrFolderBatch.status) ? (activeEhrFolderBatch.failed_items ? 'orange' : 'green') : 'blue'}>
-                    {activeEhrFolderBatch.status || 'queued'}
-                  </Tag>
-                </Space>
-              </Col>
-              <Col>
-                <Text type="secondary">
-                  {(activeEhrFolderBatch.succeeded_items || 0)}/{(activeEhrFolderBatch.total_items || 0)}
-                  {activeEhrFolderBatch.failed_items ? ` · 失败 ${activeEhrFolderBatch.failed_items}` : ''}
-                </Text>
-              </Col>
-            </Row>
-            <Progress
-              percent={Math.min(100, Math.max(0, Number(activeEhrFolderBatch.progress || 0)))}
-              status={activeEhrFolderBatch.failed_items ? 'exception' : (isTerminalBatchStatus(activeEhrFolderBatch.status) ? 'success' : 'active')}
-            />
-            <Text type="secondary">{activeEhrFolderBatch.message || '后台正在更新电子病历夹'}</Text>
-            {Array.isArray(activeEhrFolderBatch.items) && activeEhrFolderBatch.items.length > 0 ? (
-              <List
-                size="small"
-                dataSource={activeEhrFolderBatch.items.slice(0, 5)}
-                renderItem={(item) => (
-                  <List.Item>
-                    <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                      <Text ellipsis style={{ maxWidth: 420 }}>
-                        {item.target_form_key || item.document_id || item.extraction_job_id}
-                      </Text>
-                      <Space>
-                        <Text type="secondary">{item.stage_label || item.status}</Text>
-                        <Progress size="small" percent={Math.min(100, Math.max(0, Number(item.progress || 0)))} style={{ width: 120 }} />
-                      </Space>
-                    </Space>
-                    {item.error_message ? <Alert type="error" showIcon message={item.error_message} style={{ marginTop: 8 }} /> : null}
-                  </List.Item>
-                )}
-              />
-            ) : null}
-          </Space>
-        </Card>
-      ) : null}
+      <EhrFolderBatchProgress
+        batch={activeEhrFolderBatch}
+        isTerminalBatchStatus={isTerminalBatchStatus}
+      />
 
       {/* 搜索筛选和操作按钮区域 */}
       <div className="documents-header" style={{ marginBottom: 24 }}>
@@ -759,8 +198,8 @@ const DocumentsTab = ({
               >
                 专项抽取
               </Button>
-              <Button 
-                type="primary" 
+              <Button
+                type="primary"
                 icon={<UploadOutlined />}
                 onClick={() => setUploadVisible?.(true)}
               >
@@ -781,46 +220,14 @@ const DocumentsTab = ({
         />
       </div>
 
-      {/* 分组文档展示：不再限定高度，跟随页面整体滚动展示全部内容 */}
-      <div
+      <DocumentTimelineList
         ref={listScrollContainerRef}
-        className="documents-timeline"
-        style={{
-          overflowX: 'hidden',
-        }}
-      >
-        {loading && documents.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '60px 0' }}>
-            <Spin size="large" />
-            <div style={{ marginTop: 16 }}>
-              <Text type="secondary">正在加载文档...</Text>
-            </div>
-          </div>
-        ) : groupedDocuments.length === 0 ? (
-          <Empty
-            description={
-              stats.hasActiveFilters 
-                ? "没有找到符合条件的文档" 
-                : "暂无文档"
-            }
-            style={{ padding: '60px 0' }}
-          />
-        ) : (
-          <div className="timeline-groups">
-            {groupedDocuments.map((group) => (
-              <TimelineGroup
-                key={group.key}
-                groupTitle={group.title}
-                groupSubtitle={group.subtitle}
-                documents={group.documents}
-                groupType={group.type}
-                onDocumentClick={handleCardClick}
-                defaultExpanded={true}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+        documents={documents}
+        groupedDocuments={groupedDocuments}
+        loading={loading}
+        onDocumentClick={handleCardClick}
+        stats={stats}
+      />
 
       {/* 文档详情弹窗 */}
       <DocumentDetailModal
@@ -847,417 +254,37 @@ const DocumentsTab = ({
         }}
       />
 
-      {/* 患者匹配详情弹窗（更换患者 / 选择患者归档） */}
-      <Modal
-        title={
-          <Space>
-            <FileTextOutlined />
-            <Text>{matchModalMode === 'archive' ? '选择患者归档' : '患者匹配详情'} - {selectedMatchDocument?.name}</Text>
-          </Space>
-        }
-        open={patientMatchVisible}
-        onCancel={() => {
-          setPatientMatchVisible(false)
-          setPatientSearchValue('')
-          setPatientSearchResults([])
-          setShowSearchResults(false)
-          setSelectedMatchPatient(null)
-          setSelectedMatchDocument(null)
-          setMatchModalMode('change')
-        }}
-        footer={[
-          <Button 
-            key="cancel" 
-            onClick={() => {
-              setPatientMatchVisible(false)
-              setPatientSearchValue('')
-              setPatientSearchResults([])
-              setShowSearchResults(false)
-              setSelectedMatchPatient(null)
-              setSelectedMatchDocument(null)
-              setMatchModalMode('change')
-            }}
-            disabled={archivingLoading || matchInfoLoading}
-          >
-            取消
-          </Button>,
-          <Button 
-            key="confirm" 
-            type="primary" 
-            icon={<CheckOutlined />}
-            onClick={handleConfirmPatientMatch}
-            disabled={!selectedMatchPatient || archivingLoading || matchInfoLoading}
-            loading={archivingLoading}
-          >
-            {matchModalMode === 'archive' ? '确认选择' : '确认更换'}
-          </Button>
-        ]}
-        width={900}
-        zIndex={2000}
-        maskClosable={!archivingLoading && !matchInfoLoading}
-      >
-        <Spin spinning={matchInfoLoading} tip="正在加载患者匹配信息..." size="large" style={{ minHeight: '400px' }}>
-          {selectedMatchDocument ? (
-            <Row gutter={24}>
-              {/* 左侧：文档信息 */}
-              <Col span={10}>
-                <Card size="small" title="文档信息">
-                  <Descriptions size="small" column={1}>
-                    <Descriptions.Item label="文档名称">
-                      {selectedMatchDocument.name}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="上传时间">
-                      {selectedMatchDocument.createdAt ? new Date(selectedMatchDocument.createdAt).toLocaleString('zh-CN') : '--'}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="AI置信度">
-                      <Space>
-                        <Progress 
-                          percent={typeof selectedMatchDocument.confidence === 'number' ? selectedMatchDocument.confidence : (selectedMatchDocument.matchScore || 0)} 
-                          size="small" 
-                          strokeColor={getConfidenceStyle(selectedMatchDocument.confidence).color}
-                          format={percent => `${percent}%`}
-                        />
-                        <Tag color={getConfidenceStyle(selectedMatchDocument.confidence).color}>
-                          {getConfidenceStyle(selectedMatchDocument.confidence).label}
-                        </Tag>
-                      </Space>
-                    </Descriptions.Item>
-                  </Descriptions>
+      <PatientMatchModal
+        archivingLoading={archivingLoading}
+        document={patientMatchVisible ? selectedMatchDocument : null}
+        getConfidenceStyle={getConfidenceStyle}
+        matchInfoLoading={matchInfoLoading}
+        mode={matchModalMode}
+        onCancel={closePatientMatchModal}
+        onConfirmCandidate={handleConfirmMatch}
+        onConfirmSelectedPatient={handleConfirmPatientMatch}
+        onSearchPatient={handlePatientSearch}
+        onSelectSearchPatient={handleSelectSearchPatient}
+        patientInfo={patientInfo}
+        searchLoading={patientSearchLoading}
+        searchResults={patientSearchResults}
+        searchValue={patientSearchValue}
+        selectedPatient={selectedMatchPatient}
+        showSearchResults={showSearchResults}
+      />
 
-                  <Divider style={{ margin: '12px 0' }} />
-                  
-                  {selectedMatchDocument.extractedInfo && Object.keys(selectedMatchDocument.extractedInfo).length > 0 && (
-                    <div>
-                      <Text strong style={{ fontSize: 14 }}>AI提取信息:</Text>
-                      <div style={{ marginTop: 8, background: appThemeToken.colorFillTertiary, padding: 12, borderRadius: 4 }}>
-                        <Descriptions size="small" column={1}>
-                          {selectedMatchDocument.extractedInfo.name && (
-                            <Descriptions.Item label="患者姓名">
-                              {selectedMatchDocument.extractedInfo.name}
-                            </Descriptions.Item>
-                          )}
-                          {selectedMatchDocument.extractedInfo.gender && (
-                            <Descriptions.Item label="性别">
-                              {selectedMatchDocument.extractedInfo.gender}
-                            </Descriptions.Item>
-                          )}
-                          {selectedMatchDocument.extractedInfo.age && (
-                            <Descriptions.Item label="年龄">
-                              {selectedMatchDocument.extractedInfo.age}岁
-                            </Descriptions.Item>
-                          )}
-                          {selectedMatchDocument.extractedInfo.report_date && (
-                            <Descriptions.Item label="报告日期">
-                              {selectedMatchDocument.extractedInfo.report_date}
-                            </Descriptions.Item>
-                          )}
-                          {(selectedMatchDocument.documentSubType || selectedMatchDocument.documentType) && (
-                            <Descriptions.Item label="报告类型">
-                              {selectedMatchDocument.documentSubType || selectedMatchDocument.documentType || '--'}
-                            </Descriptions.Item>
-                          )}
-                        </Descriptions>
-                      </div>
-                    </div>
-                  )}
-                </Card>
-              </Col>
-
-              {/* 右侧：候选患者 */}
-              <Col span={14}>
-                <Card size="small" title="候选患者列表">
-                  {/* 显示当前归档患者信息（由前端传入的patientId和patientInfo） */}
-                  {selectedMatchDocument?.isFromAutoArchived && selectedMatchDocument?.archivedPatientId && (
-                    <Alert
-                      message={
-                        <span>
-                          ✅ 当前归档: <strong>
-                            {selectedMatchDocument.candidates.find(c => c.id === selectedMatchDocument.archivedPatientId)?.name || 
-                             patientInfo?.name || 
-                             '当前患者'}
-                          </strong>
-                          {(() => {
-                            const currentArchivedCandidate = selectedMatchDocument.candidates.find(c => c.id === selectedMatchDocument.archivedPatientId)
-                            const patientCode = currentArchivedCandidate?.patientCode || patientInfo?.patientCode
-                            return patientCode ? (
-                              <Text type="secondary" style={{ marginLeft: 8 }}>
-                                ({patientCode})
-                              </Text>
-                            ) : null
-                          })()}
-                        </span>
-                      }
-                      type="success"
-                      showIcon
-                      style={{ marginBottom: 12 }}
-                    />
-                  )}
-
-                  <List
-                    dataSource={selectedMatchDocument.candidates || []}
-                    renderItem={candidate => {
-                      // 判断是否是当前归档的患者（由前端传入的archivedPatientId）
-                      const isCurrentArchived = candidate.id === selectedMatchDocument?.archivedPatientId
-                      
-                      return (
-                        <List.Item
-                          style={{
-                            background: isCurrentArchived ? appThemeToken.colorPrimaryBg : 'transparent',
-                            border: isCurrentArchived ? `1px solid ${appThemeToken.colorPrimaryBorder}` : 'none',
-                            borderRadius: 4,
-                            margin: '4px 0',
-                            padding: '8px 12px',
-                            position: 'relative'
-                          }}
-                        >
-                          <List.Item.Meta
-                            avatar={
-                              <div style={{ position: 'relative' }}>
-                                <Avatar 
-                                  icon={<TeamOutlined />} 
-                                  style={{ 
-                                    backgroundColor: appThemeToken.colorPrimary
-                                  }}
-                                />
-                                {isCurrentArchived && (
-                                  <div
-                                    style={{
-                                      position: 'absolute',
-                                      top: '100%',
-                                      left: '50%',
-                                      transform: 'translateX(-50%)',
-                                      marginTop: 4,
-                                      whiteSpace: 'nowrap',
-                                      zIndex: 1,
-                                      backgroundColor: 'transparent',
-                                      color: appThemeToken.colorPrimary,
-                                      fontSize: '10px',
-                                      padding: '1px 4px',
-                                      borderRadius: '3px',
-                                      fontWeight: 500,
-                                      border: `1px solid ${appThemeToken.colorPrimary}`
-                                    }}
-                                  >
-                                    当前归档
-                                  </div>
-                                )}
-                              </div>
-                            }
-                            title={
-                              <Space wrap>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: '200px', flexShrink: 0 }}>
-                                  <Text strong style={{ whiteSpace: 'nowrap' }}>{candidate.name || '未知患者'}</Text>
-                                  {candidate.patientCode && (
-                                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>({candidate.patientCode})</Text>
-                                  )}
-                                </div>
-                                {candidate.gender && (
-                                  <Text type="secondary">{candidate.gender}</Text>
-                                )}
-                                <Tag 
-                                  color={candidate.similarity > 90 ? 'green' : candidate.similarity > 70 ? 'orange' : 'default'}
-                                  size="small"
-                                >
-                                  相似度 {candidate.similarity}%
-                                </Tag>
-                              </Space>
-                            }
-                            description={
-                              <div>
-                                {candidate.matchReasoning && (
-                                  <div style={{ marginBottom: 4 }}>
-                                    <Text style={{ fontSize: 12, color: appThemeToken.colorTextSecondary }}>
-                                      {candidate.matchReasoning}
-                                    </Text>
-                                  </div>
-                                )}
-                                {candidate.matchFeatures && candidate.matchFeatures.length > 0 && (
-                                  <div>
-                                    <Space wrap size={[4, 4]}>
-                                      {candidate.matchFeatures.slice(0, 5).map((feature, idx) => (
-                                        <Tag key={idx} size="small" color="geekblue">
-                                          {feature}
-                                        </Tag>
-                                      ))}
-                                      {candidate.matchFeatures.length > 5 && (
-                                        <Tag size="small">+{candidate.matchFeatures.length - 5}</Tag>
-                                      )}
-                                    </Space>
-                                  </div>
-                                )}
-                              </div>
-                            }
-                          />
-                          <Button 
-                            type={isCurrentArchived ? 'primary' : 'default'}
-                            size="small"
-                            onClick={() => handleConfirmMatch(selectedMatchDocument.id, candidate.id)}
-                            disabled={isCurrentArchived || archivingLoading || matchInfoLoading}
-                            loading={archivingLoading}
-                          >
-                            {matchModalMode === 'archive' ? '选择' : '更换'}
-                          </Button>
-                        </List.Item>
-                      )
-                    }}
-                  />
-                  
-                  <Divider />
-                  <div style={{ position: 'relative' }}>
-                    <Input.Search
-                      placeholder="搜索患者姓名或编号"
-                      value={patientSearchValue}
-                      onChange={(e) => handlePatientSearch(e.target.value)}
-                      onSearch={handlePatientSearch}
-                      loading={patientSearchLoading}
-                      allowClear
-                    />
-                    
-                    {/* 搜索结果下拉列表 */}
-                    {showSearchResults && (
-                      <div style={{
-                        position: 'absolute',
-                        top: '100%',
-                        left: 0,
-                        right: 0,
-                        zIndex: 1000,
-                        background: appThemeToken.colorBgContainer,
-                        border: `1px solid ${appThemeToken.colorBorder}`,
-                        borderRadius: '4px',
-                        marginTop: 4,
-                        maxHeight: '300px',
-                        overflowY: 'auto',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
-                      }}>
-                        {patientSearchLoading ? (
-                          <div style={{ padding: '16px', textAlign: 'center' }}>
-                            <LoadingOutlined /> 搜索中...
-                          </div>
-                        ) : patientSearchResults.length > 0 ? (
-                          <List
-                            size="small"
-                            dataSource={patientSearchResults}
-                            renderItem={patient => (
-                              <List.Item
-                                style={{
-                                  cursor: 'pointer',
-                                  padding: '8px 12px'
-                                }}
-                                onClick={() => handleSelectSearchPatient(patient)}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.background = appThemeToken.colorFillTertiary
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.background = appThemeToken.colorBgContainer
-                                }}
-                              >
-                                <List.Item.Meta
-                                  avatar={<Avatar icon={<TeamOutlined />} />}
-                                  title={
-                                    <Space>
-                                      <Text strong>{patient.name}</Text>
-                                      {patient.patient_code && (
-                                        <Text type="secondary" style={{ fontSize: 12 }}>({patient.patient_code})</Text>
-                                      )}
-                                    </Space>
-                                  }
-                                  description={
-                                    <Text type="secondary" style={{ fontSize: 12 }}>
-                                      {patient.gender && `${patient.gender} `}
-                                      {patient.age && `${patient.age}岁`}
-                                    </Text>
-                                  }
-                                />
-                              </List.Item>
-                            )}
-                          />
-                        ) : patientSearchValue.trim() ? (
-                          <div style={{ padding: '16px', textAlign: 'center', color: appThemeToken.colorTextTertiary }}>
-                            未找到匹配的患者
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-                  </div>
-                </Card>
-              </Col>
-            </Row>
-          ) : null}
-        </Spin>
-      </Modal>
-
-      <Modal
-        title="病历专项抽取"
-        open={targetedModalVisible}
+      <TargetedEhrFolderModal
+        groups={targetedModalGroups}
+        mode={targetedModalMode}
         onCancel={() => setTargetedModalVisible(false)}
-        footer={[
-          <Button key="cancel" onClick={() => setTargetedModalVisible(false)}>
-            取消
-          </Button>,
-          <Button
-            key="start"
-            type="primary"
-            disabled={targetedModalGroups.length === 0 || updatingEhrFolder}
-            onClick={handleSubmitTargetedEhrFolder}
-          >
-            开始抽取
-          </Button>,
-        ]}
-        width={600}
-      >
-        <Alert
-          message="专项抽取任务"
-          description={`患者: ${patientInfo?.name || patientId || '-'} | 已选字段组: ${targetedModalGroups.length} 个`}
-          type="info"
-          style={{ marginBottom: 16 }}
-        />
-        <Form layout="vertical">
-          <Form.Item label="选择字段组">
-            <div style={{ marginBottom: 8 }}>
-              <Space>
-                <Button
-                  size="small"
-                  type="link"
-                  style={{ padding: 0 }}
-                  onClick={() => setTargetedModalGroups(targetFormGroups.map((g) => g.key))}
-                >
-                  全选
-                </Button>
-                <Button
-                  size="small"
-                  type="link"
-                  style={{ padding: 0 }}
-                  onClick={() => setTargetedModalGroups([])}
-                >
-                  清空
-                </Button>
-              </Space>
-            </div>
-            <Checkbox.Group
-              style={{ width: '100%' }}
-              value={targetedModalGroups}
-              onChange={setTargetedModalGroups}
-            >
-              <Row>
-                {targetFormGroups.map((group) => (
-                  <Col span={24} key={group.key} style={{ marginBottom: 8 }}>
-                    <Checkbox value={group.key}>
-                      <Text>{group.name}</Text>
-                      <Text type="secondary" style={{ marginLeft: 8 }}>({group.key})</Text>
-                    </Checkbox>
-                  </Col>
-                ))}
-              </Row>
-            </Checkbox.Group>
-          </Form.Item>
-          <Form.Item label="抽取模式">
-            <Radio.Group value={targetedModalMode} onChange={(e) => setTargetedModalMode(e.target.value)}>
-              <Radio value="incremental">增量抽取 — 仅补抽选中表单内尚未抽取的文档</Radio>
-              <Radio value="full">全量抽取 — 对选中表单强制重新抽取</Radio>
-            </Radio.Group>
-          </Form.Item>
-        </Form>
-      </Modal>
+        onGroupsChange={setTargetedModalGroups}
+        onModeChange={setTargetedModalMode}
+        onSubmit={handleSubmitTargetedEhrFolder}
+        open={targetedModalVisible}
+        patientLabel={patientInfo?.name || patientId}
+        targetFormGroups={targetFormGroups}
+        updating={updatingEhrFolder}
+      />
     </div>
   )
 }

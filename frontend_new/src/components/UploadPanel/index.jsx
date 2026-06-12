@@ -3,178 +3,27 @@
  * 显示上传任务列表、进度、状态，支持暂停/继续/重试/取消操作
  */
 import React, { useState, useMemo } from 'react'
-import { 
-  Drawer, 
-  List, 
-  Progress, 
-  Button, 
-  Space, 
-  Typography, 
-  Tag, 
-  Tooltip, 
+import {
+  Drawer,
+  List,
+  Button,
+  Space,
+  Tag,
   Badge,
   Tabs,
   Empty,
-  Popconfirm,
-  Statistic,
-  Row,
-  Col,
-  message
 } from 'antd'
 import {
   CloudUploadOutlined,
   PauseCircleOutlined,
-  PlayCircleOutlined,
   ReloadOutlined,
-  CloseOutlined,
-  DeleteOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
   LoadingOutlined,
-  ClockCircleOutlined,
-  FileImageOutlined,
-  FilePdfOutlined,
-  FileOutlined,
   ClearOutlined,
-  WarningOutlined,
 } from '@ant-design/icons'
 import { UploadStatus } from '../../hooks/useUploadManager'
-import { appThemeToken } from '../../styles/themeTokens'
-
-const { Text } = Typography
-
-// 格式化文件大小
-const formatFileSize = (bytes) => {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-// 获取文件图标
-const getFileIcon = (fileType) => {
-  if (fileType?.startsWith('image/')) {
-    return <FileImageOutlined style={{ color: appThemeToken.colorSuccess }} />
-  }
-  if (fileType === 'application/pdf') {
-    return <FilePdfOutlined style={{ color: appThemeToken.colorError }} />
-  }
-  return <FileOutlined style={{ color: appThemeToken.colorPrimary }} />
-}
-
-// 获取状态标签
-const getStatusTag = (status) => {
-  const config = {
-    [UploadStatus.PENDING]: { color: 'default', icon: <ClockCircleOutlined />, text: '待上传' },
-    [UploadStatus.UPLOADING]: { color: 'processing', icon: <LoadingOutlined />, text: '上传中' },
-    [UploadStatus.SUCCESS]: { color: 'success', icon: <CheckCircleOutlined />, text: '已完成' },
-    [UploadStatus.FAILED]: { color: 'error', icon: <CloseCircleOutlined />, text: '失败' },
-    [UploadStatus.CANCELLED]: { color: 'warning', icon: <CloseOutlined />, text: '已取消' },
-  }
-  const { color, icon, text } = config[status] || config[UploadStatus.PENDING]
-  return <Tag color={color} icon={icon}>{text}</Tag>
-}
-
-// 单个上传任务项
-const UploadTaskItem = ({ task, onRetry, onCancel, onRemove }) => {
-  const isActive = task.status === UploadStatus.UPLOADING
-  const canRetry = task.status === UploadStatus.FAILED || task.status === UploadStatus.CANCELLED
-  const canCancel = task.status === UploadStatus.UPLOADING || task.status === UploadStatus.PENDING
-
-  return (
-    <List.Item
-      style={{ 
-        padding: '12px 16px',
-        backgroundColor: task.status === UploadStatus.FAILED ? 'rgba(255, 77, 79, 0.08)' : 'transparent',
-        borderRadius: '8px',
-        marginBottom: '8px',
-        border: `1px solid ${appThemeToken.colorBorder}`
-      }}
-      actions={[
-        canRetry && (
-          <Tooltip title="重试">
-            <Button 
-              type="text" 
-              size="small" 
-              icon={<ReloadOutlined />} 
-              onClick={() => onRetry(task.id)}
-            />
-          </Tooltip>
-        ),
-        canCancel && (
-          <Tooltip title="取消">
-            <Button 
-              type="text" 
-              size="small" 
-              danger
-              icon={<CloseOutlined />} 
-              onClick={() => onCancel(task.id)}
-            />
-          </Tooltip>
-        ),
-        !isActive && (
-          <Tooltip title="移除">
-            <Button 
-              type="text" 
-              size="small" 
-              icon={<DeleteOutlined />} 
-              onClick={() => onRemove(task.id)}
-            />
-          </Tooltip>
-        ),
-      ].filter(Boolean)}
-    >
-      <List.Item.Meta
-        avatar={getFileIcon(task.fileType)}
-        title={
-          <Space size="small">
-            <Text 
-              style={{ maxWidth: 200 }} 
-              ellipsis={{ tooltip: task.fileName }}
-            >
-              {task.fileName}
-            </Text>
-            {getStatusTag(task.status)}
-          </Space>
-        }
-        description={
-          <div>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {formatFileSize(task.fileSize)}
-              {task.retryCount > 0 && ` · 已重试 ${task.retryCount} 次`}
-            </Text>
-            {isActive && (
-              <Progress 
-                percent={task.progress} 
-                size="small" 
-                style={{ marginTop: 4, marginBottom: 0 }}
-                strokeColor={{
-                  '0%': appThemeToken.colorPrimary,
-                  '100%': appThemeToken.colorSuccess,
-                }}
-              />
-            )}
-            {task.error && (
-              <div style={{ marginTop: 4 }}>
-                <Text type="danger" style={{ fontSize: 12 }}>
-                  <WarningOutlined /> {task.error}
-                </Text>
-              </div>
-            )}
-            {task.needsFile && (
-              <div style={{ marginTop: 4 }}>
-                <Text type="warning" style={{ fontSize: 12 }}>
-                  <WarningOutlined /> 需要重新选择文件
-                </Text>
-              </div>
-            )}
-          </div>
-        }
-      />
-    </List.Item>
-  )
-}
+import UploadTaskItem from './UploadTaskItem'
+import UploadStats from './UploadStats'
+import UploadControls from './UploadControls'
 
 // 上传面板主组件
 const UploadPanel = ({
@@ -273,7 +122,7 @@ const UploadPanel = ({
       extra={
         <Space>
           {stats.failed > 0 && (
-            <Button 
+            <Button
               size="small"
               icon={<ReloadOutlined />}
               onClick={onRetryAllFailed}
@@ -282,7 +131,7 @@ const UploadPanel = ({
             </Button>
           )}
           {stats.success > 0 && (
-            <Button 
+            <Button
               size="small"
               icon={<ClearOutlined />}
               onClick={onClearCompleted}
@@ -293,111 +142,29 @@ const UploadPanel = ({
         </Space>
       }
     >
-      {/* 统计信息 */}
-      <div style={{ 
-        padding: '16px', 
-        backgroundColor: appThemeToken.colorFillTertiary, 
-        borderRadius: '8px',
-        marginBottom: '16px'
-      }}>
-        <Row gutter={16}>
-          <Col span={6}>
-            <Statistic 
-              title="总计" 
-              value={stats.total} 
-              valueStyle={{ fontSize: 20 }}
-            />
-          </Col>
-          <Col span={6}>
-            <Statistic 
-              title="成功" 
-              value={stats.success} 
-              valueStyle={{ fontSize: 20, color: appThemeToken.colorSuccess }}
-            />
-          </Col>
-          <Col span={6}>
-            <Statistic 
-              title="失败" 
-              value={stats.failed} 
-              valueStyle={{ fontSize: 20, color: appThemeToken.colorError }}
-            />
-          </Col>
-          <Col span={6}>
-            <Statistic 
-              title="进度" 
-              value={totalProgress} 
-              suffix="%" 
-              valueStyle={{ fontSize: 20 }}
-            />
-          </Col>
-        </Row>
-        
-        {/* 总进度条 */}
-        <Progress 
-          percent={totalProgress} 
-          status={stats.failed > 0 ? 'exception' : (totalProgress === 100 ? 'success' : 'active')}
-          style={{ marginTop: 12, marginBottom: 0 }}
-        />
-      </div>
+      <UploadStats stats={stats} totalProgress={totalProgress} />
 
-      {/* 控制按钮 */}
-      <div style={{ marginBottom: 16 }}>
-        <Space>
-          {!isUploading && stats.pending > 0 && (
-            <Button 
-              type="primary"
-              icon={<PlayCircleOutlined />}
-              onClick={onStartUpload}
-            >
-              开始上传 ({stats.pending})
-            </Button>
-          )}
-          {isUploading && !isPaused && (
-            <Button 
-              icon={<PauseCircleOutlined />}
-              onClick={onPauseUpload}
-            >
-              暂停
-            </Button>
-          )}
-          {isPaused && (
-            <Button 
-              type="primary"
-              icon={<PlayCircleOutlined />}
-              onClick={onResumeUpload}
-            >
-              继续
-            </Button>
-          )}
-          <Popconfirm
-            title="确定清空所有任务吗？"
-            description="这将取消所有正在进行的上传并清空任务列表"
-            onConfirm={onClearAll}
-            okText="确定"
-            cancelText="取消"
-          >
-            <Button 
-              danger
-              icon={<DeleteOutlined />}
-              disabled={stats.total === 0}
-            >
-              清空全部
-            </Button>
-          </Popconfirm>
-        </Space>
-      </div>
+      <UploadControls
+        isPaused={isPaused}
+        isUploading={isUploading}
+        onClearAll={onClearAll}
+        onPauseUpload={onPauseUpload}
+        onResumeUpload={onResumeUpload}
+        onStartUpload={onStartUpload}
+        stats={stats}
+      />
 
       {/* 任务列表 */}
-      <Tabs 
-        activeKey={activeTab} 
+      <Tabs
+        activeKey={activeTab}
         onChange={setActiveTab}
         items={tabItems}
         size="small"
       />
 
       {filteredTasks.length === 0 ? (
-        <Empty 
-          description="暂无上传任务" 
+        <Empty
+          description="暂无上传任务"
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           style={{ marginTop: 40 }}
         />
@@ -413,9 +180,9 @@ const UploadPanel = ({
               onRemove={onRemoveTask}
             />
           )}
-          style={{ 
-            maxHeight: 'calc(100vh - 400px)', 
-            overflow: 'auto' 
+          style={{
+            maxHeight: 'calc(100vh - 400px)',
+            overflow: 'auto'
           }}
         />
       )}

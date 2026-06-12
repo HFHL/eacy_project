@@ -1,0 +1,10 @@
+@media (max-width: 1100px) {
+  .layout,
+  .result-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .side-panel {
+    height: auto;
+  }
+}

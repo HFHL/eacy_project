@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { ChevronRight, Folder, File, FolderOpen } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { TreeNode } from './treeView/TreeNode';
 import './tree-view.css';
 
 /**
@@ -184,123 +184,6 @@ export function TreeView({
     setDragOverNodeId(null);
   };
 
-  const renderNode = (node, level = 0, isLast = false, parentPath = []) => {
-    const hasChildren = (node.children?.length ?? 0) > 0;
-    const isExpanded = expandedIdSet.has(node.id);
-    const isSelected = currentSelectedIds.includes(node.id);
-    const currentPath = [...parentPath, isLast];
-
-    const getDefaultIcon = () =>
-      hasChildren ? (
-        isExpanded ? (
-          <FolderOpen size={16} />
-        ) : (
-          <Folder size={16} />
-        )
-      ) : (
-        <File size={16} />
-      );
-
-    return (
-      <div key={node.id} className="eacy-tree-view__node">
-        <motion.div
-          className={cn(
-            'eacy-tree-view__row',
-            isSelected && 'eacy-tree-view__row--selected',
-            dragOverNodeId === node.id && 'eacy-tree-view__row--drag-over',
-          )}
-          style={{ paddingLeft: level * indent + 8 }}
-          draggable={draggable}
-          onDragStart={(e) => handleDragStart(node, e)}
-          onDragOver={(e) => handleDragOver(node, e)}
-          onDrop={(e) => handleDropOnNode(node, e)}
-          onDragEnd={handleDragEnd}
-          onDragLeave={() => {
-            if (dragOverNodeId === node.id) setDragOverNodeId(null);
-          }}
-          onClick={(e) => {
-            if (hasChildren) toggleExpanded(node.id);
-            handleSelection(node.id, e.ctrlKey || e.metaKey);
-            onNodeClick?.(node);
-          }}
-          whileTap={{ scale: 0.99, transition: { duration: 0.1 } }}
-        >
-          {showLines && level > 0 && (
-            <div className="eacy-tree-view__lines" style={{ pointerEvents: 'none' }}>
-              {currentPath.map((isLastInPath, pathIndex) => (
-                <div
-                  key={pathIndex}
-                  className="eacy-tree-view__line-v"
-                  style={{
-                    left: pathIndex * indent + 12,
-                    display:
-                      pathIndex === currentPath.length - 1 && isLastInPath
-                        ? 'none'
-                        : 'block',
-                  }}
-                />
-              ))}
-              <div
-                className="eacy-tree-view__line-h"
-                style={{
-                  left: (level - 1) * indent + 12,
-                  width: indent - 4,
-                }}
-              />
-              {isLast && (
-                <div
-                  className="eacy-tree-view__line-cap"
-                  style={{ left: (level - 1) * indent + 12 }}
-                />
-              )}
-            </div>
-          )}
-
-          <motion.div
-            className="eacy-tree-view__chevron"
-            animate={{ rotate: hasChildren && isExpanded ? 90 : 0 }}
-            transition={{ duration: 0.2, ease: 'easeInOut' }}
-          >
-            {hasChildren ? <ChevronRight size={12} /> : null}
-          </motion.div>
-
-          {showIcons && (
-            <div className="eacy-tree-view__icon">
-              {node.icon || getDefaultIcon()}
-            </div>
-          )}
-
-          <div className="eacy-tree-view__label">{node.label}</div>
-        </motion.div>
-
-        <AnimatePresence initial={false}>
-          {hasChildren && isExpanded && (
-            <motion.div
-              key={`${node.id}-children`}
-              initial={animateExpand ? { height: 0, opacity: 0 } : false}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={animateExpand ? { height: 0, opacity: 0 } : undefined}
-              transition={{
-                duration: animateExpand ? 0.25 : 0,
-                ease: 'easeInOut',
-              }}
-              className="eacy-tree-view__children"
-            >
-              {node.children.map((child, index) =>
-                renderNode(
-                  child,
-                  level + 1,
-                  index === node.children.length - 1,
-                  currentPath,
-                ),
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-    );
-  };
-
   return (
     <motion.div
       className={cn(
@@ -313,9 +196,29 @@ export function TreeView({
       transition={{ duration: 0.2, ease: 'easeOut' }}
     >
       <div className="eacy-tree-view__body">
-        {data.map((node, index) =>
-          renderNode(node, 0, index === data.length - 1),
-        )}
+        {data.map((node, index) => (
+          <TreeNode
+            key={node.id}
+            animateExpand={animateExpand}
+            currentSelectedIds={currentSelectedIds}
+            dragOverNodeId={dragOverNodeId}
+            draggable={draggable}
+            expandedIdSet={expandedIdSet}
+            handleDragEnd={handleDragEnd}
+            handleDragOver={handleDragOver}
+            handleDragStart={handleDragStart}
+            handleDropOnNode={handleDropOnNode}
+            handleSelection={handleSelection}
+            indent={indent}
+            isLast={index === data.length - 1}
+            node={node}
+            onNodeClick={onNodeClick}
+            setDragOverNodeId={setDragOverNodeId}
+            showIcons={showIcons}
+            showLines={showLines}
+            toggleExpanded={toggleExpanded}
+          />
+        ))}
       </div>
     </motion.div>
   );

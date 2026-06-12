@@ -1,16 +1,11 @@
-/**
- * 患者数据管理Hook
- * 封装患者基础信息、AI综述等相关状态和操作
- * 只使用 API 数据
- */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { message } from 'antd'
 import dayjs from 'dayjs'
-import { getPatientDetail, updatePatient, getPatientDocuments, generateAiSummary, getAiSummary, saveAiSummary } from '@/api/patient'
+import { getPatientDetail, updatePatient, getPatientDocuments } from '@/api/patient'
+import { usePatientAiSummary } from './usePatientAiSummary'
 import { maskPhone, maskIdCard, maskAddress } from '@/utils/sensitiveUtils'
 import { syncPatientStatsAfterDocumentChange as runPatientStatSync } from '../utils/patientStatSync'
 
-// 默认空患者信息
 const emptyPatientInfo = {
   id: '',
   name: '',
@@ -30,46 +25,31 @@ const emptyPatientInfo = {
   notes: ''
 }
 
-// 默认空 AI 综述
-const emptyAiSummary = {
-  content: '',
-  lastUpdate: '',
-  confidence: 0,
-  sourceDocuments: [],
-}
-
 export const usePatientData = (patientId = null) => {
-  // 加载状态
   const [loading, setLoading] = useState(false)
-  
-  // 患者基础信息状态
   const [patientInfo, setPatientInfo] = useState(emptyPatientInfo)
-  
-  // AI病情综述状态
-  const [aiSummary, setAiSummary] = useState(emptyAiSummary)
-  const [summaryEditMode, setSummaryEditMode] = useState(false)
-  const [summaryContent, setSummaryContent] = useState('')
-  const [summaryGenerating, setSummaryGenerating] = useState(false)
-  
-  // 患者电子病历数据
-  const [ehrData, setEhrData] = useState(null)
-  const [ehrLoading, setEhrLoading] = useState(false)
-  
-  // 患者关联文档列表
   const [patientDocuments, setPatientDocuments] = useState([])
   const [documentsLoading, setDocumentsLoading] = useState(false)
 
-  // 进行中的请求控制器，便于在 patientId 切换/卸载时取消上一次请求
   const detailAbortRef = useRef(null)
   const documentsAbortRef = useRef(null)
-  const aiSummaryAbortRef = useRef(null)
   const currentPatientIdRef = useRef(patientId)
+
+  const {
+    aiSummary,
+    fetchAiSummary,
+    handleEditSummary,
+    handleRegenerateSummary,
+    handleSaveSummary,
+    setSummaryEditMode,
+    summaryEditMode,
+    summaryGenerating,
+  } = usePatientAiSummary(patientId)
 
   const isAbortError = (error) => (
     error?.name === 'AbortError' || error?.code === 20 || error?.code === 'ERR_CANCELED'
   )
 
-  // 从 API 获取患者详情
   const fetchPatientDetail = useCallback(async () => {
     if (!patientId) return
 
@@ -85,7 +65,6 @@ export const usePatientData = (patientId = null) => {
       if (res.success && res.data) {
         const data = res.data
         const mergedData = data.merged_data || {}
-        // 转换 API 数据为前端格式
         setPatientInfo({
           id: data.id,
           patientCode: data.patient_code,
@@ -109,7 +88,6 @@ export const usePatientData = (patientId = null) => {
           })),
           status: data.status,
           notes: mergedData.notes || '',
-          // 保留原始数据供后续使用
           mergedData,
           sourceDocumentIds: data.source_document_ids || [],
           documentCount: data.document_count || 0,
@@ -130,17 +108,11 @@ export const usePatientData = (patientId = null) => {
     }
   }, [patientId])
 
-  /**
-   * 通知主布局刷新左侧患者目录卡片。
-   *
-   * @returns {void}
-   */
   const emitPatientRailRefresh = useCallback(() => {
     if (typeof window === 'undefined') return
     window.dispatchEvent(new CustomEvent('patient-rail-refresh'))
   }, [])
 
-  // 从 API 获取患者关联文档列表
   const fetchPatientDocuments = useCallback(async () => {
     if (!patientId) return
 
@@ -171,11 +143,6 @@ export const usePatientData = (patientId = null) => {
     }
   }, [patientId])
 
-  /**
-   * 文档新增/删除后同步刷新患者统计相关数据。
-   *
-   * @returns {Promise<void>}
-   */
   const syncPatientStatsAfterDocumentChange = useCallback(async () => {
     await runPatientStatSync({
       fetchPatientDetail,
@@ -184,7 +151,6 @@ export const usePatientData = (patientId = null) => {
     })
   }, [fetchPatientDetail, fetchPatientDocuments, emitPatientRailRefresh])
 
-  // 编辑患者信息（脱敏后填入表单，防止明文直接展示）
   const handleEditPatient = (form) => {
     const formData = {
       ...patientInfo,
@@ -197,17 +163,13 @@ export const usePatientData = (patientId = null) => {
     form.setFieldsValue(formData)
   }
 
-  // 保存患者信息
-  // opts.sensitiveModified: { phone, idCard, address } 为 true 表示用户点击过该脱敏框（视为修改），此时才提交该字段：有值传值，空白传 null 表示置空
   const handleSavePatient = async (form, opts = {}) => {
     try {
       const values = await form.validateFields()
       const { sensitiveModified = {} } = opts
 
-      // 空字符串/空数组视为用户主动清空，统一为 null 以支持置空
       const emptyToNull = (v) => (v == null || v === '') ? null : v
       const emptyArrayToNull = (v) => (v == null || !Array.isArray(v) || v.length === 0) ? null : v
-      // 处理日期、年龄：用户清空时传 null，不回退到旧值
       const processedValues = {
         ...values,
         birthDate: values.birthDate ? values.birthDate.format('YYYY-MM-DD') : null,
@@ -215,9 +177,6 @@ export const usePatientData = (patientId = null) => {
         age: values.age !== '' && values.age != null && !Number.isNaN(Number(values.age)) ? parseInt(values.age, 10) : null
       }
 
-      // 调用后端接口保存（部分更新：未传入的字段保持原值）
-      // 除姓名外，其余字段均支持清空：空值统一传 null
-      // 脱敏字段仅当「已标记为修改」时传入：非空则传 trimmed 值，空白则传 null
       if (patientId) {
         try {
           const payload = {
@@ -249,8 +208,7 @@ export const usePatientData = (patientId = null) => {
             message.error(res.message || '保存失败')
             return false
           }
-          
-          // 保存成功后重新获取最新数据，确保数据一致性
+
           await fetchPatientDetail()
           emitPatientRailRefresh()
           message.success('患者信息已更新')
@@ -261,13 +219,12 @@ export const usePatientData = (patientId = null) => {
           return false
         }
       }
-      
-      // 无 patientId 时仅更新本地状态
+
       setPatientInfo({ ...patientInfo, ...processedValues })
       message.success('患者信息已更新')
-      
+
       console.log('保存的患者信息:', { ...patientInfo, ...processedValues })
-      
+
       return true
     } catch (error) {
       console.error('表单验证失败:', error)
@@ -276,59 +233,13 @@ export const usePatientData = (patientId = null) => {
     }
   }
 
-  // 获取已有的 AI 综述
-  const fetchAiSummary = useCallback(async () => {
-    if (!patientId) return
-    const requestPatientId = patientId
-
-    aiSummaryAbortRef.current?.abort()
-    const controller = new AbortController()
-    aiSummaryAbortRef.current = controller
-
-    try {
-      const res = await getAiSummary(requestPatientId, { signal: controller.signal })
-      if (controller.signal.aborted || String(currentPatientIdRef.current || '') !== String(requestPatientId)) return
-      if (res.success && res.data && res.data.content) {
-        setAiSummary({
-          content: res.data.content || '',
-          lastUpdate: res.data.generated_at
-            ? new Date(res.data.generated_at).toLocaleString()
-            : '',
-          confidence: 0,
-          sourceDocuments: (res.data.source_documents || []).map((d, idx) => ({
-            id: d.id,
-            name: d.name,
-            ref: d.ref || `[${idx + 1}]`,
-            type: d.type || '',
-          })),
-        })
-      }
-    } catch (error) {
-      if (isAbortError(error)) return
-      console.log('获取 AI 综述失败（可能尚未生成）:', error)
-    } finally {
-      if (aiSummaryAbortRef.current === controller) {
-        aiSummaryAbortRef.current = null
-      }
-    }
-  }, [patientId])
-
-  // 首屏仅拉患者详情；文档列表与 AI 综述由 PatientDetail 按 Tab 按需触发
   useEffect(() => {
     currentPatientIdRef.current = patientId
     detailAbortRef.current?.abort()
     documentsAbortRef.current?.abort()
-    aiSummaryAbortRef.current?.abort()
-
     setPatientInfo({ ...emptyPatientInfo })
-    setAiSummary({ ...emptyAiSummary })
-    setSummaryContent('')
-    setSummaryEditMode(false)
-    setSummaryGenerating(false)
-    setEhrData(null)
     setPatientDocuments([])
     setLoading(false)
-    setEhrLoading(false)
     setDocumentsLoading(false)
 
     if (patientId) {
@@ -337,123 +248,27 @@ export const usePatientData = (patientId = null) => {
     return () => {
       detailAbortRef.current?.abort()
       documentsAbortRef.current?.abort()
-      aiSummaryAbortRef.current?.abort()
     }
   }, [patientId, fetchPatientDetail])
 
-  // 编辑病情综述
-  const handleEditSummary = (summaryForm) => {
-    setSummaryContent(aiSummary.content)
-    summaryForm.setFieldsValue({ content: aiSummary.content })
-    setSummaryEditMode(true)
-  }
-
-  // 保存病情综述
-  const handleSaveSummary = async (summaryForm) => {
-    try {
-      const values = await summaryForm.validateFields()
-      if (!patientId) {
-        message.warning('请先保存患者信息')
-        return false
-      }
-      const res = await saveAiSummary(patientId, values.content)
-      if (!res.success) {
-        message.error(res.message || '病情综述保存失败')
-        return false
-      }
-      setAiSummary({
-        ...aiSummary,
-        content: res.data?.content || values.content,
-        lastUpdate: res.data?.generated_at
-          ? new Date(res.data.generated_at).toLocaleString()
-          : new Date().toLocaleString(),
-        sourceDocuments: (res.data?.source_documents || aiSummary.sourceDocuments || []).map((d, idx) => ({
-          id: d.id,
-          name: d.name,
-          ref: d.ref || `[${idx + 1}]`,
-          type: d.type || '',
-        })),
-      })
-      setSummaryEditMode(false)
-      message.success('病情综述已保存')
-      return true
-    } catch (error) {
-      message.error('请检查输入内容')
-      return false
-    }
-  }
-
-  // 生成/重新生成 AI 综述
-  const handleRegenerateSummary = useCallback(async () => {
-    if (!patientId) {
-      message.warning('请先保存患者信息')
-      return
-    }
-    setSummaryGenerating(true)
-    try {
-      const res = await generateAiSummary(patientId)
-      if (res.success && res.data) {
-        setAiSummary({
-          content: res.data.content || '',
-          lastUpdate: res.data.generated_at
-            ? new Date(res.data.generated_at).toLocaleString()
-            : new Date().toLocaleString(),
-          confidence: 95,
-          sourceDocuments: (res.data.source_documents || []).map((d, idx) => ({
-            id: d.id,
-            name: d.name,
-            ref: d.ref || `[${idx + 1}]`,
-            type: d.type || '',
-          })),
-        })
-        message.success('AI 病情综述已生成')
-      } else {
-        message.error(res.message || 'AI 综述生成失败')
-      }
-    } catch (error) {
-      console.error('AI 综述生成失败:', error)
-      message.error('AI 综述生成失败，请稍后重试')
-    } finally {
-      setSummaryGenerating(false)
-    }
-  }, [patientId])
-
   return {
-    // 状态
     patientInfo,
-    setPatientInfo,
     aiSummary,
-    setAiSummary,
     summaryEditMode,
     setSummaryEditMode,
-    summaryContent,
-    setSummaryContent,
     summaryGenerating,
-    setSummaryGenerating,
-    
-    // 病历数据
-    ehrData,
-    setEhrData,
-    ehrLoading,
-    
-    // 文档数据
     patientDocuments,
-    setPatientDocuments,
     documentsLoading,
-    
-    // API 操作
     loading,
     fetchPatientDetail,
     fetchPatientDocuments,
     syncPatientStatsAfterDocumentChange,
     fetchAiSummary,
-    
-    // 操作函数
     handleEditPatient,
     handleSavePatient,
     handleEditSummary,
     handleSaveSummary,
-    handleRegenerateSummary
+    handleRegenerateSummary,
   }
 }
 

@@ -23,6 +23,7 @@ const TERMINAL = new Set([
   'completed_with_errors',
   'succeeded',
   'failed',
+  'timeout',
   'cancelled',
 ])
 
@@ -124,7 +125,7 @@ function settleExtractionTask(task, data) {
     } else {
       dispatchPatientRefresh(task.patient_id, task.type === 'patient_extract' ? 'all' : 'ehr')
     }
-  } else if (status === 'failed' || status === 'cancelled') {
+  } else if (status === 'failed' || status === 'timeout' || status === 'cancelled') {
     const desc = data.message || data.error_message || '后台抽取任务失败'
     message.error(desc)
     pushTaskNotification({ type: 'error', taskType: task.type, title: taskLabel, description: desc })
@@ -188,7 +189,7 @@ async function pollEhrFolderBatchesFromStorage() {
 
       const batch = res.data
       const st = String(batch.status || '').toLowerCase()
-      const terminal = ['succeeded', 'completed', 'completed_with_errors', 'failed', 'cancelled'].includes(st)
+      const terminal = ['succeeded', 'completed', 'completed_with_errors', 'failed', 'timeout', 'cancelled'].includes(st)
       if (!terminal) continue
 
       if (claimBatchNotifyOnce(batchId)) {
@@ -202,9 +203,9 @@ async function pollEhrFolderBatchesFromStorage() {
           notifyType = 'warning'
           desc = `电子病历夹更新完成，失败 ${batch.failed_items || 0} 个任务`
           message.warning(desc)
-        } else if (st === 'failed') {
+        } else if (st === 'failed' || st === 'timeout') {
           notifyType = 'error'
-          desc = '电子病历夹更新失败'
+          desc = st === 'timeout' ? '电子病历夹更新超时' : '电子病历夹更新失败'
           message.error(desc)
         } else {
           notifyType = 'warning'

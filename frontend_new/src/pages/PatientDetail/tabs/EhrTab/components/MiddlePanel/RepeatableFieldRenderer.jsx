@@ -2,24 +2,28 @@
  * 可重复字段组渲染器组件
  * 负责渲染repeatable=true的字段组，支持多个记录实例
  */
-import React, { useRef, useCallback } from 'react'
+import React, { useRef } from 'react'
 import {
   Card,
   Typography,
   Button,
   Space,
-  Tag,
   Tooltip
 } from 'antd'
 import {
   PlayCircleOutlined,
-  FileTextOutlined,
-  EditOutlined,
   DeleteOutlined,
   AimOutlined
 } from '@ant-design/icons'
 import TableFieldRenderer from './TableFieldRenderer'
 import FieldEditRenderer from './FieldEditRenderer'
+import { RepeatableEmptyState } from './RepeatableEmptyState'
+import {
+  buildRecordSourceField,
+  buildRepeatableSourceField,
+  getRecordApiFieldId,
+  isNormalRepeatableField,
+} from './repeatableFieldUtils'
 import { appThemeToken } from '@/styles/themeTokens'
 
 const { Text } = Typography
@@ -27,12 +31,12 @@ const { Text } = Typography
 const RepeatableFieldRenderer = ({
   // 字段组数据
   groupData,
-  
+
   // 编辑状态
   editingEhrField,
   editingEhrValue,
   setEditingEhrValue,
-  
+
   // 事件处理函数
   onEdit,
   onSave,
@@ -41,64 +45,34 @@ const RepeatableFieldRenderer = ({
   onDeleteRecord,
   onAddNewGroup,
   onViewSource,
-  
+
   // 工具函数
   getEhrConfidenceColor
 }) => {
-  // 如果没有记录，显示空状态
-  if (!groupData.records || groupData.records.length === 0) {
-    return (
-      <div style={{ textAlign: 'center', padding: 40, color: appThemeToken.colorTextTertiary }}>
-        <FileTextOutlined style={{ fontSize: 16, marginBottom: 12 }} />
-        <div>暂无{groupData.name}记录</div>
-        <Button 
-          type="dashed" 
-          icon={<PlayCircleOutlined />}
-          style={{ marginTop: 12 }}
-          onClick={() => console.log('添加新记录')}
-        >
-          + 添加{groupData.name}
-        </Button>
-      </div>
-    )
-  }
-
-  // 用于区分单击（溯源）与双击（编辑）的计时器
   const clickTimerRef = useRef(null)
 
-  // 从 record 或 field 中提取 apiFieldId
-  const getApiFieldId = useCallback((record) => {
-    if (!record?.fields || record.fields.length === 0) return null
-    const apiFieldId = record.fields[0].apiFieldId
-    if (apiFieldId) return apiFieldId
-    const fieldWithApiFieldId = record.fields.find(f => f.apiFieldId)
-    return fieldWithApiFieldId?.apiFieldId || null
-  }, [])
+  // 如果没有记录，显示空状态
+  if (!groupData.records || groupData.records.length === 0) {
+    return <RepeatableEmptyState groupName={groupData.name} />
+  }
 
   // 处理可重复字段组的溯源 - 传入整个 record 信息
   const handleRecordViewSource = (record, index) => {
     if (!onViewSource) return
-    
-    const apiFieldId = getApiFieldId(record)
-    
+
+    const apiFieldId = getRecordApiFieldId(record)
+
     if (!apiFieldId) {
-      console.warn('⚠️ 无法确定可重复字段组的 apiFieldId:', { 
-        record, 
+      console.warn('⚠️ 无法确定可重复字段组的 apiFieldId:', {
+        record,
         groupData,
         fields: record.fields?.map(f => ({ id: f.id, apiFieldId: f.apiFieldId }))
       })
       return
     }
-    
-    // 构造一个虚拟的字段对象，用于溯源
-    const virtualField = {
-      id: record.id,
-      name: `${groupData.name} #${index + 1}`,
-      apiFieldId: apiFieldId,
-      value: record.fields?.map(f => f.value).filter(Boolean).join(', ') || '',
-      source: record.fields?.[0]?.source
-    }
-    
+
+    const virtualField = buildRecordSourceField({ apiFieldId, groupData, index, record })
+
     console.log('🔍 可重复字段组溯源:', virtualField)
     onViewSource(virtualField)
   }
@@ -110,15 +84,9 @@ const RepeatableFieldRenderer = ({
       clearTimeout(clickTimerRef.current)
     }
     clickTimerRef.current = setTimeout(() => {
-      const apiFieldId = field.apiFieldId || getApiFieldId(record)
+      const apiFieldId = field.apiFieldId || getRecordApiFieldId(record)
       if (!apiFieldId) return
-      const virtualField = {
-        id: field.id,
-        name: `${groupData.name} #${recordIndex + 1} - ${field.name}`,
-        apiFieldId: apiFieldId,
-        value: field.value || '',
-        source: field.source
-      }
+      const virtualField = buildRepeatableSourceField({ apiFieldId, field, groupData, recordIndex })
       console.log('🔍 可重复字段组-字段溯源:', virtualField)
       onViewSource(virtualField)
       clickTimerRef.current = null
@@ -151,7 +119,7 @@ const RepeatableFieldRenderer = ({
                     size="small"
                     icon={<AimOutlined />}
                     onClick={() => handleRecordViewSource(record, index)}
-                    style={{ 
+                    style={{
                       padding: '0 4px',
                       height: 22,
                       minWidth: 22,
@@ -164,10 +132,10 @@ const RepeatableFieldRenderer = ({
                 </Tooltip>
               </Space>
               <Space>
-                <Button 
-                  type="text" 
-                  size="small" 
-                  icon={<DeleteOutlined />} 
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<DeleteOutlined />}
                   danger
                   onClick={() => onDeleteRecord(record.id)}
                 >
@@ -176,7 +144,7 @@ const RepeatableFieldRenderer = ({
               </Space>
             </div>
           }
-          style={{ 
+          style={{
             marginBottom: 16,
             border: `1px solid ${appThemeToken.colorBorder}`,
             borderRadius: 6
@@ -200,20 +168,17 @@ const RepeatableFieldRenderer = ({
                 />
               </div>
             ))}
-            
+
             {/* 然后渲染普通字段，使用网格布局 */}
             {(() => {
-              const normalFields = record.fields.filter(field => 
-                field.fieldType === 'fields' || // 新格式
-                (field.type && !field.fieldType) // 旧格式：有type属性但没有fieldType属性
-              )
-              
+              const normalFields = record.fields.filter(isNormalRepeatableField)
+
               if (normalFields.length === 0) return null
-              
+
               return (
-                <div style={{ 
-                  display: 'grid', 
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', 
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
                   gap: '12px',
                   maxWidth: '100%'
                 }}>
@@ -230,7 +195,7 @@ const RepeatableFieldRenderer = ({
                             size="small"
                             icon={<AimOutlined />}
                             onClick={() => handleFieldSingleClick(field, record, index)}
-                            style={{ 
+                            style={{
                               padding: '0 2px',
                               height: 18,
                               minWidth: 18,
@@ -286,14 +251,14 @@ const RepeatableFieldRenderer = ({
           </div>
         </Card>
       ))}
-      
+
       {/* 新增字段组按钮 */}
       <div style={{ marginTop: 16, textAlign: 'center' }}>
-        <Button 
-          type="dashed" 
+        <Button
+          type="dashed"
           icon={<PlayCircleOutlined />}
           onClick={() => onAddNewGroup && onAddNewGroup(groupData.name)}
-          style={{ 
+          style={{
             width: '100%',
             height: 48,
             fontSize: 14,

@@ -4,14 +4,9 @@
  * 三栏布局：左侧目录 + 中间表单 + 右侧文档溯源
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { 
-  Alert, 
-  Spin, 
+import {
   message,
-  Space,
-  Typography
 } from 'antd'
-import { ReloadOutlined } from '@ant-design/icons'
 import SchemaForm from '../../../../components/SchemaForm'
 import { getPatientEhrSchemaData, updatePatientEhrSchemaData } from '../../../../api/patient'
 import {
@@ -19,13 +14,11 @@ import {
   createSchemaFormLayoutProps,
   PATIENT_SCHEMA_FORM_LAYOUT_DEFAULTS
 } from './schemaFormShared'
-
-const { Text } = Typography
-/**
- * 三栏固定高度：最小 500，常规随视口自适应，最大 760。
- * @type {string}
- */
-const FIXED_SCHEMA_PANEL_HEIGHT = 'clamp(500px, calc(100vh - 260px), 760px)'
+import {
+  FIXED_SCHEMA_PANEL_HEIGHT,
+  SchemaEhrErrorState,
+  SchemaEhrLoadingState,
+} from './schemaEhrTab/SchemaEhrTabStates'
 
 /**
  * Schema驱动的EhrTab组件
@@ -62,7 +55,7 @@ const SchemaEhrTab = ({
   const latestRequestIdRef = useRef(0)
   const savedPatientDataRef = useRef(patientData || {})
   const activePatientIdRef = useRef(patientId)
-  
+
   /**
    * 判断当前异步请求是否仍为最新请求。
    *
@@ -74,7 +67,7 @@ const SchemaEhrTab = ({
   useEffect(() => {
     activePatientIdRef.current = patientId
   }, [patientId])
-  
+
   /**
    * 加载 Schema 与患者数据。
    *
@@ -89,11 +82,11 @@ const SchemaEhrTab = ({
     latestRequestIdRef.current = requestId
     setLoading(true)
     setError(null)
-    
+
     try {
       let loadedSchema = null
       let loadedData = null
-      
+
       if (patientId) {
         const response = await getPatientEhrSchemaData(patientId)
         const schemaCandidate = response?.data?.schema
@@ -101,7 +94,7 @@ const SchemaEhrTab = ({
           schemaCandidate &&
           typeof schemaCandidate === 'object' &&
           Object.keys(schemaCandidate.properties || {}).length > 0
-        
+
         if (response?.success && hasSchema) {
           loadedSchema = schemaCandidate
           loadedData = response.data.data || {}
@@ -115,15 +108,15 @@ const SchemaEhrTab = ({
         const schemaModule = await import('../../../../data/patient_ehr-V2.schema.json')
         loadedSchema = schemaModule.default
       }
-      
+
       if (!isLatestRequest(requestId)) return
-      
+
       // 解析enums
       const parsedEnums = parseSchemaDefsToEnums(loadedSchema)
-      
+
       setSchema(loadedSchema)
       setEnums(parsedEnums)
-      
+
       // 如果没有传入 patientData，按页面模式设置初始数据：
       if (!patientData) {
         if (loadedData && typeof loadedData === 'object') {
@@ -136,18 +129,18 @@ const SchemaEhrTab = ({
       } else {
         savedPatientDataRef.current = patientData
       }
-      
+
       console.log('✅ Schema加载成功:', loadedSchema.$id)
       console.log('📋 Enums数量:', Object.keys(parsedEnums).length)
-      
+
     } catch (err) {
       try {
         const schemaModule = await import('../../../../data/patient_ehr-V2.schema.json')
         const fallbackSchema = schemaModule.default
         const parsedEnums = parseSchemaDefsToEnums(fallbackSchema)
-        
+
         if (!isLatestRequest(requestId)) return
-        
+
         setSchema(fallbackSchema)
         setEnums(parsedEnums)
         if (!patientData) {
@@ -167,7 +160,7 @@ const SchemaEhrTab = ({
       setLoading(false)
     }
   }, [schemaPath, patientData, patientId, isLatestRequest])
-  
+
   // 加载Schema与患者数据（patientId 变化时必须重新拉取，避免沿用上一个患者的数据）
   useEffect(() => {
     loadSchema()
@@ -199,7 +192,7 @@ const SchemaEhrTab = ({
       savedPatientDataRef.current = patientData
     }
   }, [patientData])
-  
+
   // 处理保存：有 patientId 时调用后端更新接口，再同步本地与回调
   const handleSave = useCallback(async (data, type) => {
     const savePatientId = patientId
@@ -235,7 +228,7 @@ const SchemaEhrTab = ({
       onDataChange(data)
     }
   }, [patientId, onSave, onDataChange])
-  
+
   // 处理重置
   const handleReset = useCallback(() => {
     if (patientData) {
@@ -245,45 +238,14 @@ const SchemaEhrTab = ({
 
   // 渲染加载状态
   if (loading) {
-    return (
-      <div style={{ 
-        height: 500, 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center',
-        flexDirection: 'column',
-        gap: 16
-      }}>
-        <Spin size="large" />
-        <Text type="secondary">正在加载Schema配置...</Text>
-      </div>
-    )
+    return <SchemaEhrLoadingState />
   }
-  
+
   // 渲染错误状态
   if (error) {
-    return (
-      <Alert
-        message="Schema加载失败"
-        description={
-          <Space direction="vertical">
-            <Text>{error}</Text>
-            <Button 
-              icon={<ReloadOutlined />} 
-              onClick={loadSchema}
-              size="small"
-            >
-              重新加载
-            </Button>
-          </Space>
-        }
-        type="error"
-        showIcon
-        style={{ margin: 16 }}
-      />
-    )
+    return <SchemaEhrErrorState error={error} onReload={loadSchema} />
   }
-  
+
   const schemaFormLayoutProps = createSchemaFormLayoutProps(
     PATIENT_SCHEMA_FORM_LAYOUT_DEFAULTS,
     {
