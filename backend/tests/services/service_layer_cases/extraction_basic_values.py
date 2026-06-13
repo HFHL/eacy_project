@@ -188,3 +188,71 @@ async def test_extraction_service_writes_repeatable_rows_to_separate_records():
     assert value_service.events[1]["field_path"] == "care.medication.drug_name"
     assert record_repository.created[0].form_key == "care.medication"
     assert record_repository.created[0].repeat_index == 1
+
+
+@pytest.mark.asyncio
+async def test_extraction_service_writes_nested_table_json_to_one_record():
+    value_service = FakeExtractionValueService()
+    record_repository = FakeExtractionRecordRepository(
+        records=[
+            SimpleNamespace(
+                id="blood-1",
+                context_id="context-1",
+                group_key="实验室检查",
+                group_title="实验室检查",
+                form_key="实验室检查.血常规",
+                form_title="血常规",
+                repeat_index=0,
+            )
+        ]
+    )
+    service = ExtractionService(
+        job_repository=SimpleNamespace(),
+        run_repository=SimpleNamespace(),
+        record_repository=record_repository,
+        document_repository=FakeExtractionDocumentRepository(),
+        value_service=value_service,
+    )
+    job = SimpleNamespace(id="job-1", context_id="context-1", document_id="document-1", requested_by=None)
+    run = SimpleNamespace(id="run-1")
+    parsed_output = {
+        "fields": [
+            {
+                "field_key": "采样日期",
+                "field_path": "实验室检查.血常规.采样日期",
+                "field_title": "采样日期",
+                "record_form_key": "实验室检查.血常规",
+                "record_form_title": "血常规",
+                "merge_binding": "anchor=采样日期;fallback=报告日期",
+                "value_type": "date",
+                "value_date": "2025-08-13",
+                "confidence": 0.9,
+            },
+            {
+                "field_key": "检验结果",
+                "field_path": "实验室检查.血常规.检验结果",
+                "field_title": "检验结果",
+                "record_form_key": "实验室检查.血常规",
+                "record_form_title": "血常规",
+                "merge_binding": "anchor=采样日期;fallback=报告日期",
+                "value_type": "json",
+                "value_json": [
+                    {"指标名称(中文)": "白细胞", "检测值": "12.00", "单位": "10^9/L"},
+                    {"指标名称(中文)": "血红蛋白", "检测值": "146", "单位": "g/L"},
+                ],
+                "confidence": 0.9,
+            },
+        ]
+    }
+
+    await service._write_extracted_values(job=job, run=run, parsed_output=parsed_output)
+
+    assert len(value_service.events) == 2
+    assert {event["record_instance_id"] for event in value_service.events} == {"blood-1"}
+    assert record_repository.created == []
+    table_event = next(event for event in value_service.events if event["field_key"] == "检验结果")
+    assert table_event["field_path"] == "实验室检查.血常规.检验结果"
+    assert table_event["value_json"] == [
+        {"指标名称(中文)": "白细胞", "检测值": "12.00", "单位": "10^9/L"},
+        {"指标名称(中文)": "血红蛋白", "检测值": "146", "单位": "g/L"},
+    ]

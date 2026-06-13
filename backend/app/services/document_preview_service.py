@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -18,6 +19,29 @@ from core.config import config
 
 
 class DocumentPreviewMixin:
+    @staticmethod
+    def _infer_preview_content_type(
+        *,
+        filename: str | None = None,
+        file_ext: str | None = None,
+        mime_type: str | None = None,
+        fallback: str = "application/octet-stream",
+    ) -> str:
+        normalized_mime = (mime_type or "").strip().lower()
+        if normalized_mime and normalized_mime != "application/octet-stream":
+            return normalized_mime
+
+        normalized_ext = (file_ext or "").strip().lower()
+        if "/" in normalized_ext and normalized_ext != "application/octet-stream":
+            return normalized_ext
+
+        lookup_name = filename or ""
+        if normalized_ext and "." not in Path(lookup_name).name:
+            suffix = normalized_ext if normalized_ext.startswith(".") else f".{normalized_ext}"
+            lookup_name = f"{lookup_name or 'document'}{suffix}"
+        guessed_type = mimetypes.guess_type(lookup_name)[0]
+        return guessed_type or normalized_mime or fallback
+
     async def get_preview_url(
         self,
         document_id: str,
@@ -80,7 +104,11 @@ class DocumentPreviewMixin:
             "preview_url": preview_url,
             "expires_in": expires_in,
             "storage_provider": document.storage_provider,
-            "mime_type": document.mime_type,
+            "mime_type": self._infer_preview_content_type(
+                filename=document.original_filename or document.file_name,
+                file_ext=document.file_ext or document.file_type,
+                mime_type=document.mime_type,
+            ),
             "file_name": document.original_filename,
             "file_type": document.file_ext or document.file_type,
             "preview_source": "native",

@@ -103,8 +103,21 @@ class EhrContextMixin:
         output: dict[str, FieldCurrentValue] = {}
         original_paths: dict[str, str] = {}
         records_by_id = {record.id: record for record in records or []}
+        hidden_record_ids = self._hidden_scalar_only_lab_record_ids(current_values, records_by_id)
+        display_repeat_indexes = self._display_repeat_indexes(
+            current_values,
+            records_by_id,
+            hidden_record_ids=hidden_record_ids,
+        )
         for value in current_values:
-            display_path = self._display_path_for_current_value(value, schema_json, records_by_id)
+            if value.record_instance_id in hidden_record_ids:
+                continue
+            display_path = self._display_path_for_current_value(
+                value,
+                schema_json,
+                records_by_id,
+                display_repeat_indexes,
+            )
             existing_path = original_paths.get(display_path)
             if existing_path is not None and self._path_has_index(existing_path) and not self._path_has_index(value.field_path):
                 continue
@@ -112,17 +125,102 @@ class EhrContextMixin:
             original_paths[display_path] = value.field_path
         return output
 
+    def _display_repeat_indexes(
+        self,
+        current_values: list[FieldCurrentValue],
+        records_by_id: dict[str, RecordInstance],
+        *,
+        hidden_record_ids: set[str] | None = None,
+    ) -> dict[str, int]:
+        hidden_record_ids = hidden_record_ids or set()
+        record_ids_with_values = {
+            value.record_instance_id
+            for value in current_values
+            if value.record_instance_id not in hidden_record_ids
+        }
+        records_by_form: dict[str, list[RecordInstance]] = {}
+        for record_id in record_ids_with_values:
+            record = records_by_id.get(record_id)
+            if record is None:
+                continue
+            records_by_form.setdefault(record.form_key, []).append(record)
+
+        display_indexes: dict[str, int] = {}
+        for form_records in records_by_form.values():
+            ordered = sorted(
+                form_records,
+                key=lambda record: (
+                    int(getattr(record, "repeat_index", 0) or 0),
+                    str(getattr(record, "created_at", "") or ""),
+                    str(getattr(record, "id", "") or ""),
+                ),
+            )
+            for display_index, record in enumerate(ordered):
+                display_indexes[record.id] = display_index
+        return display_indexes
+
+    def _hidden_scalar_only_lab_record_ids(
+        self,
+        current_values: list[FieldCurrentValue],
+        records_by_id: dict[str, RecordInstance],
+    ) -> set[str]:
+        values_by_record: dict[str, list[FieldCurrentValue]] = {}
+        for value in current_values:
+            record = records_by_id.get(value.record_instance_id)
+            if record is None:
+                continue
+            values_by_record.setdefault(value.record_instance_id, []).append(value)
+
+        forms_with_table_values: set[str] = set()
+        records_with_table_values: set[str] = set()
+        for record_id, values in values_by_record.items():
+            record = records_by_id.get(record_id)
+            if record is None:
+                continue
+            if any(self._is_lab_result_table_value(value, record.form_key) for value in values):
+                forms_with_table_values.add(record.form_key)
+                records_with_table_values.add(record_id)
+
+        hidden_record_ids: set[str] = set()
+        for record_id in values_by_record:
+            record = records_by_id.get(record_id)
+            if record is None:
+                continue
+            if not str(record.form_key or "").startswith("实验室检查."):
+                continue
+            if record.form_key not in forms_with_table_values:
+                continue
+            if record_id in records_with_table_values:
+                continue
+            hidden_record_ids.add(record_id)
+        return hidden_record_ids
+
+    def _is_lab_result_table_value(self, value: FieldCurrentValue, form_key: str) -> bool:
+        field_path = str(value.field_path or "")
+        return (
+            field_path == f"{form_key}.检验结果"
+            and (
+                getattr(value, "value_type", None) == "json"
+                or getattr(value, "value_json", None) is not None
+            )
+        )
+
     def _display_path_for_current_value(
         self,
         value: FieldCurrentValue,
         schema_json: dict[str, Any] | None,
         records_by_id: dict[str, RecordInstance],
+        display_repeat_indexes: dict[str, int] | None = None,
     ) -> str:
         display_path = self._schema_display_path(value.field_path, schema_json)
         record = records_by_id.get(value.record_instance_id)
         if record is None:
             return display_path
-        repeat_index = int(record.repeat_index or 0)
+        repeat_index = (
+            display_repeat_indexes.get(record.id)
+            if display_repeat_indexes is not None and record.id in display_repeat_indexes
+            else int(record.repeat_index or 0)
+        )
         if repeat_index <= 0:
             return display_path
         return self._replace_display_repeat_index(

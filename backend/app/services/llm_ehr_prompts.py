@@ -45,8 +45,10 @@ class LlmEhrPromptMixin:
             "5. source_id 必须从输入 reading_units 中原样引用，不要编造。\n"
             "6. 不要自行决定数据库是否覆盖 current；只输出候选抽取结果。\n"
             "7. 对可重复记录/表格，fields 中使用 repeat_index 表示第几条记录，不要把 .0/.1 写进 field_path。\n"
-            "8. 如果字段清单中有 merge_binding，请优先抽取 anchor/fallback/group_key/interval 涉及的字段，帮助系统合并同一条记录。\n"
-            "9. 枚举/是/否类推断字段：值可推理，但 quote_text 必须引用原文依据片段，不能填选项字面量。\n\n"
+            "8. 对 schema_type=array 且 display_type=table 的字段，整张表写成一个字段：value_type=json，value_json 为行对象数组；"
+            "不要把表格行拆成多个同名字段，也不要用 repeat_index 表示表格行号。\n"
+            "9. 如果字段清单中有 merge_binding，请优先抽取 anchor/fallback/group_key/interval 涉及的字段，帮助系统合并同一条记录。\n"
+            "10. 枚举/是/否类推断字段：值可推理，但 quote_text 必须引用原文依据片段，不能填选项字面量。\n\n"
             f"可抽取字段清单：\n{json.dumps(field_specs, ensure_ascii=False, indent=2)}"
         )
 
@@ -106,6 +108,7 @@ class LlmEhrPromptMixin:
             "schema_type": getattr(field, "schema_type", None),
             "schema_format": getattr(field, "schema_format", None),
             "merge_binding": getattr(field, "merge_binding", None),
+            "json_schema": getattr(field, "json_schema", None),
         }
 
     def _trim_reading_units(

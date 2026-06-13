@@ -225,12 +225,15 @@ class ResearchProjectPatientMixin:
                     canonical_filled: dict[str, Any] = {}
                     for display_path, current in display_values.items():
                         canonical = self._canonical_field_path(display_path)
-                        if canonical:
-                            canonical_filled[canonical] = self._current_display_value(current)
+                        if not canonical or canonical not in canonical_to_display:
+                            continue
+                        display_value = self._current_display_value(current)
+                        canonical_filled[canonical] = display_value
+                        fields[display_path.replace(".", "/")] = {"value": display_value}
 
                     for canonical, dot_path in canonical_to_display.items():
                         slash_key = dot_path.replace(".", "/")
-                        fields[slash_key] = {"value": canonical_filled.get(canonical)}
+                        fields.setdefault(slash_key, {"value": canonical_filled.get(canonical)})
 
             results.append({"project_patient_id": pp_id, "fields": fields})
         return results

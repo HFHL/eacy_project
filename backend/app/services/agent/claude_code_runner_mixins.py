@@ -227,7 +227,7 @@ class ClaudeCodeRunnerHelperMixin:
             "4. JSON object 必须包含 fields 数组；可选 missing_fields、uncertain_fields、conflict_fields、validation_errors。\n"
             "5. fields[] 每项必须符合现有 EACY 字段候选格式：field_path、value_type、对应 value_*、confidence、evidences。\n"
             "   field_path 必须逐字等于 input/field_specs.json 中的某个 field_path；不要插入 .0.、.1. 等行号。\n"
-            "   多行/重复记录的行号写到 repeat_index（0-based）或 value_json，不要写进 field_path。\n"
+            "   顶层多条/重复记录的行号写到 repeat_index（0-based）；嵌套表格字段用 value_type=json 和 value_json 行对象数组，不要把表格行号写到 repeat_index。\n"
             "6. 不确定不要编造；缺失字段不要输出空值，可写入 missing_fields/uncertain_fields。\n"
             "7. evidence.quote_text 必须来自 OCR 原文，evidence.source_id/source_type 必须来自 reading_units。\n\n"
             f"job_meta 摘要：{self._json_dumps(job_meta)}\n"

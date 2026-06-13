@@ -18,6 +18,7 @@ class SchemaField:
     schema_type: str | None = None
     schema_format: str | None = None
     merge_binding: str | None = None
+    json_schema: dict[str, Any] | None = None
 
 
 def schema_top_level_forms(schema_json: dict[str, Any]) -> list[dict[str, str | None]]:
@@ -184,6 +185,34 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
             return "json"
         return "text"
 
+    def nested_table_field(schema: dict[str, Any], path: list[str]) -> bool:
+        if len(path) <= 2:
+            return False
+        if schema.get("type") != "array":
+            return False
+        if not isinstance((schema.get("items") or {}).get("properties"), dict):
+            return False
+        return schema.get("x-display") == "table" or schema.get("x-row-constraint") == "multi_row"
+
+    def compact_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+        output: dict[str, Any] = {}
+        for key in ("type", "format", "x-display", "x-row-constraint", "x-table-config", "x-merge-binding", "description"):
+            if key in schema:
+                output[key] = schema[key]
+        if schema.get("allOf"):
+            output["allOf"] = schema["allOf"]
+        if schema.get("enum"):
+            output["enum"] = schema["enum"]
+        if isinstance(schema.get("items"), dict):
+            output["items"] = compact_json_schema(schema["items"])
+        if isinstance(schema.get("properties"), dict):
+            output["properties"] = {
+                str(key): compact_json_schema(value)
+                for key, value in schema["properties"].items()
+                if isinstance(value, dict)
+            }
+        return output
+
     def is_leaf(field_schema: dict[str, Any]) -> bool:
         if field_schema.get("allOf"):
             return True
@@ -204,6 +233,31 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
         record_form_title: str | None,
         merge_binding: str | None,
     ) -> None:
+        if nested_table_field(schema, path):
+            if schema.get("x-skip-extraction"):
+                return
+            field_key = path[-1]
+            fields.append(
+                SchemaField(
+                    field_key=field_key,
+                    field_path=".".join(path),
+                    field_title=str(schema.get("x-display-name") or field_key),
+                    value_type="json",
+                    extraction_prompt=schema.get("x-extraction-prompt") or schema.get("description"),
+                    options=None,
+                    record_form_key=record_form_key,
+                    record_form_title=record_form_title,
+                    group_key=group_key,
+                    group_title=group_title,
+                    display_type=schema.get("x-display"),
+                    schema_type=schema.get("type"),
+                    schema_format=schema.get("format"),
+                    merge_binding=merge_binding,
+                    json_schema=compact_json_schema(schema),
+                )
+            )
+            return
+
         if is_leaf(schema):
             if schema.get("x-skip-extraction"):
                 return
@@ -235,14 +289,18 @@ def plan_schema_fields(schema_json: dict[str, Any]) -> list[SchemaField]:
             properties = (schema.get("items") or {}).get("properties") or {}
         for child_key, child_schema in properties.items():
             if isinstance(child_schema, dict):
+                child_path = [*path, str(child_key)]
+                child_merge_binding = merge_binding
+                if not nested_table_field(child_schema, child_path):
+                    child_merge_binding = child_schema.get("x-merge-binding") or merge_binding
                 walk(
                     child_schema,
-                    [*path, str(child_key)],
+                    child_path,
                     group_key=group_key,
                     group_title=group_title,
                     record_form_key=record_form_key,
                     record_form_title=record_form_title,
-                    merge_binding=child_schema.get("x-merge-binding") or merge_binding,
+                    merge_binding=child_merge_binding,
                 )
 
     for folder_key, folder_schema in (schema_json.get("properties") or {}).items():

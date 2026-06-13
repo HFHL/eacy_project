@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { message } from 'antd'
 import {
   getDocumentPdfStreamUrl,
   getDocumentTempUrl,
   getFreshDocumentPdfStreamUrl,
-  getFreshDocumentStreamUrl,
-  isOcrPagePreviewResponse,
+  resolveDocumentInlinePreviewUrl,
 } from '../../../../../api/document'
 import { isPdfFileType } from '../components/documentDetailStatus'
 
@@ -23,6 +22,7 @@ export const useDocumentPreview = ({ document, documentDetail, visible }) => {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewImageLoading, setPreviewImageLoading] = useState(false)
   const [previewError, setPreviewError] = useState(false)
+  const autoPreviewKeyRef = useRef('')
 
   const resetImageTransform = useCallback(() => {
     setImgScale(1)
@@ -34,6 +34,10 @@ export const useDocumentPreview = ({ document, documentDetail, visible }) => {
     setPreviewUrl(null)
     setPdfPreviewUrl('')
     setPreviewImageLoading(false)
+    setPreviewError(false)
+    setPreviewSource('native')
+    setOcrPageNo(1)
+    setOcrPageCount(0)
   }, [])
 
   const fetchPreviewUrl = useCallback(async (documentId, pageNo = 1) => {
@@ -46,9 +50,7 @@ export const useDocumentPreview = ({ document, documentDetail, visible }) => {
       if (urlResponse.success && urlResponse.data?.temp_url) {
         const data = urlResponse.data
         const resolvedPageNo = Number(data.page_no || pageNo)
-        const previewSrc = isOcrPagePreviewResponse(data)
-          ? await getFreshDocumentStreamUrl(documentId, { page: resolvedPageNo })
-          : data.temp_url
+        const previewSrc = await resolveDocumentInlinePreviewUrl(documentId, data, { pageNo: resolvedPageNo })
         setPreviewUrl(previewSrc)
         setPreviewSource(data.preview_source || 'native')
         setOcrPageCount(Number(data.ocr_page_count || documentDetail?.ocr_page_count || 0))
@@ -60,6 +62,7 @@ export const useDocumentPreview = ({ document, documentDetail, visible }) => {
           setPreviewUrl(filePath)
           setPreviewImageLoading(true)
         } else {
+          setPreviewError(true)
           message.error('无法获取预览URL')
         }
       }
@@ -70,12 +73,55 @@ export const useDocumentPreview = ({ document, documentDetail, visible }) => {
         setPreviewUrl(filePath)
         setPreviewImageLoading(true)
       } else {
+        setPreviewError(true)
         message.error('获取预览URL失败')
       }
     } finally {
       setPreviewLoading(false)
     }
   }, [document?.file_path, documentDetail?.file_path, documentDetail?.ocr_page_count])
+
+  useEffect(() => {
+    autoPreviewKeyRef.current = ''
+    resetPreview()
+  }, [document?.id, resetPreview])
+
+  useEffect(() => {
+    if (!visible) {
+      autoPreviewKeyRef.current = ''
+      resetPreview()
+    }
+  }, [resetPreview, visible])
+
+  useEffect(() => {
+    if (!visible || !document?.id || !documentDetail) return
+
+    const rawFileType = documentDetail?.file_type || document?.fileType || document?.file_type || ''
+    const fileName = documentDetail?.file_name || document?.fileName || document?.file_name || ''
+    if (isPdfFileType(rawFileType, fileName)) return
+
+    const autoPreviewKey = [
+      document.id,
+      rawFileType,
+      fileName,
+      documentDetail?.mime_type || '',
+      documentDetail?.preview_source || '',
+      documentDetail?.ocr_page_count ?? '',
+    ].join('|')
+
+    if (autoPreviewKeyRef.current === autoPreviewKey) return
+    autoPreviewKeyRef.current = autoPreviewKey
+    fetchPreviewUrl(document.id)
+  }, [
+    document?.fileName,
+    document?.fileType,
+    document?.file_name,
+    document?.file_type,
+    document?.id,
+    documentDetail,
+    fetchPreviewUrl,
+    visible,
+  ])
 
   useEffect(() => {
     let cancelled = false

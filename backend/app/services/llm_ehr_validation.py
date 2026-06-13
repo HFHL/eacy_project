@@ -43,7 +43,11 @@ class LlmEhrValidationMixin:
                     errors.append(f"fields[{index}] must be an object")
                     continue
                 field_path = str(raw_field.get("field_path") or "").strip().strip("/").replace("/", ".")
-                spec = by_path.get(field_path) or self._spec_for_indexed_path(field_path, by_path)
+                spec = (
+                    by_path.get(field_path)
+                    or self._spec_for_indexed_path(field_path, by_path)
+                    or self._json_container_child_spec(field_path, by_path)
+                )
                 if not field_path or spec is None:
                     errors.append(f"fields[{index}].field_path is not in schema: {field_path or '<missing>'}")
                     continue
@@ -80,7 +84,7 @@ class LlmEhrValidationMixin:
                 errors.extend(evidence_errors)
                 warnings.extend(evidence_warnings)
                 if form_path and not self._is_empty(raw_record.get("record")):
-                    for path, value in self._iter_record_leaf_values(form_path, raw_record.get("record")):
+                    for path, value in self._iter_record_leaf_values(form_path, raw_record.get("record"), by_path):
                         spec = by_path.get(path) or self._spec_for_indexed_path(path, by_path)
                         if spec is None:
                             errors.append(f"records[{index}] contains field not in schema: {path}")
@@ -263,14 +267,47 @@ class LlmEhrValidationMixin:
             warnings.append(f"{label} quote_text must be an OCR substring: {quote}")
         return warnings
 
-    def _iter_record_leaf_values(self, prefix: str, node: Any):
+    def _iter_record_leaf_values(self, prefix: str, node: Any, by_path: dict[str, dict[str, Any]] | None = None):
+        if by_path is not None:
+            spec = by_path.get(prefix)
+            if spec is not None and self._is_json_container_spec(spec):
+                if not self._is_empty(node):
+                    yield prefix, node
+                return
         if isinstance(node, dict):
             for key, value in node.items():
-                yield from self._iter_record_leaf_values(f"{prefix}.{key}", value)
+                yield from self._iter_record_leaf_values(f"{prefix}.{key}", value, by_path)
             return
         if isinstance(node, list):
             for index, value in enumerate(node):
-                yield from self._iter_record_leaf_values(f"{prefix}.{index}", value)
+                yield from self._iter_record_leaf_values(f"{prefix}.{index}", value, by_path)
             return
         if not self._is_empty(node):
             yield prefix, node
+
+    def _is_json_container_spec(self, spec: dict[str, Any]) -> bool:
+        value_type = str(spec.get("value_type") or "")
+        schema_type = str(spec.get("schema_type") or "")
+        display_type = str(spec.get("display_type") or "")
+        return value_type == "json" and schema_type in {"array", "object"} and display_type in {"table", "group", "checkbox", "multi_text", "matrix_radio", "matrix_checkbox"}
+
+    def _json_container_child_spec(
+        self,
+        field_path: str,
+        by_path: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        non_numeric_parts = [part for part in str(field_path or "").split(".") if part and not part.isdigit()]
+        for container_path, spec in by_path.items():
+            if not self._is_json_container_spec(spec):
+                continue
+            container_parts = [part for part in str(container_path or "").split(".") if part]
+            if (
+                len(non_numeric_parts) > len(container_parts)
+                and non_numeric_parts[: len(container_parts)] == container_parts
+            ):
+                return {
+                    **spec,
+                    "value_type": "text",
+                    "options": None,
+                }
+        return None

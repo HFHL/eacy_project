@@ -11,6 +11,7 @@ import {
 import {
   alignObjectBySchema,
   getSchemaPropertyEntries,
+  inferSchemaKind,
 } from './nestedSchemaUtils'
 import {
   buildParallelArrayTableModel,
@@ -36,11 +37,19 @@ const splitObjectItems = (fieldKeys, schemaEntries, normalizedObjectValue) => {
   const complexItems = []
   fieldKeys.forEach((fieldKey) => {
     const matchedSchema = schemaEntries.find(([schemaField]) => schemaField === fieldKey)?.[1] || null
+    const matchedSchemaKind = inferSchemaKind(matchedSchema)
     const fieldValue = normalizedObjectValue[fieldKey]
-    if (isScalar(unwrapFieldValue(fieldValue))) {
+    const normalizedFieldValue = unwrapFieldValue(fieldValue)
+    const isEmptyScalar = normalizedFieldValue === null || normalizedFieldValue === undefined || normalizedFieldValue === ''
+    const shouldKeepComplexShell = isEmptyScalar && (matchedSchemaKind === 'object' || matchedSchemaKind === 'array')
+    if (isScalar(normalizedFieldValue) && !shouldKeepComplexShell) {
       scalarItems.push({ key: fieldKey, label: fieldKey, children: formatScalarText(fieldValue) })
     } else {
-      complexItems.push({ key: fieldKey, value: fieldValue, schemaNode: matchedSchema })
+      complexItems.push({
+        key: fieldKey,
+        value: shouldKeepComplexShell && matchedSchemaKind === 'array' ? [] : (shouldKeepComplexShell ? {} : fieldValue),
+        schemaNode: matchedSchema,
+      })
     }
   })
   return { scalarItems, complexItems }

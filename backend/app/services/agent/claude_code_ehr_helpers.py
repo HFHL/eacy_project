@@ -64,8 +64,9 @@ class ClaudeCodeEhrHelperMixin:
         text: str,
         reading_units: list[dict[str, Any]],
     ) -> tuple[list[str], list[str], str]:
+        validation_output = self._raw_output_with_validation_fallbacks(raw_output)
         errors, warnings, status_hint = self.normalizer._validate_raw_output(
-            raw_output,
+            validation_output,
             field_specs,
             text=text,
             reading_units=reading_units,
@@ -75,6 +76,41 @@ class ClaudeCodeEhrHelperMixin:
         warnings.extend(self._validate_confidence(raw_output))
         status = "invalid" if errors else (status_hint or "valid")
         return errors, warnings, status
+
+    def _raw_output_with_validation_fallbacks(self, raw_output: Any) -> Any:
+        if not isinstance(raw_output, dict):
+            return raw_output
+        output = dict(raw_output)
+        fields = raw_output.get("fields")
+        if isinstance(fields, list):
+            output["fields"] = [self._item_with_validation_fallbacks(item) for item in fields]
+        records = raw_output.get("records")
+        if isinstance(records, list):
+            output["records"] = [self._item_with_validation_fallbacks(item) for item in records]
+        return output
+
+    def _item_with_validation_fallbacks(self, item: Any) -> Any:
+        if not isinstance(item, dict):
+            return item
+        output = dict(item)
+        evidences = item.get("evidences")
+        if not isinstance(evidences, list) or not evidences:
+            quote = item.get("quote_text") or self._first_value_text(item)
+            if quote:
+                output["evidences"] = [{"quote_text": str(quote)}]
+        if output.get("confidence") is None and self._first_value_text(output):
+            output["confidence"] = 0.0
+        return output
+
+    def _first_value_text(self, item: dict[str, Any]) -> Any:
+        for slot in VALUE_SLOTS.values():
+            value = item.get(slot)
+            if not self.normalizer._is_empty(value):
+                return value
+        record = item.get("record")
+        if not self.normalizer._is_empty(record):
+            return record
+        return None
 
     def _validate_confidence(self, raw_output: Any) -> list[str]:
         errors: list[str] = []

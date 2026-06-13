@@ -62,6 +62,122 @@ def test_ehr_service_current_values_include_record_repeat_index():
     assert set(output.keys()) == {"影像检查.CT.0.检查日期", "影像检查.CT.1.检查日期"}
     assert output["影像检查.CT.1.检查日期"].record_instance_id == "ct-2"
 
+
+def test_ehr_service_current_values_compact_sparse_record_repeat_indexes():
+    service = EhrService()
+    schema_json = {
+        "properties": {
+            "实验室检查": {
+                "properties": {
+                    "血常规": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "检验结果": {
+                                    "type": "array",
+                                    "x-display": "table",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "指标名称(中文)": {"type": "string"},
+                                            "检测值": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    records = [
+        SimpleNamespace(id="blood-1", form_key="实验室检查.血常规", repeat_index=0),
+        SimpleNamespace(id="blood-stale", form_key="实验室检查.血常规", repeat_index=1),
+        SimpleNamespace(id="blood-2", form_key="实验室检查.血常规", repeat_index=27),
+    ]
+    current_values = [
+        SimpleNamespace(record_instance_id="blood-1", field_path="实验室检查.血常规.检验结果", value_json=[]),
+        SimpleNamespace(record_instance_id="blood-2", field_path="实验室检查.血常规.检验结果", value_json=[]),
+    ]
+
+    output = service._current_values_by_display_path(current_values, schema_json, records)
+
+    assert set(output.keys()) == {"实验室检查.血常规.0.检验结果", "实验室检查.血常规.1.检验结果"}
+    assert output["实验室检查.血常规.1.检验结果"].record_instance_id == "blood-2"
+
+
+def test_ehr_service_hides_scalar_only_lab_record_when_table_records_exist():
+    service = EhrService()
+    schema_json = {
+        "properties": {
+            "实验室检查": {
+                "properties": {
+                    "血常规": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "检查机构": {"type": "string"},
+                                "检验结果": {
+                                    "type": "array",
+                                    "x-display": "table",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "指标名称(中文)": {"type": "string"},
+                                            "检测值": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    records = [
+        SimpleNamespace(id="blood-1", form_key="实验室检查.血常规", repeat_index=0),
+        SimpleNamespace(id="blood-stale", form_key="实验室检查.血常规", repeat_index=26),
+        SimpleNamespace(id="blood-2", form_key="实验室检查.血常规", repeat_index=27),
+    ]
+    current_values = [
+        SimpleNamespace(
+            record_instance_id="blood-1",
+            field_path="实验室检查.血常规.检查机构",
+            value_text="上海市第四人民医院",
+        ),
+        SimpleNamespace(
+            record_instance_id="blood-1",
+            field_path="实验室检查.血常规.检验结果",
+            value_type="json",
+            value_json=[{"指标名称(中文)": "白细胞", "检测值": "12.00"}],
+        ),
+        SimpleNamespace(
+            record_instance_id="blood-stale",
+            field_path="实验室检查.血常规.检查机构",
+            value_text="上海市第四人民医院",
+        ),
+        SimpleNamespace(
+            record_instance_id="blood-2",
+            field_path="实验室检查.血常规.检验结果",
+            value_type="json",
+            value_json=[{"指标名称(中文)": "血红蛋白", "检测值": "146"}],
+        ),
+    ]
+
+    output = service._current_values_by_display_path(current_values, schema_json, records)
+
+    assert set(output.keys()) == {
+        "实验室检查.血常规.0.检查机构",
+        "实验室检查.血常规.0.检验结果",
+        "实验室检查.血常规.1.检验结果",
+    }
+    assert output["实验室检查.血常规.1.检验结果"].record_instance_id == "blood-2"
+
+
 async def test_research_service_resolves_indexed_field_path_to_repeat_record():
     record_repository = FakeExtractionRecordRepository(
         records=[

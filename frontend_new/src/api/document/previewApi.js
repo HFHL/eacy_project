@@ -51,6 +51,28 @@ export async function getFreshDocumentPdfStreamUrl(documentId = '') {
   return getFreshDocumentStreamUrl(documentId)
 }
 
+export async function resolveDocumentInlinePreviewUrl(documentId, data = {}, { pageNo = 1 } = {}) {
+  const tempUrl = data.temp_url || data.preview_url || data.url || ''
+  if (!documentId || !tempUrl) return tempUrl
+
+  const resolvedPageNo = Number(data.page_no || pageNo || 1)
+  const isOcrPagePreview = isOcrPagePreviewResponse(data)
+  const isImagePreview = isImageFileLike({
+    fileType: data.file_type,
+    fileName: data.file_name,
+    fileUrl: tempUrl,
+    mimeType: data.mime_type,
+  })
+
+  if (isOcrPagePreview) {
+    return getFreshDocumentStreamUrl(documentId, { page: resolvedPageNo })
+  }
+  if (isImagePreview) {
+    return getFreshDocumentStreamUrl(documentId)
+  }
+  return tempUrl
+}
+
 export async function resolveTraceDocumentPreviewUrl(documentId, {
   pageNo = 1,
   fileType,
@@ -93,9 +115,7 @@ export async function resolveTraceDocumentPreviewUrl(documentId, {
     })
   ) {
     const resolvedPageNo = data.page_no || pageNo
-    const url = isOcrPagePreviewResponse(data)
-      ? await getFreshDocumentStreamUrl(documentId, { page: resolvedPageNo })
-      : data.temp_url
+    const url = await resolveDocumentInlinePreviewUrl(documentId, data, { pageNo: resolvedPageNo })
     return {
       mode: 'image',
       url,

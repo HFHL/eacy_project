@@ -62,6 +62,32 @@ const ArrayObjectValueRenderer = ({
     }
     return { __rowKey: `${path}[${index}]`, value: normalizedRow }
   })
+  const hasExpandableRows = tableRows.some((record) => {
+    const candidate = { ...record }
+    delete candidate.__rowKey
+    return Object.values(candidate).some((item) => !isScalar(unwrapFieldValue(item)))
+  })
+  const expandableConfig = hasExpandableRows ? {
+    rowExpandable: (record) => {
+      const candidate = { ...record }
+      delete candidate.__rowKey
+      return Object.values(candidate).some((item) => !isScalar(unwrapFieldValue(item)))
+    },
+    expandedRowRender: (record, rowIndex) => {
+      const rowData = { ...record }
+      delete rowData.__rowKey
+      const complexPayload = extractComplexObjectPayload(rowData)
+      return Object.keys(complexPayload).length > 0
+        ? renderNested({
+          value: complexPayload,
+          schemaNode: schemaItem,
+          label: `记录 ${rowIndex + 1}`,
+          path: `${path}[${rowIndex}]`,
+          depth: depth + 1,
+        })
+        : <Text type="secondary">该行无可展开的嵌套字段。</Text>
+    },
+  } : undefined
 
   return (
     <div style={{ marginBottom: 12, marginLeft: panelMarginLeft }}>
@@ -75,32 +101,13 @@ const ArrayObjectValueRenderer = ({
       ) : null}
       <Table
         size="small"
+        bordered
         rowKey={(row) => row.__rowKey}
         columns={tableColumns}
         dataSource={tableRows}
         pagination={false}
         scroll={{ x: 'max-content' }}
-        expandable={{
-          rowExpandable: (record) => {
-            const candidate = { ...record }
-            delete candidate.__rowKey
-            return Object.values(candidate).some((item) => !isScalar(unwrapFieldValue(item)))
-          },
-          expandedRowRender: (record, rowIndex) => {
-            const rowData = { ...record }
-            delete rowData.__rowKey
-            const complexPayload = extractComplexObjectPayload(rowData)
-            return Object.keys(complexPayload).length > 0
-              ? renderNested({
-                value: complexPayload,
-                schemaNode: schemaItem,
-                label: `记录 ${rowIndex + 1}`,
-                path: `${path}[${rowIndex}]`,
-                depth: depth + 1,
-              })
-              : <Text type="secondary">该行无可展开的嵌套字段。</Text>
-          },
-        }}
+        expandable={expandableConfig}
       />
     </div>
   )

@@ -14,7 +14,8 @@ const isImageFile = (type, name, url) => {
   const normalizedName = String(name || '').toLowerCase()
   const normalizedUrl = String(url || '').toLowerCase()
   const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
-  return imageExtensions.includes(normalizedType) ||
+  return normalizedType.startsWith('image/') ||
+    imageExtensions.includes(normalizedType) ||
     imageExtensions.includes(normalizedType.replace('.', '')) ||
     imageExtensions.some(ext => normalizedName.endsWith(`.${ext}`)) ||
     imageExtensions.some(ext => normalizedUrl.split('?')[0].endsWith(`.${ext}`))
@@ -55,6 +56,7 @@ const DocumentPreviewArea = ({
   const resolvedOcrPageCount = ocrPageCount || Number(documentDetail?.ocr_page_count || 0)
   const isPdf = isPdfFileType(rawFileType, fileName, previewUrl)
   const canRenderPreview = isPdf ? Boolean(pdfPreviewUrl) : Boolean(previewUrl)
+  const waitingForAutomaticPreview = Boolean(document?.id && documentDetail && !canRenderPreview && !previewError)
 
   const renderUnsupportedPreview = (message) => (
     <div className="preview-placeholder">
@@ -98,7 +100,7 @@ const DocumentPreviewArea = ({
       </div>
 
       <div className="preview-content">
-        {previewLoading || detailLoading ? (
+        {previewLoading || detailLoading || waitingForAutomaticPreview ? (
           <div className="preview-placeholder">
             <Spin size="large" />
             <div style={{ marginTop: 16 }}>

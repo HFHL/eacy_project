@@ -3,6 +3,8 @@ import {
   getDocumentDetail,
   getDocumentTempUrl,
   getFreshDocumentPdfStreamUrl,
+  isImageFileLike,
+  resolveDocumentInlinePreviewUrl,
 } from '../../../api/document'
 import { isPdfFileLike } from './documentData'
 
@@ -99,8 +101,16 @@ export const useAIProcessingPreview = ({ message }) => {
         setDocPreviewTempUrl(resolvedTempUrl)
         setDocPreviewFileType('pdf')
       } else if (resolvedTempUrl) {
+        const previewData = tempUrlResponse?.data || {}
+        const isImage = isImageFileLike({
+          fileType: resolvedFileType,
+          fileName: resolvedFileName,
+          fileUrl: resolvedTempUrl,
+          mimeType: previewData.mime_type,
+        })
+        resolvedTempUrl = await resolveDocumentInlinePreviewUrl(documentId, previewData)
         setDocPreviewTempUrl(resolvedTempUrl)
-        setDocPreviewFileType(resolvedFileType || '')
+        setDocPreviewFileType(isImage ? 'image' : (resolvedFileType || ''))
       } else if (resolvedFileType) {
         setDocPreviewFileType(resolvedFileType)
       }

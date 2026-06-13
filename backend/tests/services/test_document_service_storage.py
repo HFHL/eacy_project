@@ -1,11 +1,12 @@
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi import HTTPException
 
 from app.integrations.textin_ocr import TextInOcrClient
 from app.services.document_service import DocumentService
-from app.storage.document_storage import StoredDocumentFile
+from app.storage.document_storage import AliyunOssDocumentStorage, StoredDocumentFile
 
 
 class FakeUploadFile:
@@ -85,6 +86,55 @@ class FakePreviewDocumentRepository:
 class FakePatientRepository:
     async def get_active_by_id(self, patient_id):
         return None
+
+
+@pytest.mark.asyncio
+async def test_oss_storage_preserves_upload_content_type(monkeypatch):
+    storage = AliyunOssDocumentStorage(
+        access_key_id="access-key",
+        access_key_secret="secret",
+        bucket_name="bucket",
+        endpoint="oss-cn-shanghai.aliyuncs.com",
+    )
+    captured = {}
+    monkeypatch.setattr(storage, "_object_key", lambda _file_ext: "documents/test.jpg")
+
+    def fake_put_object(key, content, *, content_type="application/octet-stream"):
+        captured["key"] = key
+        captured["content"] = content
+        captured["content_type"] = content_type
+
+    monkeypatch.setattr(storage, "_put_object", fake_put_object)
+    upload = FakeUploadFile(b"fake jpg")
+    upload.content_type = "image/jpeg"
+
+    stored = await storage.save(upload, original_filename="image.jpg", file_ext=".jpg")
+
+    assert stored.path == "documents/test.jpg"
+    assert captured == {
+        "key": "documents/test.jpg",
+        "content": b"fake jpg",
+        "content_type": "image/jpeg",
+    }
+
+
+def test_oss_signed_url_uses_supported_response_overrides():
+    storage = AliyunOssDocumentStorage(
+        access_key_id="access-key",
+        access_key_secret="secret",
+        bucket_name="bucket",
+        endpoint="oss-cn-shanghai.aliyuncs.com",
+    )
+
+    url = storage.get_signed_url(
+        "documents/test.jpg",
+        expires_in=600,
+        response_content_disposition="inline; filename*=UTF-8''image.jpg",
+    )
+    query = parse_qs(urlparse(url).query)
+
+    assert "response-content-type" not in query
+    assert query["response-content-disposition"] == ["inline; filename*=UTF-8''image.jpg"]
 
 
 @pytest.mark.asyncio

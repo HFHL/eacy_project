@@ -3,6 +3,7 @@ import base64
 import email.utils
 import hmac
 import http.client
+import mimetypes
 import time
 import uuid
 from dataclasses import dataclass
@@ -154,8 +155,13 @@ class AliyunOssDocumentStorage(DocumentStorage):
         file_hash = hashlib.sha256()
         content = await file.read()
         file_hash.update(content)
+        content_type = (
+            file.content_type
+            or mimetypes.guess_type(original_filename)[0]
+            or "application/octet-stream"
+        )
 
-        self._put_object(key, content, content_type="application/octet-stream")
+        self._put_object(key, content, content_type=content_type)
 
         return StoredDocumentFile(
             provider="oss",

@@ -217,3 +217,281 @@ def test_llm_ehr_extractor_preserves_repeat_index_from_fields_output():
             "path_indexes": [0],
         }
     ]
+
+
+def test_llm_ehr_extractor_accepts_nested_table_field_as_value_json():
+    extractor = LlmEhrExtractor()
+    state = {
+        "document_id": "document-1",
+        "field_specs": [
+            {
+                "field_key": "检验结果",
+                "field_path": "实验室检查.血常规.检验结果",
+                "field_title": "检验结果",
+                "value_type": "json",
+                "record_form_key": "实验室检查.血常规",
+                "record_form_title": "血常规",
+                "display_type": "table",
+                "schema_type": "array",
+            },
+        ],
+        "raw_output": {
+            "fields": [
+                {
+                    "field_path": "实验室检查.血常规.检验结果",
+                    "value_type": "json",
+                    "value_json": [
+                        {"指标名称(中文)": "白细胞", "检测值": "12.00", "单位": "10^9/L"},
+                        {"指标名称(中文)": "血红蛋白", "检测值": "146", "单位": "g/L"},
+                    ],
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "白细胞 12.00 血红蛋白 146"}],
+                }
+            ]
+        },
+    }
+
+    result = extractor._node_normalize(state)
+
+    assert result["fields_output"] == [
+        {
+            "field_key": "检验结果",
+            "field_path": "实验室检查.血常规.检验结果",
+            "field_title": "检验结果",
+            "record_form_key": "实验室检查.血常规",
+            "record_form_title": "血常规",
+            "value_type": "json",
+            "value_json": [
+                {"指标名称(中文)": "白细胞", "检测值": "12.00", "单位": "10^9/L"},
+                {"指标名称(中文)": "血红蛋白", "检测值": "146", "单位": "g/L"},
+            ],
+            "confidence": 0.9,
+            "quote_text": "白细胞 12.00 血红蛋白 146",
+            "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "白细胞 12.00 血红蛋白 146"}],
+            "evidence_type": "llm_extract",
+        }
+    ]
+
+
+def test_llm_ehr_extractor_collapses_legacy_split_table_fields_to_value_json():
+    extractor = LlmEhrExtractor()
+    table_spec = {
+        "field_key": "检验结果",
+        "field_path": "实验室检查.血常规.检验结果",
+        "field_title": "检验结果",
+        "value_type": "json",
+        "record_form_key": "实验室检查.血常规",
+        "record_form_title": "血常规",
+        "display_type": "table",
+        "schema_type": "array",
+        "merge_binding": "anchor=采样日期;fallback=报告日期",
+    }
+    state = {
+        "document_id": "document-1",
+        "field_specs": [table_spec],
+        "raw_output": {
+            "fields": [
+                {
+                    "field_path": "实验室检查.血常规.检验结果.指标名称(中文)",
+                    "value_type": "text",
+                    "value_text": "白细胞",
+                    "repeat_index": 0,
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "白细胞 12.00"}],
+                },
+                {
+                    "field_path": "实验室检查.血常规.检验结果.检测值",
+                    "value_type": "text",
+                    "value_text": "12.00",
+                    "repeat_index": 0,
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "白细胞 12.00"}],
+                },
+                {
+                    "field_path": "实验室检查.血常规.检验结果.单位",
+                    "value_type": "text",
+                    "value_text": "10^9/L",
+                    "repeat_index": 0,
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "白细胞 12.00"}],
+                },
+                {
+                    "field_path": "实验室检查.血常规.检验结果.指标名称(中文)",
+                    "value_type": "text",
+                    "value_text": "血红蛋白",
+                    "repeat_index": 1,
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l2", "quote_text": "血红蛋白 146"}],
+                },
+                {
+                    "field_path": "实验室检查.血常规.检验结果.检测值",
+                    "value_type": "text",
+                    "value_text": "146",
+                    "repeat_index": 1,
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l2", "quote_text": "血红蛋白 146"}],
+                },
+                {
+                    "field_path": "实验室检查.血常规.检验结果.单位",
+                    "value_type": "text",
+                    "value_text": "g/L",
+                    "repeat_index": 1,
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l2", "quote_text": "血红蛋白 146"}],
+                },
+            ]
+        },
+    }
+
+    result = extractor._node_normalize(state)
+
+    assert result["fields_output"] == [
+        {
+            "field_key": "检验结果",
+            "field_path": "实验室检查.血常规.检验结果",
+            "field_title": "检验结果",
+            "record_form_key": "实验室检查.血常规",
+            "record_form_title": "血常规",
+            "merge_binding": "anchor=采样日期;fallback=报告日期",
+            "value_type": "json",
+            "value_json": [
+                {"指标名称(中文)": "白细胞", "检测值": "12.00", "单位": "10^9/L"},
+                {"指标名称(中文)": "血红蛋白", "检测值": "146", "单位": "g/L"},
+            ],
+            "confidence": 0.9,
+            "quote_text": "白细胞 12.00",
+            "evidences": [
+                {"source_type": "line", "source_id": "p1-l1", "quote_text": "白细胞 12.00"},
+                {"source_type": "line", "source_id": "p1-l2", "quote_text": "血红蛋白 146"},
+            ],
+            "evidence_type": "llm_extract",
+        }
+    ]
+
+
+def test_llm_ehr_extractor_collapses_record_nested_table_to_value_json():
+    extractor = LlmEhrExtractor()
+    state = {
+        "document_id": "document-1",
+        "field_specs": [
+            {
+                "field_key": "采样日期",
+                "field_path": "实验室检查.血常规.采样日期",
+                "field_title": "采样日期",
+                "value_type": "date",
+                "record_form_key": "实验室检查.血常规",
+                "record_form_title": "血常规",
+            },
+            {
+                "field_key": "检验结果",
+                "field_path": "实验室检查.血常规.检验结果",
+                "field_title": "检验结果",
+                "value_type": "json",
+                "record_form_key": "实验室检查.血常规",
+                "record_form_title": "血常规",
+                "display_type": "table",
+                "schema_type": "array",
+            },
+        ],
+        "raw_output": {
+            "records": [
+                {
+                    "form_path": "实验室检查.血常规",
+                    "record": {
+                        "采样日期": "2025-08-13",
+                        "检验结果": [
+                            {"指标名称(中文)": "白细胞", "检测值": "12.00", "单位": "10^9/L"},
+                            {"指标名称(中文)": "血红蛋白", "检测值": "146", "单位": "g/L"},
+                        ],
+                    },
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "2025-08-13 白细胞 12.00 血红蛋白 146"}],
+                }
+            ]
+        },
+    }
+
+    result = extractor._node_normalize(state)
+    fields_by_path = {field["field_path"]: field for field in result["fields_output"]}
+
+    assert fields_by_path["实验室检查.血常规.采样日期"]["value_date"] == "2025-08-13"
+    assert fields_by_path["实验室检查.血常规.检验结果"]["value_json"] == [
+        {"指标名称(中文)": "白细胞", "检测值": "12.00", "单位": "10^9/L"},
+        {"指标名称(中文)": "血红蛋白", "检测值": "146", "单位": "g/L"},
+    ]
+
+
+def test_llm_ehr_extractor_validates_record_nested_table_json_field():
+    extractor = LlmEhrExtractor()
+    errors, warnings, status_hint = extractor._validate_raw_output(
+        {
+            "records": [
+                {
+                    "form_path": "实验室检查.血常规",
+                    "record": {
+                        "检验结果": [
+                            {"指标名称(中文)": "白细胞", "检测值": "12.00", "单位": "10^9/L"},
+                        ],
+                    },
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "白细胞 12.00"}],
+                }
+            ]
+        },
+        [
+            {
+                "field_key": "检验结果",
+                "field_path": "实验室检查.血常规.检验结果",
+                "field_title": "检验结果",
+                "value_type": "json",
+                "record_form_key": "实验室检查.血常规",
+                "display_type": "table",
+                "schema_type": "array",
+            }
+        ],
+        text="白细胞 12.00",
+    )
+
+    assert errors == []
+    assert status_hint is None
+
+
+def test_llm_ehr_extractor_validates_legacy_split_table_fields():
+    extractor = LlmEhrExtractor()
+    errors, warnings, status_hint = extractor._validate_raw_output(
+        {
+            "fields": [
+                {
+                    "field_path": "实验室检查.血常规.检验结果.指标名称(中文)",
+                    "value_type": "text",
+                    "value_text": "白细胞",
+                    "repeat_index": 0,
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "白细胞"}],
+                },
+                {
+                    "field_path": "实验室检查.血常规.检验结果.检测值",
+                    "value_type": "text",
+                    "value_text": "12.00",
+                    "repeat_index": 0,
+                    "confidence": 0.9,
+                    "evidences": [{"source_type": "line", "source_id": "p1-l1", "quote_text": "12.00"}],
+                },
+            ]
+        },
+        [
+            {
+                "field_key": "检验结果",
+                "field_path": "实验室检查.血常规.检验结果",
+                "field_title": "检验结果",
+                "value_type": "json",
+                "record_form_key": "实验室检查.血常规",
+                "display_type": "table",
+                "schema_type": "array",
+            }
+        ],
+        text="白细胞 12.00",
+    )
+
+    assert errors == []
+    assert status_hint is None

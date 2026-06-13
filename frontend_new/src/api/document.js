@@ -14,6 +14,7 @@ import {
   getDocumentTempUrl,
   getFreshDocumentPdfStreamUrl,
   getFreshDocumentStreamUrl,
+  resolveDocumentInlinePreviewUrl,
   resolveTraceDocumentPreviewUrl,
 } from './document/previewApi'
 import {
@@ -134,6 +135,7 @@ export {
   refreshDocumentMatchInfo,
   reparseDocumentSync,
   resolveDocumentRecommendedPatientId,
+  resolveDocumentInlinePreviewUrl,
   resolveTraceDocumentPreviewUrl,
   searchUserFiles,
   unarchiveDocument,
@@ -153,6 +155,7 @@ export default {
   getDocumentTempUrl,
   getDocumentPdfStreamUrl,
   getFreshDocumentPdfStreamUrl,
+  resolveDocumentInlinePreviewUrl,
   isOfficeDocumentLike,
   isPdfFileLike,
   isImageFileLike,

@@ -68,6 +68,48 @@ export const readObjectPath = (root, pathKey) => {
   return unwrapFieldValue(cursor)
 }
 
+const isNumericSegment = (segment) => /^\d+$/.test(String(segment || ''))
+
+const splitPathSegments = (pathKey) => normalizeSlashPath(pathKey).split('/').filter(Boolean)
+
+const stripNumericSegments = (pathKey) => (
+  splitPathSegments(pathKey).filter((segment) => !isNumericSegment(segment)).join('/')
+)
+
+const indexedPathMatchesCandidate = (rawKey, candidateKey) => {
+  const canonicalRawKey = stripNumericSegments(rawKey)
+  const normalizedCandidateKey = normalizeSlashPath(candidateKey)
+  return canonicalRawKey === normalizedCandidateKey
+    || canonicalRawKey.endsWith(`/${normalizedCandidateKey}`)
+    || normalizedCandidateKey.endsWith(`/${canonicalRawKey}`)
+}
+
+const indexedSortKey = (rawKey) => {
+  const numericSegments = splitPathSegments(rawKey)
+    .filter(isNumericSegment)
+    .map((segment) => Number.parseInt(segment, 10))
+  if (numericSegments.length === 0) return Number.MAX_SAFE_INTEGER
+  return numericSegments.reduce((score, value, index) => score + (value * (1000 ** (numericSegments.length - index - 1))), 0)
+}
+
+const readIndexedFieldValues = (entries, candidateKey) => {
+  const matches = entries
+    .filter(([rawKey]) => {
+      const rawSegments = splitPathSegments(rawKey)
+      return rawSegments.some(isNumericSegment) && indexedPathMatchesCandidate(rawKey, candidateKey)
+    })
+    .sort((a, b) => indexedSortKey(a[0]) - indexedSortKey(b[0]))
+
+  if (matches.length === 0) return null
+
+  const values = matches.map(([, rawValue]) => unwrapFieldValue(rawValue))
+  return {
+    value: values,
+    matchedPath: matches.map(([rawKey]) => normalizeSlashPath(rawKey)).join(','),
+    stage: 'indexed',
+  }
+}
+
 export const readFromFieldsWithDiagnostics = (fields, candidates) => {
   if (!fields || typeof fields !== 'object') return null
   const entries = Object.entries(fields)
@@ -96,6 +138,13 @@ export const readFromFieldsWithDiagnostics = (fields, candidates) => {
     const prefixHit = { value: nestedValue, matchedPath: `${bestMatch.normalizedRawKey}/${restSegments.join('/')}`, stage: 'prefix' }
     if (isMeaningfulValue(nestedValue)) return prefixHit
     if (!emptyCandidateHit) emptyCandidateHit = prefixHit
+  }
+
+  for (const candidateKey of candidates) {
+    const indexedHit = readIndexedFieldValues(entries, candidateKey)
+    if (!indexedHit) continue
+    if (isMeaningfulValue(indexedHit.value)) return indexedHit
+    if (!emptyCandidateHit) emptyCandidateHit = indexedHit
   }
 
   for (const candidateKey of candidates) {

@@ -160,4 +160,5 @@ class ExtractionSnapshotMixin:
             "schema_type": getattr(field, "schema_type", None),
             "schema_format": getattr(field, "schema_format", None),
             "merge_binding": getattr(field, "merge_binding", None),
+            "json_schema": getattr(field, "json_schema", None),
         }

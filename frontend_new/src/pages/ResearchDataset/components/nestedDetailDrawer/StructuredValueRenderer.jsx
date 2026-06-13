@@ -74,7 +74,10 @@ const StructuredValueRenderer = ({
     )
   }
 
-  if (Array.isArray(normalizedValue) && valueKind === 'arrayObject') {
+  if (
+    Array.isArray(normalizedValue)
+    && (valueKind === 'arrayObject' || Boolean(effectiveSchemaNode?.items?.properties))
+  ) {
     return (
       <ArrayObjectValueRenderer
         normalizedValue={normalizedValue}

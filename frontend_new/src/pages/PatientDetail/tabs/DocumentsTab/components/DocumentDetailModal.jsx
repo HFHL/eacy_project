@@ -70,7 +70,6 @@ const DocumentDetailModal = forwardRef(({
   const detail = useDocumentDetailLoader({
     document,
     documentDetail,
-    fetchPreviewUrl: preview.fetchPreviewUrl,
     refreshTrigger,
     resetImageTransform: preview.resetImageTransform,
     resetOcrDisplay: ocrContent.resetOcrDisplay,

@@ -18,10 +18,7 @@ class LlmEhrNormalizationMixin:
 
         raw_fields = raw_output.get("fields")
         if isinstance(raw_fields, list):
-            for raw_field in raw_fields:
-                item = self._normalize_field_item(raw_field, by_path, state.get("document_id"))
-                if item:
-                    normalized.append(item)
+            normalized.extend(self._normalize_field_items(raw_fields, by_path, state.get("document_id")))
 
         raw_records = raw_output.get("records")
         if isinstance(raw_records, list):
@@ -37,6 +34,77 @@ class LlmEhrNormalizationMixin:
             seen.add(key)
             deduped.append(item)
         return {"fields_output": deduped}
+
+    def _normalize_field_items(
+        self,
+        raw_fields: list[Any],
+        by_path: dict[str, dict[str, Any]],
+        document_id: str | None,
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        table_groups: dict[tuple[str, int | None], dict[str, Any]] = {}
+
+        for raw_field in raw_fields:
+            table_child = self._json_container_child_field(raw_field, by_path)
+            if table_child is not None:
+                group_key = (table_child["container_path"], table_child["record_repeat_index"])
+                group = table_groups.setdefault(
+                    group_key,
+                    {
+                        "container_path": table_child["container_path"],
+                        "spec": table_child["spec"],
+                        "record_repeat_index": table_child["record_repeat_index"],
+                        "rows": {},
+                        "evidences": [],
+                        "confidence": None,
+                    },
+                )
+                row = group["rows"].setdefault(table_child["row_index"], {})
+                self._assign_nested_value(row, table_child["child_path"], table_child["value"])
+                group["evidences"].extend(table_child["evidences"])
+                if group["confidence"] is None and table_child["confidence"] is not None:
+                    group["confidence"] = table_child["confidence"]
+                continue
+
+            item = self._normalize_field_item(raw_field, by_path, document_id)
+            if item:
+                normalized.append(item)
+
+        for group in table_groups.values():
+            rows_by_index = group["rows"]
+            rows = [rows_by_index[index] for index in sorted(rows_by_index)]
+            if not rows:
+                continue
+            evidences = self._dedupe_evidences(group["evidences"]) or None
+            normalized.append(
+                self._build_field_output(
+                    field_path=group["container_path"],
+                    spec=group["spec"],
+                    value=rows,
+                    value_type="json",
+                    confidence=group["confidence"],
+                    quote_text=self._first_quote(evidences),
+                    evidences=evidences,
+                    evidence_type="llm_extract",
+                    repeat_index=group["record_repeat_index"],
+                    path_indexes=[group["record_repeat_index"]] if group["record_repeat_index"] is not None else None,
+                )
+            )
+
+        return normalized
+
+    def _dedupe_evidences(self, evidences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for evidence in evidences:
+            if not isinstance(evidence, dict):
+                continue
+            key = json.dumps(evidence, ensure_ascii=False, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(evidence)
+        return deduped
 
     def _normalize_field_item(
         self,
@@ -72,6 +140,111 @@ class LlmEhrNormalizationMixin:
             path_indexes=path_indexes,
         )
 
+    def _json_container_child_field(
+        self,
+        raw_field: Any,
+        by_path: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not isinstance(raw_field, dict):
+            return None
+        field_path = str(raw_field.get("field_path") or "").strip().strip("/").replace("/", ".")
+        if not field_path:
+            return None
+        parts = [part for part in field_path.split(".") if part]
+        non_numeric_parts = [part for part in parts if not part.isdigit()]
+        if len(non_numeric_parts) < 2:
+            return None
+
+        for container_path, spec in by_path.items():
+            if not self._is_json_container_spec(spec):
+                continue
+            container_parts = [part for part in str(container_path or "").split(".") if part]
+            if (
+                len(non_numeric_parts) <= len(container_parts)
+                or non_numeric_parts[: len(container_parts)] != container_parts
+            ):
+                continue
+
+            value_type = str(raw_field.get("value_type") or "text")
+            value = self._extract_raw_value(raw_field, value_type)
+            if self._is_empty(value):
+                return None
+            return {
+                "container_path": container_path,
+                "spec": spec,
+                "child_path": non_numeric_parts[len(container_parts):],
+                "row_index": self._table_child_row_index(raw_field, parts, container_parts),
+                "record_repeat_index": self._table_child_record_repeat_index(raw_field, parts, spec),
+                "value": value,
+                "confidence": raw_field.get("confidence"),
+                "evidences": self._normalize_evidences(raw_field.get("evidences")),
+            }
+        return None
+
+    def _table_child_record_repeat_index(
+        self,
+        raw_field: dict[str, Any],
+        parts: list[str],
+        spec: dict[str, Any],
+    ) -> int | None:
+        for key in ("record_repeat_index", "form_repeat_index"):
+            if raw_field.get(key) is not None:
+                try:
+                    return max(0, int(raw_field[key]))
+                except (TypeError, ValueError):
+                    return None
+
+        form_parts = [part for part in str(spec.get("record_form_key") or "").split(".") if part]
+        if form_parts and parts[: len(form_parts)] == form_parts:
+            index_position = len(form_parts)
+            if index_position < len(parts) and parts[index_position].isdigit():
+                return int(parts[index_position])
+        return None
+
+    def _table_child_row_index(
+        self,
+        raw_field: dict[str, Any],
+        parts: list[str],
+        container_parts: list[str],
+    ) -> int:
+        positions = self._path_match_positions(parts, container_parts)
+        if positions:
+            next_position = positions[-1] + 1
+            if next_position < len(parts) and parts[next_position].isdigit():
+                return int(parts[next_position])
+        if raw_field.get("repeat_index") is not None:
+            try:
+                return max(0, int(raw_field["repeat_index"]))
+            except (TypeError, ValueError):
+                pass
+        return 0
+
+    def _path_match_positions(self, parts: list[str], target_parts: list[str]) -> list[int] | None:
+        positions: list[int] = []
+        target_index = 0
+        for index, part in enumerate(parts):
+            if part.isdigit():
+                continue
+            if target_index >= len(target_parts):
+                break
+            if part != target_parts[target_index]:
+                return None
+            positions.append(index)
+            target_index += 1
+        return positions if target_index == len(target_parts) else None
+
+    def _assign_nested_value(self, target: dict[str, Any], path: list[str], value: Any) -> None:
+        if not path:
+            return
+        current = target
+        for part in path[:-1]:
+            child = current.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                current[part] = child
+            current = child
+        current[path[-1]] = value
+
     def _normalize_records(
         self,
         raw_records: list[Any],
@@ -103,6 +276,29 @@ class LlmEhrNormalizationMixin:
         confidence: Any,
         evidences: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        if self._is_empty(node):
+            return []
+
+        canonical_path, path_indexes = self._canonical_path_with_indexes(prefix, by_path)
+        spec = by_path.get(canonical_path)
+        if spec is not None and self._is_json_container_spec(spec):
+            field_evidences = self._select_evidences_for_field(field_path=canonical_path, spec=spec, value=node, evidences=evidences)
+            quote_text = self._first_quote(field_evidences)
+            return [
+                self._build_field_output(
+                    field_path=canonical_path,
+                    spec=spec,
+                    value=node,
+                    value_type="json",
+                    confidence=confidence,
+                    quote_text=quote_text,
+                    evidences=field_evidences,
+                    evidence_type="llm_extract",
+                    repeat_index=path_indexes[0] if path_indexes else None,
+                    path_indexes=path_indexes,
+                )
+            ]
+
         if isinstance(node, dict):
             output: list[dict[str, Any]] = []
             for key, value in node.items():
@@ -113,10 +309,6 @@ class LlmEhrNormalizationMixin:
             for index, item in enumerate(node):
                 output.extend(self._flatten_record_node(f"{prefix}.{index}", item, by_path, confidence, evidences))
             return output
-        if self._is_empty(node):
-            return []
-        canonical_path, path_indexes = self._canonical_path_with_indexes(prefix, by_path)
-        spec = by_path.get(canonical_path)
         if spec is None:
             return []
         field_evidences = self._select_evidences_for_field(field_path=canonical_path, spec=spec, value=node, evidences=evidences)
@@ -135,6 +327,12 @@ class LlmEhrNormalizationMixin:
                 path_indexes=path_indexes,
             )
         ]
+
+    def _is_json_container_spec(self, spec: dict[str, Any]) -> bool:
+        value_type = str(spec.get("value_type") or "")
+        schema_type = str(spec.get("schema_type") or "")
+        display_type = str(spec.get("display_type") or "")
+        return value_type == "json" and schema_type in {"array", "object"} and display_type in {"table", "group", "checkbox", "multi_text", "matrix_radio", "matrix_checkbox"}
 
     def _select_evidences_for_field(
         self,

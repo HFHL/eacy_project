@@ -4,7 +4,6 @@ import { getDocumentDetail } from '../../../../../api/document'
 export function useDocumentDetailLoader({
   document,
   documentDetail,
-  fetchPreviewUrl,
   refreshTrigger,
   resetImageTransform,
   resetOcrDisplay,
@@ -32,14 +31,6 @@ export function useDocumentDetailLoader({
 
       if (response.success && response.data) {
         setDocumentDetail(response.data)
-        if (!silent) {
-          const rawType = response.data?.file_type || document?.fileType || document?.file_type || ''
-          const fileName = response.data?.file_name || document?.fileName || document?.file_name || ''
-          const normalizedType = String(rawType).toLowerCase()
-          if (!normalizedType.includes('pdf') && !String(fileName).toLowerCase().endsWith('.pdf')) {
-            fetchPreviewUrl(documentId)
-          }
-        }
       } else {
         console.error('获取文档详情失败:', response.message)
       }
@@ -49,11 +40,6 @@ export function useDocumentDetailLoader({
       if (!silent) setDetailLoading(false)
     }
   }, [
-    document?.fileName,
-    document?.fileType,
-    document?.file_name,
-    document?.file_type,
-    fetchPreviewUrl,
     setDocumentDetail,
   ])
 

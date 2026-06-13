@@ -86,3 +86,53 @@ def test_schema_field_planner_exports_component_metadata_and_boolean_json_type()
     assert by_key["symptoms"].value_type == "json"
     assert by_key["symptoms"].options == ["腹痛", "黄疸"]
     assert by_key["confirmed"].value_type == "json"
+
+
+def test_schema_field_planner_represents_nested_table_as_json_field():
+    fields = plan_schema_fields(
+        {
+            "properties": {
+                "实验室检查": {
+                    "type": "object",
+                    "properties": {
+                        "血常规": {
+                            "type": "array",
+                            "x-display": "group",
+                            "x-merge-binding": "anchor=采样日期;fallback=报告日期",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "采样日期": {"type": "string", "format": "date"},
+                                    "检验结果": {
+                                        "type": "array",
+                                        "x-display": "table",
+                                        "x-row-constraint": "multi_row",
+                                        "x-merge-binding": "group_key=指标名称(中文)+单位",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "指标名称(中文)": {"type": "string"},
+                                                "检测值": {"type": "string"},
+                                                "单位": {"type": "string"},
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        }
+                    },
+                }
+            }
+        }
+    )
+
+    by_path = {field.field_path: field for field in fields}
+
+    assert "实验室检查.血常规.采样日期" in by_path
+    assert "实验室检查.血常规.检验结果" in by_path
+    assert "实验室检查.血常规.检验结果.检测值" not in by_path
+    table_field = by_path["实验室检查.血常规.检验结果"]
+    assert table_field.value_type == "json"
+    assert table_field.display_type == "table"
+    assert table_field.merge_binding == "anchor=采样日期;fallback=报告日期"
+    assert "检测值" in table_field.json_schema["items"]["properties"]
