@@ -14,7 +14,7 @@ import { appThemeToken } from '../../styles/themeTokens'
 
 // 导入数据 Hook
 import useProjectPatientData from './hooks/useProjectPatientData'
-import { updateProjectPatientCrfFields } from '@/api/project'
+import { deleteProjectCrfRecordInstance, updateProjectPatientCrfFields } from '@/api/project'
 import { buildProjectCrfFieldUpdates } from './modules/projectPatientDetail/crfUpdateUtils'
 import ProjectAiAssistantModal from './modules/projectPatientDetail/ProjectAiAssistantModal'
 import { useProjectPatientSchema } from './modules/projectPatientDetail/useProjectPatientSchema'
@@ -199,6 +199,43 @@ const ProjectPatientDetail = () => {
     setSchemaHistoryRefreshTick((tick) => tick + 1)
   }, [refresh])
 
+  /**
+   * 删除科研项目 CRF 可重复表单实例。
+   * 只处理已有 record_instance_id 的记录；新建未保存的空行由 SchemaForm 本地移除即可。
+   *
+   * @param {string} formPath
+   * @param {Array<Record<string, any>>} records
+   * @returns {Promise<void>}
+   */
+  const handleDeleteRepeatableRecords = useCallback(async (formPath, records = []) => {
+    if (!projectId || !resolvedProjectPatientId) {
+      throw new Error('删除失败：未找到患者信息')
+    }
+
+    const recordIds = Array.from(new Set(
+      (Array.isArray(records) ? records : [])
+        .map((record) => (
+          record?._record_instance_id ||
+          record?.record_instance_id ||
+          record?.recordInstanceId ||
+          ''
+        ))
+        .map((id) => String(id || '').trim())
+        .filter(Boolean)
+    ))
+
+    if (recordIds.length === 0) return
+
+    for (const recordId of recordIds) {
+      await deleteProjectCrfRecordInstance(projectId, resolvedProjectPatientId, recordId)
+    }
+
+    if (typeof refresh === 'function') {
+      await refresh()
+    }
+    setSchemaHistoryRefreshTick((tick) => tick + 1)
+  }, [projectId, refresh, resolvedProjectPatientId])
+
   // 是否仍在初次加载患者基础信息（仅作内联指示，不再阻塞整页）
   const initialPatientLoading = (loading || projectLoading) && !patientInfo?.patientId
 
@@ -274,6 +311,7 @@ const ProjectPatientDetail = () => {
             projectDocuments={documents}
             onSave={handleProjectSchemaSave}
             onFieldCandidateSolidified={handleFieldCandidateSolidified}
+            onDeleteRepeatableRecords={handleDeleteRepeatableRecords}
             externalHistoryRefreshKey={schemaHistoryRefreshTick}
           />
         </div>

@@ -53,7 +53,7 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
     leftPanelWidth,
     rightPanelWidth,
   } = useSchemaPanelResize({ siderWidth, sourcePanelWidth, leftCollapsed })
-  const { documents: projectDocuments = [], selectedDocument = null, onDocumentSelect, onAddRepeatableInstance, repeatableNamingPattern = '{formName}_{index}', sourcePatientId = null } = projectConfig || {}
+  const { documents: projectDocuments = [], selectedDocument = null, onDocumentSelect, onAddRepeatableInstance, onDeleteRepeatableRecords, repeatableNamingPattern = '{formName}_{index}', sourcePatientId = null } = projectConfig || {}
   const {
     extractCandidateDocuments,
     extractConfirming,
@@ -187,6 +187,7 @@ const SchemaFormInner = ({ onSave, onReset, onDataChange, onFieldCandidateSolidi
           onAddRepeatableInstance={onAddRepeatableInstance}
           onBeforeClearForm={onBeforeClearForm}
           onBeforeSelect={onBeforeSelect}
+          onDeleteRepeatableRecords={onDeleteRepeatableRecords}
           onDocumentSelect={onDocumentSelect}
           onPersistAfterChange={persistDataAfterChange}
           patientId={patientId}

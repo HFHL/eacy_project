@@ -14,6 +14,7 @@ export const SchemaFormLeftPanel = ({
   onAddRepeatableInstance,
   onBeforeClearForm,
   onBeforeSelect,
+  onDeleteRepeatableRecords,
   onDocumentSelect,
   onPersistAfterChange,
   patientId,
@@ -59,6 +60,7 @@ export const SchemaFormLeftPanel = ({
           onUploadDocument={targetFormKey ? handleUploadDocumentClick : undefined}
           onPickExistingDocument={targetFormKey ? handleOpenUploadExtractModal : undefined}
           onAddRepeatableInstance={onAddRepeatableInstance}
+          onDeleteRepeatableRecords={onDeleteRepeatableRecords}
           repeatableNamingPattern={repeatableNamingPattern}
           patientId={patientId}
           collapsed={leftCollapsed}

@@ -44,6 +44,7 @@ const CategoryTree = ({
 
   // Repeatable 表单相关
   onAddRepeatableInstance,
+  onDeleteRepeatableRecords,
   repeatableNamingPattern = '{formName}_{index}',
 
   // 患者ID（用于文档详情弹窗）
@@ -97,6 +98,7 @@ const CategoryTree = ({
     expandedKeys,
     onAddRepeatableInstance,
     onBeforeClearForm,
+    onDeleteRepeatableRecords,
     onPersistAfterChange,
     onSelect,
     schema,

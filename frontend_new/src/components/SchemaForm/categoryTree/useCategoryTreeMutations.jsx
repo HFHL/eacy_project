@@ -12,12 +12,24 @@ import {
   hasAnyData,
 } from './categoryTreeUtils'
 
+const getRecordInstanceId = (record) => String(
+  record?._record_instance_id ||
+  record?.record_instance_id ||
+  record?.recordInstanceId ||
+  ''
+).trim()
+
+const getPersistedRecords = (records) => (
+  (Array.isArray(records) ? records : []).filter((record) => getRecordInstanceId(record))
+)
+
 export function useCategoryTreeMutations({
   actions,
   draftData,
   expandedKeys,
   onAddRepeatableInstance,
   onBeforeClearForm,
+  onDeleteRepeatableRecords,
   onPersistAfterChange,
   onSelect,
   schema,
@@ -100,19 +112,37 @@ export function useCategoryTreeMutations({
       okButtonProps: { danger: true },
       onOk: async () => {
         const currentArray = getNestedValue(draftData, arrayPath) || []
+        const deletedRecord = currentArray[instanceIndex]
+        const persistedRecords = getPersistedRecords([deletedRecord])
         const newArray = currentArray.filter((_, idx) => idx !== instanceIndex)
         const newDraftData = JSON.parse(JSON.stringify(draftData || {}))
         setNestedValue(newDraftData, arrayPath, newArray)
-        actions.updateFieldValue(arrayPath, newArray)
 
         const deletedWasSelected = selectedPath === `${arrayPath}.${instanceIndex}` || selectedPath?.startsWith(`${arrayPath}.${instanceIndex}.`)
-        if (deletedWasSelected) {
+
+        const updateSelectionAfterDelete = () => {
+          if (!deletedWasSelected) return
           if (newArray.length > 0) {
             trySetSelectedPath(`${arrayPath}.0`)
           } else {
             actions.setSelectedPath(arrayPath)
           }
         }
+
+        if (persistedRecords.length > 0 && onDeleteRepeatableRecords) {
+          try {
+            await onDeleteRepeatableRecords(arrayPath, persistedRecords)
+            actions.setPatientData(newDraftData)
+            updateSelectionAfterDelete()
+            message.success('已删除并保存')
+          } catch (e) {
+            message.error('删除失败: ' + (e?.message || '未知错误'))
+          }
+          return
+        }
+
+        actions.updateFieldValue(arrayPath, newArray)
+        updateSelectionAfterDelete()
 
         if (onPersistAfterChange) {
           try {
@@ -126,7 +156,7 @@ export function useCategoryTreeMutations({
         }
       },
     })
-  }, [actions, draftData, onPersistAfterChange, selectedPath, trySetSelectedPath])
+  }, [actions, draftData, onDeleteRepeatableRecords, onPersistAfterChange, selectedPath, trySetSelectedPath])
 
   const handleClearForm = useCallback((formPath) => {
     const schemaAtPath = getSchemaAtPath(schema, formPath)
@@ -167,17 +197,38 @@ export function useCategoryTreeMutations({
       title: isRepeatable ? '确定清空全部记录' : '确定清空',
       icon: <ExclamationCircleOutlined />,
       content: isRepeatable
-        ? '确定清空该表单下的全部记录吗？清空后将恢复为空表单状态，且需点击保存才会提交。'
+        ? (
+          onDeleteRepeatableRecords
+            ? '确定清空该表单下的全部记录吗？已有记录会立即删除并保存。'
+            : '确定清空该表单下的全部记录吗？清空后将恢复为空表单状态，且需点击保存才会提交。'
+        )
         : '确定清空该表单数据吗？清空后需点击保存才会提交。',
       okText: isRepeatable ? '确定清空全部' : '确定清空',
       cancelText: '取消',
       okButtonProps: { danger: true },
-      onOk: () => {
+      onOk: async () => {
+        if (isRepeatable && onDeleteRepeatableRecords) {
+          const currentArray = Array.isArray(currentValue) ? currentValue : []
+          const persistedRecords = getPersistedRecords(currentArray)
+          if (persistedRecords.length > 0) {
+            try {
+              const newDraftData = JSON.parse(JSON.stringify(draftData || {}))
+              setNestedValue(newDraftData, formPath, [])
+              await onDeleteRepeatableRecords(formPath, persistedRecords)
+              actions.setPatientData(newDraftData)
+              actions.setSelectedPath(formPath)
+              message.success('已清空并保存')
+            } catch (e) {
+              message.error('清空失败: ' + (e?.message || '未知错误'))
+            }
+            return
+          }
+        }
         handleClearForm(formPath)
         actions.setSelectedPath(formPath)
       },
     })
-  }, [actions, draftData, handleClearForm, onBeforeClearForm, schema])
+  }, [actions, draftData, handleClearForm, onBeforeClearForm, onDeleteRepeatableRecords, schema])
 
   const titleRender = useCallback((nodeData) => (
     <NodeTitle
