@@ -90,6 +90,7 @@ export function useStartProjectExtraction({
 
       const data = response.data || {}
       const createdJobs = Number(data.submitted_jobs || data.created_jobs || 0)
+      const planningSubmitted = data.planning_submitted === true
       const taskId = data.task_id || data.batch_id || data.job_ids?.[0] || ''
 
       removeTask(pendingId)
@@ -101,32 +102,37 @@ export function useStartProjectExtraction({
       }
 
       setPrimaryTaskId(taskId)
+      const isActiveTask = planningSubmitted || createdJobs > 0
       upsertTask(taskId, {
-        phase: createdJobs > 0 ? 'queued' : 'completed',
-        status: createdJobs > 0 ? 'running' : 'completed',
-        progress: createdJobs > 0 ? 12 : 100,
+        phase: planningSubmitted ? 'planning' : (createdJobs > 0 ? 'queued' : 'completed'),
+        status: isActiveTask ? 'running' : 'completed',
+        progress: planningSubmitted ? 8 : (createdJobs > 0 ? 12 : 100),
         mode,
         modeLabel,
         scopeLabel,
         patientIds: patientIdList,
         labelsByPatientId,
-        current_step: createdJobs > 0 ? '已进入队列，等待 Worker 执行' : '无需新建抽取任务',
+        current_step: planningSubmitted
+          ? '后台正在规划抽取任务'
+          : (createdJobs > 0 ? '已进入队列，等待 Worker 执行' : '无需新建抽取任务'),
         submitted_jobs: createdJobs,
         total_patients: patientIdList.length || Number(data.total_items || 0),
         processed_patients: 0,
         patientStatuses: buildPatientStatuses(patientIdList, labelsByPatientId, {
-          status: createdJobs > 0 ? 'running' : 'completed',
-          progress: createdJobs > 0 ? 12 : 100,
-          label: createdJobs > 0 ? '排队中' : '已完成',
+          status: isActiveTask ? 'running' : 'completed',
+          progress: planningSubmitted ? 8 : (createdJobs > 0 ? 12 : 100),
+          label: planningSubmitted ? '规划中' : (createdJobs > 0 ? '排队中' : '已完成'),
         }),
         startedAt: Date.now(),
       })
 
       message.success({
         key: 'project-crf-extract-submit',
-        content: createdJobs > 0
-          ? `${scopeLabel} · 已提交 ${createdJobs} 个任务，已进入队列`
-          : `${scopeLabel} · 暂无可提交任务`,
+        content: planningSubmitted
+          ? `${scopeLabel} · 已提交，后台正在规划抽取任务`
+          : (createdJobs > 0
+              ? `${scopeLabel} · 已提交 ${createdJobs} 个任务，已进入队列`
+              : `${scopeLabel} · 暂无可提交任务`),
       })
 
       const firstPoll = await getCrfExtractionProgress(projectId, taskId)

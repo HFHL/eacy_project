@@ -13,6 +13,8 @@ from app.workers.celery_app import (
     METADATA_TASK_NAME,
     OCR_QUEUE,
     OCR_TASK_NAME,
+    PROJECT_CRF_FOLDER_BATCH_PLAN_TASK_NAME,
+    PROJECT_CRF_FOLDER_PLAN_TASK_NAME,
     SCHEDULE_PENDING_EXTRACTION_TASK_NAME,
     celery_app,
 )
@@ -41,6 +43,8 @@ def test_celery_app_registers_worker_tasks():
     assert EXTRACTION_TASK_NAME in celery_app.tasks
     assert ABANDON_STALE_PENDING_TASK_NAME in celery_app.tasks
     assert SCHEDULE_PENDING_EXTRACTION_TASK_NAME in celery_app.tasks
+    assert PROJECT_CRF_FOLDER_PLAN_TASK_NAME in celery_app.tasks
+    assert PROJECT_CRF_FOLDER_BATCH_PLAN_TASK_NAME in celery_app.tasks
 
 
 def test_celery_task_routes_are_declared():
@@ -52,6 +56,8 @@ def test_celery_task_routes_are_declared():
     assert CLAUDE_CODE_QUEUE == "claude-code"
     assert routes[ABANDON_STALE_PENDING_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
     assert routes[SCHEDULE_PENDING_EXTRACTION_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
+    assert routes[PROJECT_CRF_FOLDER_PLAN_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
+    assert routes[PROJECT_CRF_FOLDER_BATCH_PLAN_TASK_NAME]["queue"] == MAINTENANCE_QUEUE
 
 
 def test_prod_compose_has_dedicated_claude_code_worker():

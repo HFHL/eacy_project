@@ -38,7 +38,7 @@ async def update_project_patient_crf_folder(
 ) -> CrfFolderUpdateResponse:
     body = payload or CrfFolderUpdateRequest()
     try:
-        result = await service.update_project_crf_folder(
+        result = await service.submit_project_crf_folder_update(
             project_id=project_id,
             project_patient_id=project_patient_id,
             requested_by=uuid_user_id_or_none(current_user),
@@ -72,7 +72,7 @@ async def update_project_crf_folder_batch(
 ) -> ProjectCrfFolderBatchResponse:
     body = payload or ProjectCrfFolderBatchRequest()
     try:
-        result = await service.update_project_crf_folder_batch(
+        result = await service.submit_project_crf_folder_update_batch(
             project_id=project_id,
             project_patient_ids=body.project_patient_ids,
             requested_by=uuid_user_id_or_none(current_user),

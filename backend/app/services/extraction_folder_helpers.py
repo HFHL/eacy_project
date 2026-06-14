@@ -244,7 +244,9 @@ class ExtractionFolderHelpersMixin:
                 batch_id=batch_id,
                 task_type=task_type,
                 job=job,
+                aggregate=False,
             )
+        await self.task_progress_service.aggregate_batch(batch_id)
 
     async def _persist_folder_batch_plan(
         self,

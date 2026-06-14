@@ -15,6 +15,8 @@ METADATA_TASK_NAME = "eacy.metadata.extract_document_metadata"
 EXTRACTION_TASK_NAME = "eacy.extraction.process_extraction_job"
 ABANDON_STALE_PENDING_TASK_NAME = "eacy.maintenance.abandon_stale_pending_extraction_jobs"
 SCHEDULE_PENDING_EXTRACTION_TASK_NAME = "eacy.maintenance.schedule_pending_extraction_jobs"
+PROJECT_CRF_FOLDER_PLAN_TASK_NAME = "eacy.maintenance.plan_project_crf_folder_update"
+PROJECT_CRF_FOLDER_BATCH_PLAN_TASK_NAME = "eacy.maintenance.plan_project_crf_folder_batch_update"
 
 
 celery_app = Celery(
@@ -39,6 +41,8 @@ celery_app.conf.update(
         EXTRACTION_TASK_NAME: {"queue": EXTRACTION_QUEUE},
         ABANDON_STALE_PENDING_TASK_NAME: {"queue": MAINTENANCE_QUEUE},
         SCHEDULE_PENDING_EXTRACTION_TASK_NAME: {"queue": MAINTENANCE_QUEUE},
+        PROJECT_CRF_FOLDER_PLAN_TASK_NAME: {"queue": MAINTENANCE_QUEUE},
+        PROJECT_CRF_FOLDER_BATCH_PLAN_TASK_NAME: {"queue": MAINTENANCE_QUEUE},
     },
     task_serializer="json",
     task_track_started=True,

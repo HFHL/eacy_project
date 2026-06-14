@@ -73,6 +73,7 @@ class TaskProgressService(TaskProgressJobStateMixin, TaskProgressBatchMixin):
         stage: str = "created",
         stage_label: str = "已创建任务",
         message: str | None = None,
+        aggregate: bool = True,
     ) -> AsyncTaskItem:
         existing = await self.item_repository.get_by_extraction_job(job.id)
         if existing is not None:
@@ -87,7 +88,8 @@ class TaskProgressService(TaskProgressJobStateMixin, TaskProgressBatchMixin):
             existing.target_form_key = existing.target_form_key or job.target_form_key
             existing.heartbeat_at = datetime.utcnow()
             await self.item_repository.save(existing)
-            await self.aggregate_batch(existing.batch_id or batch_id)
+            if aggregate:
+                await self.aggregate_batch(existing.batch_id or batch_id)
             return existing
         item = await self.item_repository.create(
             {
@@ -110,7 +112,8 @@ class TaskProgressService(TaskProgressJobStateMixin, TaskProgressBatchMixin):
             }
         )
         await self._create_event(item=item, event_type="state_changed", message=item.message)
-        await self.aggregate_batch(batch_id)
+        if aggregate:
+            await self.aggregate_batch(batch_id)
         return item
 
     async def ensure_item_for_job(
@@ -119,6 +122,7 @@ class TaskProgressService(TaskProgressJobStateMixin, TaskProgressBatchMixin):
         job: ExtractionJob,
         batch_id: str | None = None,
         task_type: str | None = None,
+        aggregate: bool = True,
     ) -> AsyncTaskItem | None:
         resolved_batch_id = batch_id
         resolved_task_type = task_type
@@ -131,6 +135,7 @@ class TaskProgressService(TaskProgressJobStateMixin, TaskProgressBatchMixin):
             batch_id=resolved_batch_id,
             task_type=resolved_task_type,
             job=job,
+            aggregate=aggregate,
         )
 
     async def update_job_progress(

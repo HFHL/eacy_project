@@ -63,7 +63,20 @@ class TaskProgressBatchMixin:
         batch.cancelled_items = cancelled
         batch.progress = progress
         batch.heartbeat_at = datetime.utcnow()
-        if total == 0:
+        planning = isinstance(batch.plan_json, dict) and batch.plan_json.get("planning") is True
+        preserve_existing_message = False
+        if total == 0 and batch.status == "failed":
+            batch.progress = 100
+            batch.finished_at = batch.finished_at or datetime.utcnow()
+            preserve_existing_message = True
+        elif total == 0 and planning and batch.status in ACTIVE_BATCH_STATUSES:
+            batch.status = "running"
+            batch.progress = max(int(batch.progress or 0), 5)
+            batch.started_at = batch.started_at or datetime.utcnow()
+            batch.finished_at = None
+            batch.message = batch.message or "正在规划抽取任务"
+            preserve_existing_message = True
+        elif total == 0:
             batch.status = "succeeded"
             batch.progress = 100
             batch.finished_at = batch.finished_at or datetime.utcnow()
@@ -78,14 +91,15 @@ class TaskProgressBatchMixin:
             batch.status = "queued"
         else:
             batch.status = "created"
-        batch.message = self._batch_message(
-            total=total,
-            running=running,
-            queued=queued,
-            succeeded=succeeded,
-            failed=failed,
-            cancelled=cancelled,
-        )
+        if not preserve_existing_message:
+            batch.message = self._batch_message(
+                total=total,
+                running=running,
+                queued=queued,
+                succeeded=succeeded,
+                failed=failed,
+                cancelled=cancelled,
+            )
         await self.batch_repository.save(batch)
         await session.refresh(batch)
         return batch

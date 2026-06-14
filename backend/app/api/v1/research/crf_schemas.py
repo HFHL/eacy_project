@@ -177,6 +177,8 @@ class CrfFolderUpdateResponse(BaseModel):
     failed_jobs: int = 0
     job_ids: list[str]
     skipped: list[dict[str, str]] = Field(default_factory=list)
+    planning_submitted: bool = False
+    message: str | None = None
 
 
 class CrfFolderUpdateRequest(BaseModel):
@@ -206,3 +208,5 @@ class ProjectCrfFolderBatchResponse(BaseModel):
     job_ids: list[str]
     skipped_patients: list[dict[str, str]] = Field(default_factory=list)
     skipped_documents: list[dict[str, str]] = Field(default_factory=list)
+    planning_submitted: bool = False
+    message: str | None = None

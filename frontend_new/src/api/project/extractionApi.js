@@ -20,12 +20,16 @@ export const updateProjectCrfFolder = async (projectId = '', projectPatientId = 
     body,
   )
   const targeted = Array.isArray(targetFormKeys) && targetFormKeys.length > 0
+  const planning = payload.planning_submitted === true
+  const submittedCount = payload.submitted_jobs || payload.created_jobs || 0
   return emptySuccess({
     ...payload,
     task_id: payload.batch_id || payload.job_ids?.[0] || '',
-    message: targeted
-      ? `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 靶向抽取任务`
-      : `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
+    message: planning
+      ? (targeted ? '已提交项目 CRF 靶向抽取任务，后台正在规划' : '已提交项目 CRF 抽取任务，后台正在规划')
+      : (targeted
+          ? `已提交 ${submittedCount} 个项目 CRF 靶向抽取任务`
+          : `已提交 ${submittedCount} 个项目 CRF 抽取任务，后台正在抽取`),
   })
 }
 
@@ -46,12 +50,16 @@ export const updateProjectCrfFolderBatch = async (projectId = '', projectPatient
   }
   const payload = await request.post(`${PROJECTS_ENDPOINT}/${projectId}/crf/update-folder`, body)
   const targeted = Array.isArray(targetFormKeys) && targetFormKeys.length > 0
+  const planning = payload.planning_submitted === true
+  const submittedCount = payload.submitted_jobs || payload.created_jobs || 0
   return emptySuccess({
     ...payload,
     task_id: payload.batch_id || payload.job_ids?.[0] || '',
-    message: targeted
-      ? `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 靶向抽取任务`
-      : `已提交 ${payload.submitted_jobs || payload.created_jobs || 0} 个项目 CRF 抽取任务，后台正在抽取`,
+    message: planning
+      ? (targeted ? '已提交项目 CRF 靶向抽取任务，后台正在规划' : '已提交项目 CRF 抽取任务，后台正在规划')
+      : (targeted
+          ? `已提交 ${submittedCount} 个项目 CRF 靶向抽取任务`
+          : `已提交 ${submittedCount} 个项目 CRF 抽取任务，后台正在抽取`),
   })
 }
 

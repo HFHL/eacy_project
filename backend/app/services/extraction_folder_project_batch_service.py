@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from app.models import ExtractionJob
@@ -13,6 +14,141 @@ from core.db import session
 
 
 class ExtractionFolderProjectBatchMixin:
+    async def submit_project_crf_folder_update_batch(
+        self,
+        *,
+        project_id: str,
+        project_patient_ids: list[str] | None = None,
+        requested_by: str | None = None,
+        target_form_keys: list[str] | None = None,
+        mode: str | None = None,
+    ) -> dict[str, Any]:
+        from app.services.research_project_service import (
+            ResearchProjectConflictError,
+            ResearchProjectNotFoundError,
+            ResearchProjectService,
+        )
+
+        research_service = ResearchProjectService()
+        project = await research_service.get_project(project_id, owner_id=requested_by)
+        if project is None:
+            raise ExtractionNotFoundError("Research project not found")
+
+        if project_patient_ids:
+            target_ids = [pid for pid in project_patient_ids if pid]
+        else:
+            try:
+                project_patients = await research_service.list_project_patients(
+                    project_id, owner_id=requested_by
+                )
+            except ResearchProjectNotFoundError as error:
+                raise ExtractionNotFoundError(str(error)) from error
+            except ResearchProjectConflictError as error:
+                raise ExtractionConflictError(str(error)) from error
+            target_ids = [pp.id for pp in project_patients]
+
+        options = self._normalize_folder_update_options(target_form_keys=target_form_keys, mode=mode)
+        if options.target_form_keys:
+            for project_patient_id in target_ids:
+                try:
+                    crf = await research_service.get_project_crf(
+                        project_id=project_id,
+                        project_patient_id=project_patient_id,
+                        created_by=requested_by,
+                        owner_id=requested_by,
+                    )
+                except (ResearchProjectNotFoundError, ResearchProjectConflictError):
+                    continue
+                schema_json = crf.get("schema")
+                if isinstance(schema_json, dict):
+                    self._validate_target_form_keys_for_schema(
+                        schema_json=schema_json,
+                        target_form_keys=options.target_form_keys,
+                    )
+                    break
+        message = "任务已提交，正在规划项目 CRF 批量抽取任务"
+        batch = await self.task_progress_service.create_batch(
+            task_type=self._folder_batch_task_type(
+                folder_task_type="project_crf_folder_extract",
+                options=options,
+            ),
+            title=self._folder_batch_title(base_title="批量更新项目 CRF", options=options),
+            scope_type="project",
+            project_id=project_id,
+            requested_by=requested_by,
+            message=message,
+        )
+        now = datetime.utcnow()
+        batch.status = "running"
+        batch.progress = 5
+        batch.started_at = now
+        batch.heartbeat_at = now
+        batch.plan_json = {
+            "planning": True,
+            "options": {"mode": options.mode, "target_form_keys": options.target_form_keys or []},
+            "source_tag": "project_crf_folder_update",
+            "stats": {
+                "documents_total": 0,
+                "eligible_documents": 0,
+                "planned_jobs": 0,
+                "processed_patients": 0,
+                "pending_documents": 0,
+            },
+        }
+        await self.task_progress_service.batch_repository.save(batch)
+        batch_id_value = batch.id
+        await session.commit()
+
+        from app.workers.celery_app import MAINTENANCE_QUEUE, PROJECT_CRF_FOLDER_BATCH_PLAN_TASK_NAME, celery_app
+
+        try:
+            celery_app.send_task(
+                PROJECT_CRF_FOLDER_BATCH_PLAN_TASK_NAME,
+                kwargs={
+                    "batch_id": batch_id_value,
+                    "project_id": project_id,
+                    "project_patient_ids": target_ids,
+                    "requested_by": requested_by,
+                    "target_form_keys": options.target_form_keys,
+                    "mode": options.mode,
+                },
+                queue=MAINTENANCE_QUEUE,
+                routing_key=MAINTENANCE_QUEUE,
+            )
+        except Exception as error:
+            failed_batch = await self.task_progress_service.batch_repository.get_by_id(batch_id_value)
+            if failed_batch is not None:
+                error_message = f"项目 CRF 批量抽取规划任务提交失败: {error}"
+                failed_batch.status = "failed"
+                failed_batch.progress = 100
+                failed_batch.message = error_message
+                failed_batch.error_message = error_message
+                failed_batch.finished_at = datetime.utcnow()
+                failed_batch.heartbeat_at = datetime.utcnow()
+                await self.task_progress_service.batch_repository.save(failed_batch)
+                await session.commit()
+            raise ExtractionConflictError("Project CRF folder update planning task could not be queued") from error
+
+        return {
+            "batch_id": batch_id_value,
+            "project_id": project_id,
+            "total_project_patients": len(target_ids),
+            "processed_patients": 0,
+            "documents_total": 0,
+            "eligible_documents": 0,
+            "already_extracted_documents": 0,
+            "planned_documents": 0,
+            "created_jobs": 0,
+            "jobs": [],
+            "submitted_jobs": 0,
+            "completed_jobs": 0,
+            "failed_jobs": 0,
+            "skipped_patients": [],
+            "skipped_documents": [],
+            "planning_submitted": True,
+            "message": message,
+        }
+
     async def update_project_crf_folder_batch(
         self,
         *,
@@ -21,6 +157,7 @@ class ExtractionFolderProjectBatchMixin:
         requested_by: str | None = None,
         target_form_keys: list[str] | None = None,
         mode: str | None = None,
+        batch_id: str | None = None,
     ) -> dict[str, Any]:
         from app.services.research_project_service import (
             ResearchProjectConflictError,
@@ -82,16 +219,42 @@ class ExtractionFolderProjectBatchMixin:
                 )
                 preloaded_crfs[project_patient_id] = crf
 
-        batch = await self.task_progress_service.create_batch(
-            task_type=self._folder_batch_task_type(
-                folder_task_type="project_crf_folder_extract",
-                options=options,
-            ),
-            title=self._folder_batch_title(base_title="批量更新项目 CRF", options=options),
-            scope_type="project",
-            project_id=project_id,
-            requested_by=requested_by,
+        task_type = self._folder_batch_task_type(
+            folder_task_type="project_crf_folder_extract",
+            options=options,
         )
+        title = self._folder_batch_title(base_title="批量更新项目 CRF", options=options)
+        if batch_id:
+            batch = await self.task_progress_service.batch_repository.get_by_id(batch_id)
+            if batch is None:
+                raise ExtractionNotFoundError("Task batch not found")
+            now = datetime.utcnow()
+            batch.task_type = task_type
+            batch.title = title
+            batch.scope_type = "project"
+            batch.project_id = project_id
+            batch.requested_by = requested_by or batch.requested_by
+            batch.status = "running"
+            batch.progress = max(int(batch.progress or 0), 5)
+            batch.message = "正在规划项目 CRF 批量抽取任务"
+            batch.error_message = None
+            batch.started_at = batch.started_at or now
+            batch.finished_at = None
+            batch.heartbeat_at = now
+            batch.plan_json = {
+                **(batch.plan_json if isinstance(batch.plan_json, dict) else {}),
+                "planning": True,
+            }
+            await self.task_progress_service.batch_repository.save(batch)
+            await session.commit()
+        else:
+            batch = await self.task_progress_service.create_batch(
+                task_type=task_type,
+                title=title,
+                scope_type="project",
+                project_id=project_id,
+                requested_by=requested_by,
+            )
 
         all_jobs: list[ExtractionJob] = []
         processed_patients = 0
@@ -189,8 +352,8 @@ class ExtractionFolderProjectBatchMixin:
                     skipped_documents.append(skip_entry)
                     patient_skipped.append({"document_id": document.id, "reason": skip_entry["reason"]})
                     continue
-                patient_jobs.append(
-                    await self._create_pending_planned_job_for_plan_items(
+                patient_jobs.extend(
+                    await self._create_pending_planned_jobs_for_plan_items(
                         plan_items,
                         job_type="project_crf",
                         requested_by=requested_by,
